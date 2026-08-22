@@ -14,6 +14,7 @@ from tridentine_calendar_google_sync.profiles import load_profile
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 GOOGLE_SNAPSHOTS_DIR = FIXTURES_DIR / "google_snapshots"
+GOOGLE_API_PAGES_DIR = FIXTURES_DIR / "google_api_pages"
 PROFILES_DIR = REPOSITORY_ROOT / "profiles"
 
 
@@ -117,6 +118,11 @@ def fixtures_dir() -> Path:
 @pytest.fixture
 def google_snapshots_dir() -> Path:
     return GOOGLE_SNAPSHOTS_DIR
+
+
+@pytest.fixture
+def google_api_pages_dir() -> Path:
+    return GOOGLE_API_PAGES_DIR
 
 
 @pytest.fixture

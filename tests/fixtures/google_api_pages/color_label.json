@@ -1,0 +1,23 @@
+{
+  "scenario": "color_label",
+  "responses": [
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-006",
+      "items": [
+        {
+          "id": "evtfixtureapi007",
+          "status": "confirmed",
+          "summary": "Synthetic colored event",
+          "description": "Safe colored event description",
+          "start": {"date": "2026-06-01"},
+          "end": {"date": "2026-06-02"},
+          "iCalUID": "fixture-api-007@example.invalid",
+          "eventType": "default",
+          "colorId": "6",
+          "eventLabelId": "fixture-label"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "scenario": "rate_limit_error",
+  "error": {
+    "status": 429,
+    "reason": "rateLimitExceeded",
+    "message": "Synthetic rate limit failure"
+  }
+}

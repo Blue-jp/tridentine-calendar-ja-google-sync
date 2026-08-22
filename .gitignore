@@ -28,6 +28,7 @@ google-target*.toml
 target-secret*.toml
 target*.local.toml
 google-snapshot*.json
+!schemas/google-snapshot-v1.schema.json
 state/
 snapshots/
 cache/

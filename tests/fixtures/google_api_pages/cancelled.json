@@ -1,0 +1,19 @@
+{
+  "scenario": "cancelled",
+  "responses": [
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-004",
+      "items": [
+        {
+          "id": "evtfixtureapi005",
+          "status": "cancelled",
+          "start": {"date": "2026-04-01"},
+          "end": {"date": "2026-04-02"},
+          "iCalUID": "fixture-api-005@example.invalid",
+          "eventType": "default"
+        }
+      ]
+    }
+  ]
+}

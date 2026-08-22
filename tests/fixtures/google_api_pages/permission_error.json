@@ -1,0 +1,8 @@
+{
+  "scenario": "permission_error",
+  "error": {
+    "status": 403,
+    "reason": "forbidden",
+    "message": "Synthetic permission failure"
+  }
+}
