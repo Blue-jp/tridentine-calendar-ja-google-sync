@@ -1,10 +1,15 @@
 .venv/
 venv/
 __pycache__/
+*.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
+.tox/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 dist/
 build/
@@ -22,3 +27,4 @@ reports/internal/
 *.plan.json
 local-data/
 input/
+.DS_Store
