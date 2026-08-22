@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "snapshot_format": "sanitized-google-calendar-v1",
+  "target_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_count": 2,
+  "complete": true,
+  "events": [
+    {
+      "id": "evtfixtureduplicate001",
+      "iCalUID": "fixture-valid-001@example.invalid",
+      "summary": "Synthetic all-day observance",
+      "description": "Safe fixture description",
+      "start": {"date": "2026-01-15"},
+      "end": {"date": "2026-01-16"},
+      "allDay": true,
+      "status": "confirmed",
+      "eventType": "default",
+      "etag": "fixture-etag-duplicate-001",
+      "updated": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "evtfixtureduplicate002",
+      "iCalUID": "fixture-valid-001@example.invalid",
+      "summary": "Synthetic duplicate copy",
+      "description": "Safe duplicate fixture description",
+      "start": {"date": "2026-01-15"},
+      "end": {"date": "2026-01-16"},
+      "allDay": true,
+      "status": "confirmed",
+      "eventType": "default",
+      "etag": "fixture-etag-duplicate-002",
+      "updated": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

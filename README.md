@@ -4,19 +4,32 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 1の範囲
+## Phase 2の範囲
 
-現在のPhase 1が提供するのは、ローカルに用意したAccepted HTML ICSの完全オフライン検証だけです。
+現在のPhase 2は、ローカルに用意したAccepted HTML ICSとsanitized Google snapshotを完全オフラインで検証・比較します。
+
+### Implemented
 
 - raw bytesのSHA-256をparse前に検証
 - RFC準拠parserによるVEVENT解析
 - Accepted source profileに対する件数・UID・日付範囲・property構造の検証
 - 内容を秘匿したhuman-readable reportとJSON report
+- sanitized snapshotのclosed-schema validationとcanonical Google event model
+- Source UIDとGoogle `iCalUID`による決定的な差分分類
+- `unchanged`、`add`、`update`、`delete_candidate`、duplicate、ambiguous、unmanaged、fatal guardの集計
+- raw UID、Google event ID、title、descriptionを含まないdiff report
 - Production dataを含まないsynthetic fixture test
 
-この段階ではGoogle Calendarへ接続せず、Google Calendarを読み取りも書き換えもしません。Google API client、OAuth、online downloader、Google event model、diff、apply、syncTokenは未実装です。
+### Not implemented
 
-Production ICSやruntime stateをrepositoryへcommitしないでください。入力はrepository外のローカルfileとして明示的に渡します。
+- Google Calendar API connection、OAuth、live fetch
+- `syncToken`、state persistence
+- applyおよびadd/update/delete execution
+- Production synchronization
+
+この段階でもGoogle Calendarへ接続せず、Google Calendarを読み取りも書き換えもしません。`delete_candidate`は分類名にすぎず、削除操作を生成・実行しません。
+
+Production ICS、Production snapshot、runtime stateをrepositoryへcommitしないでください。入力はrepository外のローカルfileとして明示的に渡します。
 
 ## 必要環境
 
@@ -66,24 +79,41 @@ tridentine-calendar-google-sync validate-source `
 
 両commandは`--format text`または`--format json`を受け付けます。`--output <path>`を指定しない場合は標準出力へ書き、reportをrepository内へ自動保存しません。通常reportにlocal absolute path、raw UID、SUMMARY一覧、DESCRIPTION本文は含まれません。
 
+### Sanitized snapshotとの差分確認
+
+```powershell
+tridentine-calendar-google-sync diff-snapshot `
+  --source "<repository外のAccepted HTML ICS path>" `
+  --profile accepted-20260814 `
+  --google-snapshot "<repository外のsanitized snapshot JSON path>" `
+  --format text
+```
+
+`diff-snapshot`はローカルfileだけを読み、networkへ接続しません。snapshotは`sanitized-google-calendar-v1`形式で、targetは秘密のCalendar IDではなくSHA-256 fingerprintで識別します。通常reportにはraw `iCalUID`、Google event ID、event title、description、local pathを含めません。
+
 ## Accepted asset integration test
 
 Full Accepted HTML ICSはtracked fixtureにしません。検証済みassetをrepository外へ用意し、次の環境変数を明示したときだけintegration testが実行されます。
 
 ```powershell
 $env:TRIDENTINE_ACCEPTED_HTML_ICS_PATH = "<repository外の検証済みAccepted HTML ICS path>"
-uv run pytest tests/test_accepted_asset_integration.py
+uv run pytest tests/test_accepted_asset_integration.py `
+  tests/test_offline_diff_accepted_integration.py
 ```
 
 環境変数が未設定ならtestはskipされ、offline unit test suiteは成功します。環境変数の値はreportやtest failureへ表示しません。CIはこの環境変数を設定せず、Production assetをdownloadしません。
+
+Phase 2のopt-in integration testはAccepted sourceをmemory上のsynthetic Google eventへ変換してdiff engineを検証します。生成したsnapshotをfileへ保存せず、Google APIも呼び出しません。
 
 ## Exit code
 
 | Code | 意味 |
 |---:|---|
 | `0` | Sourceはprofileに対してvalid |
+| `1` | 安全に分類されたoffline差分あり |
 | `2` | CLI引数または設定error |
 | `3` | Source parse・validation error |
+| `4` | Sanitized snapshotの入力・schema error |
 | `5` | SHA・UID・件数・日付範囲などのfatal guard |
 | `8` | 予期しないinternal error |
 
@@ -91,9 +121,11 @@ Validation mismatchは通常の利用時にPython tracebackやfile本文を表�
 
 ## 安全性とprivacy
 
-- Credentials、token、Calendar ID、private iCal URL、Google event ID、snapshot、stateをcommit・log・issue・Pull Requestへ載せないでください。
+- Credentials、token、Calendar ID、private iCal URL、Google event ID、Production snapshot、stateをcommit・log・issue・Pull Requestへ載せないでください。
 - Accepted HTML ICSおよびPlain ICSをcommitしないでください。repository内のICSは架空データだけを使ったsynthetic test fixtureに限定します。
+- Repository内のGoogle snapshot fixtureは架空UID・架空event ID・架空fingerprintだけを使い、URLや個人情報を含めません。
 - UIDは内部解析時だけ正確に保持し、reportではdomain-separated SHA-256から作る`U-<12 hexadecimal characters>`形式のsafe referenceを使用します。
+- Google event IDも内部比較時だけ保持し、reportでは別domainの`G-<12 hexadecimal characters>`形式を使用します。
 - SUMMARYとDESCRIPTIONにはtrim、Unicode normalization、HTML整形、URL変更、改行削除を行いません。RFC parserによるline unfoldingとICS escape decodeだけをtransport処理として行います。
 - runtime dataはrepository外に保存します。
 
@@ -113,13 +145,12 @@ Test実行時もnetwork socketを無効化します。
 
 ## Roadmap
 
-以下はすべて未実装です。実装には別のreviewと明示的な許可が必要です。
+Phase 2までに、sanitized fixtureに対するGoogle event canonical model、offline diff comparator、human/JSON diff reportを実装しました。以下は未実装であり、別のreviewと明示的な許可が必要です。
 
-1. Sanitized fixtureに対するGoogle event canonical modelとoffline diff comparator
-2. 最小権限OAuthによるGoogle Calendar read-only取得
-3. Human / JSON dry-run diff report
-4. 専用test Calendarに限定したwrite検証
-5. Production apply、delete、syncToken、automation
+1. 最小権限OAuthによるGoogle Calendar read-only取得
+2. PaginationされたGoogle responseからのsanitized snapshot生成
+3. 専用test Calendarに限定したwrite検証
+4. Production apply、delete、syncToken、automation
 
 ## Provenanceとlicense
 

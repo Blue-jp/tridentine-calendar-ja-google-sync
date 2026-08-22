@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "snapshot_format": "sanitized-google-calendar-v1",
+  "target_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_count": 1,
+  "complete": true,
+  "events": [
+    {
+      "id": "evtfixturemissinguid001",
+      "summary": "Synthetic event without iCalUID",
+      "description": "Safe fixture description",
+      "start": {"date": "2026-01-15"},
+      "end": {"date": "2026-01-16"},
+      "allDay": true,
+      "status": "confirmed",
+      "eventType": "default",
+      "etag": "fixture-etag-missing-uid-001",
+      "updated": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

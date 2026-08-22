@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "snapshot_format": "sanitized-google-calendar-v1",
+  "target_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_count": 1,
+  "complete": true,
+  "events": [
+    {
+      "id": "evtfixture001",
+      "iCalUID": "fixture-valid-001@example.invalid",
+      "summary": "Synthetic all-day observance",
+      "description": "Safe fixture description",
+      "start": {"date": "2026-01-16"},
+      "end": {"date": "2026-01-17"},
+      "allDay": true,
+      "status": "confirmed",
+      "eventType": "default",
+      "etag": "fixture-etag-004",
+      "updated": "2026-01-04T00:00:00Z"
+    }
+  ]
+}
