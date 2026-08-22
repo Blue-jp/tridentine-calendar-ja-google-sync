@@ -1,0 +1,28 @@
+schema_version = "1.0"
+profile_id = "accepted-20260814"
+project_name = "1960年ローマ典礼暦・日本語版 Google Calendar差分同期ツール"
+
+[source]
+accepted_tag = "ja-localization-accepted-20260814"
+accepted_commit = "c0dedd86257df2ff1a95097bcf3824b2b95fce66"
+html_sha256 = "1c0ee8a19769f9ff26b1a40d03d0280afdcbde1d7d50642ad3f2123c117dd552"
+plain_sha256 = "962725c8029993af7fc02450cb29ab6c18eaa4db0569023f53d114be1247ae62"
+
+[expected]
+vcalendar_count = 1
+vevent_count = 4938
+uid_total_count = 4938
+uid_unique_count = 4938
+uid_duplicate_count = 0
+first_date = "2024-01-01"
+last_date = "2034-12-31"
+all_day_count = 4938
+timed_count = 0
+dtstart_date_count = 4938
+dtend_present_count = 0
+summary_present_count = 4938
+description_present_count = 4938
+dtstamp_present_count = 4938
+rrule_count = 0
+recurrence_id_count = 0
+event_x_property_count = 0

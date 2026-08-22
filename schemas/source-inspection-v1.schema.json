@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/source-inspection-v1.schema.json",
+  "title": "Offline source inspection report",
+  "description": "A redacted, deterministic report for one locally supplied Accepted ICS file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tool_version",
+    "mode",
+    "profile",
+    "source",
+    "aggregate",
+    "findings",
+    "fatal_errors",
+    "source_valid",
+    "content_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "tool_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "const": "offline"
+    },
+    "profile": {
+      "$ref": "#/$defs/profile"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "aggregate": {
+      "$ref": "#/$defs/aggregate"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "fatal_errors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "source_valid": {
+      "type": "boolean"
+    },
+    "content_hash": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "safeUidReference": {
+      "type": "string",
+      "pattern": "^U-[0-9a-f]{12}$"
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "accepted_tag",
+        "accepted_commit"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "accepted_tag": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+        },
+        "accepted_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "sha256_match"
+      ],
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sha256_match": {
+          "type": "boolean"
+        }
+      }
+    },
+    "dateRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "first",
+        "last"
+      ],
+      "properties": {
+        "first": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "last": {
+          "type": ["string", "null"],
+          "format": "date"
+        }
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "vcalendar_count",
+        "vevent_count",
+        "uid_total_count",
+        "uid_unique_count",
+        "uid_duplicate_count",
+        "date_range",
+        "all_day_count",
+        "timed_count",
+        "dtstart_date_count",
+        "dtend_present_count",
+        "summary_present_count",
+        "description_present_count",
+        "dtstamp_present_count",
+        "rrule_count",
+        "recurrence_id_count",
+        "event_x_property_count",
+        "malformed_event_count"
+      ],
+      "properties": {
+        "vcalendar_count": {
+          "$ref": "#/$defs/count"
+        },
+        "vevent_count": {
+          "$ref": "#/$defs/count"
+        },
+        "uid_total_count": {
+          "$ref": "#/$defs/count"
+        },
+        "uid_unique_count": {
+          "$ref": "#/$defs/count"
+        },
+        "uid_duplicate_count": {
+          "$ref": "#/$defs/count"
+        },
+        "date_range": {
+          "$ref": "#/$defs/dateRange"
+        },
+        "all_day_count": {
+          "$ref": "#/$defs/count"
+        },
+        "timed_count": {
+          "$ref": "#/$defs/count"
+        },
+        "dtstart_date_count": {
+          "$ref": "#/$defs/count"
+        },
+        "dtend_present_count": {
+          "$ref": "#/$defs/count"
+        },
+        "summary_present_count": {
+          "$ref": "#/$defs/count"
+        },
+        "description_present_count": {
+          "$ref": "#/$defs/count"
+        },
+        "dtstamp_present_count": {
+          "$ref": "#/$defs/count"
+        },
+        "rrule_count": {
+          "$ref": "#/$defs/count"
+        },
+        "recurrence_id_count": {
+          "$ref": "#/$defs/count"
+        },
+        "event_x_property_count": {
+          "$ref": "#/$defs/count"
+        },
+        "malformed_event_count": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "severity",
+        "code",
+        "message"
+      ],
+      "properties": {
+        "severity": {
+          "enum": ["error", "fatal"]
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "field": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "event_ref": {
+          "$ref": "#/$defs/safeUidReference"
+        }
+      }
+    }
+  }
+}
