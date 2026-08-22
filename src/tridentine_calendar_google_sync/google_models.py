@@ -69,9 +69,10 @@ class CanonicalGoogleEvent(StrictFrozenModel):
     )
     summary: str | None = Field(default=None, repr=False, exclude=True)
     description: str | None = Field(default=None, repr=False, exclude=True)
-    start: GoogleEventTime
-    end: GoogleEventTime
-    all_day: bool
+    start: GoogleEventTime | None = None
+    end: GoogleEventTime | None = None
+    all_day: bool | None = None
+    end_time_unspecified: bool = False
     status: str = Field(min_length=1)
     event_type: str = Field(min_length=1)
     etag: str | None = Field(default=None, repr=False, exclude=True)
@@ -83,6 +84,8 @@ class CanonicalGoogleEvent(StrictFrozenModel):
     visibility: str | None = None
     color_id: str | None = None
     event_label_id: str | None = None
+    locked: bool = False
+    private_copy: bool = False
     reminders: GoogleReminders | None = Field(default=None, repr=False, exclude=True)
     location: str | None = Field(default=None, repr=False, exclude=True)
     extended_properties: GoogleExtendedProperties | None = Field(
@@ -100,6 +103,14 @@ class CanonicalGoogleEvent(StrictFrozenModel):
     def time_shape_matches_all_day_flag(self) -> Self:
         """Require a coherent sanitized time representation."""
 
+        if self.start is None or self.end is None:
+            if self.status != "cancelled" or self.start is not None or self.end is not None:
+                raise ValueError("only cancelled tombstones may omit event boundaries")
+            if self.all_day is not None:
+                raise ValueError("cancelled tombstones without boundaries have no all-day flag")
+            return self
+        if self.all_day is None:
+            raise ValueError("events with boundaries require an all-day flag")
         if self.all_day:
             if self.start.date is None or self.end.date is None:
                 raise ValueError("all-day events require date boundaries")
@@ -119,6 +130,16 @@ class GoogleSnapshot(StrictFrozenModel):
     event_count: int = Field(ge=0)
     events: tuple[CanonicalGoogleEvent, ...] = Field(default=(), repr=False, exclude=True)
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page_count: int = Field(ge=1)
+    collection_metadata_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    cancelled_event_count: int = Field(default=0, ge=0)
+    unknown_event_type_count: int = Field(default=0, ge=0)
+    dropped_private_extended_property_count: int = Field(default=0, ge=0)
+    dropped_shared_extended_property_count: int = Field(default=0, ge=0)
+    forbidden_field_count: int = Field(default=0, ge=0)
 
 
 __all__ = [

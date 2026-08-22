@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
@@ -14,11 +15,42 @@ from tridentine_calendar_google_sync.diff_report import (
     render_diff_json_report,
     render_diff_text_report,
 )
+from tridentine_calendar_google_sync.google_auth import (
+    GoogleAuthConfigError,
+    GoogleAuthError,
+    GoogleCredentialRefreshError,
+    authorize_google_readonly,
+    load_readonly_credentials,
+    persist_authorized_user_credentials,
+)
+from tridentine_calendar_google_sync.google_client import build_read_only_calendar_client
+from tridentine_calendar_google_sync.google_errors import SafeGoogleError
+from tridentine_calendar_google_sync.google_fetch import fetch_google_event_pages
+from tridentine_calendar_google_sync.google_optional import (
+    GoogleOptionalDependencyError,
+    load_google_optional_bindings,
+)
+from tridentine_calendar_google_sync.google_sanitize import sanitize_fetched_pages
 from tridentine_calendar_google_sync.google_snapshot import (
     GoogleSnapshotError,
     load_google_snapshot,
 )
+from tridentine_calendar_google_sync.google_target import (
+    GoogleTargetError,
+    TargetConfigError,
+    TargetIdentityError,
+    TargetMetadataObservation,
+    load_target_config,
+    short_target_reference,
+    verify_target_fingerprint,
+    verify_target_metadata,
+)
 from tridentine_calendar_google_sync.profiles import ProfileError, load_profile
+from tridentine_calendar_google_sync.snapshot_io import (
+    SnapshotWriteError,
+    validate_snapshot_output,
+    write_google_snapshot,
+)
 from tridentine_calendar_google_sync.source_ics import SourceInputError, inspect_source
 from tridentine_calendar_google_sync.source_report import render_json_report, render_text_report
 
@@ -28,6 +60,7 @@ EXIT_CLI_ERROR = 2
 EXIT_INVALID_SOURCE = 3
 EXIT_INVALID_SNAPSHOT = 4
 EXIT_FATAL_GUARD = 5
+EXIT_GOOGLE_READ_ERROR = 6
 EXIT_INTERNAL_ERROR = 8
 
 
@@ -98,6 +131,60 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="retain the mandatory content-redacted report policy",
     )
+    authorize_command = subparsers.add_parser(
+        "authorize-google-readonly",
+        help="explicitly authorize the narrow owned-events read-only scope",
+    )
+    authorize_command.add_argument(
+        "--online",
+        action="store_true",
+        help="allow OAuth network use",
+    )
+    authorize_command.add_argument(
+        "--credentials-file",
+        "--client-config",
+        dest="credentials_file",
+        required=True,
+        help="absolute local desktop OAuth client JSON path",
+    )
+    authorize_command.add_argument(
+        "--token-file",
+        "--token-output",
+        dest="token_file",
+        required=True,
+        help="absolute local authorized-user token output path",
+    )
+    authorize_command.add_argument(
+        "--overwrite-token",
+        action="store_true",
+        help="explicitly replace an existing token file",
+    )
+    fetch_command = subparsers.add_parser(
+        "fetch-google-snapshot",
+        help="fetch and privately store one full read-only Google snapshot",
+    )
+    fetch_command.add_argument(
+        "--online",
+        action="store_true",
+        help="allow Google Calendar read network use",
+    )
+    fetch_command.add_argument(
+        "--token-file",
+        "--token",
+        dest="token_file",
+        required=True,
+        help="absolute local authorized-user token path",
+    )
+    fetch_command.add_argument(
+        "--target-config",
+        required=True,
+        help="absolute local private target TOML path",
+    )
+    fetch_command.add_argument(
+        "--output",
+        required=True,
+        help="absolute local snapshot output path outside every Git worktree",
+    )
     return parser
 
 
@@ -145,6 +232,90 @@ def _diff_exit_code(diff: CalendarDiff) -> int:
     return EXIT_VALID
 
 
+def _require_online(args: argparse.Namespace) -> None:
+    if getattr(args, "online", False) is not True:
+        raise argparse.ArgumentError(None, "explicit --online is required")
+
+
+def _authorize_google_command(args: argparse.Namespace) -> int:
+    _require_online(args)
+    overwrite_text = "yes" if args.overwrite_token else "no"
+    sys.stdout.write(
+        "Google read-only authorization confirmation: "
+        "scope=calendar.events.owned.readonly; credentials-configured=yes; "
+        f"token-output-configured=yes; overwrite={overwrite_text}.\n"
+    )
+    authorize_google_readonly(
+        args.credentials_file,
+        args.token_file,
+        overwrite=args.overwrite_token,
+    )
+    sys.stdout.write("Google read-only authorization completed; token content was not displayed.\n")
+    return EXIT_VALID
+
+
+def _fetch_google_command(args: argparse.Namespace) -> int:
+    _require_online(args)
+    target = load_target_config(args.target_config)
+    target_fingerprint = verify_target_fingerprint(target)
+    validate_snapshot_output(args.output)
+    bindings = load_google_optional_bindings()
+    credentials = load_readonly_credentials(args.token_file, bindings=bindings)
+    client = build_read_only_calendar_client(
+        credentials,
+        build_service=bindings.build_service,
+    )
+
+    def refresh_credentials() -> None:
+        try:
+            credentials.refresh(bindings.request_class())
+            persist_authorized_user_credentials(credentials, args.token_file, overwrite=True)
+        except GoogleAuthError:
+            raise
+        except Exception as exc:
+            raise GoogleCredentialRefreshError(
+                "google_credential_refresh_failed",
+                "Google read-only credentials could not be refreshed",
+            ) from exc
+
+    def validate_metadata(
+        summary: str | None,
+        time_zone: str | None,
+        access_role: str | None,
+    ) -> None:
+        if not summary or not time_zone or access_role != "owner":
+            raise TargetIdentityError(
+                "target_metadata_invalid",
+                "calendar metadata does not match the configured target",
+            )
+        verify_target_metadata(
+            target,
+            TargetMetadataObservation(
+                summary=summary,
+                access_role="owner",
+                timezone=time_zone,
+            ),
+        )
+
+    fetched = fetch_google_event_pages(
+        client,
+        calendar_id=target.calendar_id,
+        target_fingerprint=target_fingerprint,
+        expected_target_fingerprint=target.expected_fingerprint,
+        refresh_credentials=refresh_credentials,
+        validate_metadata=validate_metadata,
+    )
+    snapshot = sanitize_fetched_pages(fetched, captured_at=datetime.now(UTC))
+    write_google_snapshot(snapshot, args.output)
+    target_reference = short_target_reference(target_fingerprint)
+    sys.stdout.write(
+        "Google snapshot stored privately: "
+        f"target={target_reference}; pages={snapshot.page_count}; "
+        f"events={snapshot.event_count}; retries={fetched.retry_count}.\n"
+    )
+    return EXIT_VALID
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the offline CLI and return a documented process exit code.
 
@@ -159,6 +330,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.print_help(sys.stdout)
             return EXIT_CLI_ERROR
         args = parser.parse_args(effective_argv)
+        if args.command == "authorize-google-readonly":
+            return _authorize_google_command(args)
+        if args.command == "fetch-google-snapshot":
+            return _fetch_google_command(args)
         profile = load_profile(args.profile, args.profiles_dir)
         inspection = inspect_source(args.source, profile)
         if args.command == "diff-snapshot":
@@ -199,6 +374,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     except GoogleSnapshotError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
+    except (GoogleAuthConfigError, TargetConfigError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_CLI_ERROR
+    except (TargetIdentityError, GoogleTargetError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_FATAL_GUARD
+    except GoogleOptionalDependencyError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_CLI_ERROR
+    except (GoogleAuthError, SafeGoogleError) as exc:
+        public_message = str(exc) if isinstance(exc, SafeGoogleError) else exc.public_message
+        sys.stderr.write(f"error: {public_message}\n")
+        return EXIT_GOOGLE_READ_ERROR
+    except SnapshotWriteError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
     except Exception:
         sys.stderr.write("error: internal failure; no source content was reported\n")
         return EXIT_INTERNAL_ERROR
@@ -208,6 +399,7 @@ __all__ = [
     "EXIT_CLI_ERROR",
     "EXIT_DIFFERENCES",
     "EXIT_FATAL_GUARD",
+    "EXIT_GOOGLE_READ_ERROR",
     "EXIT_INTERNAL_ERROR",
     "EXIT_INVALID_SNAPSHOT",
     "EXIT_INVALID_SOURCE",

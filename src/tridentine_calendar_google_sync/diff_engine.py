@@ -72,14 +72,22 @@ def _event_differences(
     pairs: tuple[tuple[str, str | date | None, str | date | None], ...] = (
         ("summary", google.summary, source.summary),
         ("description", google.description, source.description),
-        ("start_date", google.start.date, source.start_date),
-        ("end_date", google.end.date, source.effective_end_date),
+        ("start_date", _google_start_date(google), source.start_date),
+        ("end_date", _google_end_date(google), source.effective_end_date),
     )
     return tuple(
         _field_difference(field, current, desired)
         for field, current, desired in pairs
         if current != desired
     )
+
+
+def _google_start_date(event: CanonicalGoogleEvent) -> date | None:
+    return event.start.date if event.start is not None else None
+
+
+def _google_end_date(event: CanonicalGoogleEvent) -> date | None:
+    return event.end.date if event.end is not None else None
 
 
 def _compatibility_reasons(event: CanonicalGoogleEvent) -> tuple[str, ...]:
@@ -94,7 +102,15 @@ def _compatibility_reasons(event: CanonicalGoogleEvent) -> tuple[str, ...]:
         reasons.append("recurring_instance")
     if event.original_start_time is not None:
         reasons.append("original_start_time_present")
-    if not event.all_day or event.start.date is None or event.end.date is None:
+    if event.end_time_unspecified:
+        reasons.append("end_time_unspecified")
+    if event.locked:
+        reasons.append("locked_event")
+    if event.private_copy:
+        reasons.append("private_copy_event")
+    if event.start is None or event.end is None:
+        reasons.append("missing_event_time")
+    elif not event.all_day or event.start.date is None or event.end.date is None:
         reasons.append("not_all_day")
     elif event.end.date <= event.start.date:
         reasons.append("invalid_all_day_end")
@@ -384,7 +400,11 @@ def diff_source_to_snapshot(
                 if ical_uid in source_groups
                 else None,
                 google_date=min(
-                    (event.start.date for event in group if event.start.date is not None),
+                    (
+                        start_date
+                        for event in group
+                        if (start_date := _google_start_date(event)) is not None
+                    ),
                     default=None,
                 ),
                 reason_codes=("duplicate_google_icaluid",),
@@ -426,7 +446,7 @@ def diff_source_to_snapshot(
                     source_ref=source_event.safe_uid_reference,
                     google_refs=(google_event.safe_event_reference,),
                     source_date=source_event.start_date,
-                    google_date=google_event.start.date,
+                    google_date=_google_start_date(google_event),
                     reason_codes=compatibility_reasons,
                     warnings=warnings,
                     fatal=True,
@@ -445,7 +465,7 @@ def diff_source_to_snapshot(
                 source_ref=source_event.safe_uid_reference,
                 google_refs=(google_event.safe_event_reference,),
                 source_date=source_event.start_date,
-                google_date=google_event.start.date,
+                google_date=_google_start_date(google_event),
                 differences=differences,
                 warnings=warnings,
             )
@@ -488,7 +508,7 @@ def diff_source_to_snapshot(
                 google_event_ids=(google_event.event_id,),
                 source_ref=source_ref,
                 google_refs=(google_ref,),
-                google_date=google_event.start.date,
+                google_date=_google_start_date(google_event),
                 reason_codes=reason_codes,
                 ownership_evidence=evidence,
                 warnings=_color_warnings(google_event),

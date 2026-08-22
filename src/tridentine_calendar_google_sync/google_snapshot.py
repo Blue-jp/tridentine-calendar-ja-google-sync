@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 from datetime import date, datetime
@@ -100,9 +101,10 @@ class _SnapshotEventInput(_SnapshotInputModel):
     ical_uid: str | None = Field(default=None, alias="iCalUID", min_length=1)
     summary: str | None = None
     description: str | None = None
-    start: _EventTimeInput
-    end: _EventTimeInput
-    all_day: bool = Field(alias="allDay")
+    start: _EventTimeInput | None = None
+    end: _EventTimeInput | None = None
+    all_day: bool | None = Field(default=None, alias="allDay")
+    end_time_unspecified: bool = Field(default=False, alias="endTimeUnspecified")
     status: str = Field(min_length=1)
     event_type: str = Field(alias="eventType", min_length=1)
     etag: str | None = Field(default=None, min_length=1)
@@ -125,6 +127,8 @@ class _SnapshotEventInput(_SnapshotInputModel):
         alias="eventLabelId",
         min_length=1,
     )
+    locked: bool = False
+    private_copy: bool = Field(default=False, alias="privateCopy")
     reminders: _RemindersInput | None = None
     location: str | None = None
     extended_properties: _ExtendedPropertiesInput | None = Field(
@@ -137,6 +141,17 @@ class _SnapshotEventInput(_SnapshotInputModel):
     creator: _ActorInput | None = None
     organizer: _ActorInput | None = None
 
+    @model_validator(mode="after")
+    def cancelled_tombstone_or_complete_time(self) -> Self:
+        if self.start is None or self.end is None:
+            if self.status != "cancelled" or self.start is not None or self.end is not None:
+                raise ValueError("only cancelled tombstones may omit event boundaries")
+            if self.all_day is not None:
+                raise ValueError("cancelled tombstone has no all-day flag")
+        elif self.all_day is None:
+            raise ValueError("event boundaries require allDay")
+        return self
+
 
 class _SnapshotDocumentInput(_SnapshotInputModel):
     schema_version: str = Field(pattern=r"^1\.[0-9]+$")
@@ -146,6 +161,17 @@ class _SnapshotDocumentInput(_SnapshotInputModel):
     captured_at: str | None = Field(default=None, min_length=1)
     event_count: int = Field(ge=0)
     events: list[_SnapshotEventInput]
+    page_count: int = Field(default=1, ge=1)
+    collection_metadata_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    cancelled_event_count: int = Field(default=0, ge=0)
+    unknown_event_type_count: int = Field(default=0, ge=0)
+    dropped_private_extended_property_count: int = Field(default=0, ge=0)
+    dropped_shared_extended_property_count: int = Field(default=0, ge=0)
+    forbidden_field_count: int = Field(default=0, ge=0)
+    content_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def declared_count_matches_events(self) -> Self:
@@ -208,9 +234,10 @@ def _canonical_event(value: _SnapshotEventInput) -> CanonicalGoogleEvent:
         safe_ical_uid_reference=(safe_uid_ref(value.ical_uid) if value.ical_uid else None),
         summary=value.summary,
         description=value.description,
-        start=_canonical_time(value.start),
-        end=_canonical_time(value.end),
+        start=_canonical_time(value.start) if value.start is not None else None,
+        end=_canonical_time(value.end) if value.end is not None else None,
         all_day=value.all_day,
+        end_time_unspecified=value.end_time_unspecified,
         status=value.status,
         event_type=value.event_type,
         etag=value.etag,
@@ -226,6 +253,8 @@ def _canonical_event(value: _SnapshotEventInput) -> CanonicalGoogleEvent:
         visibility=value.visibility,
         color_id=value.color_id,
         event_label_id=value.event_label_id,
+        locked=value.locked,
+        private_copy=value.private_copy,
         reminders=reminders,
         location=value.location,
         extended_properties=extended,
@@ -265,6 +294,7 @@ def _event_hash_payload(event: CanonicalGoogleEvent) -> dict[str, object]:
         "start": _time_payload(event.start),
         "end": _time_payload(event.end),
         "allDay": event.all_day,
+        "endTimeUnspecified": event.end_time_unspecified,
         "status": event.status,
         "eventType": event.event_type,
         "etag": event.etag,
@@ -276,6 +306,8 @@ def _event_hash_payload(event: CanonicalGoogleEvent) -> dict[str, object]:
         "visibility": event.visibility,
         "colorId": event.color_id,
         "eventLabelId": event.event_label_id,
+        "locked": event.locked,
+        "privateCopy": event.private_copy,
         "reminders": (
             {
                 "useDefault": reminders.use_default,
@@ -308,6 +340,14 @@ def _snapshot_content_hash(
         "target_fingerprint": document.target_fingerprint,
         "complete": document.complete,
         "event_count": document.event_count,
+        "collection_metadata_hash": document.collection_metadata_hash,
+        "cancelled_event_count": document.cancelled_event_count,
+        "unknown_event_type_count": document.unknown_event_type_count,
+        "dropped_private_extended_property_count": (
+            document.dropped_private_extended_property_count
+        ),
+        "dropped_shared_extended_property_count": (document.dropped_shared_extended_property_count),
+        "forbidden_field_count": document.forbidden_field_count,
         "events": [_event_hash_payload(event) for event in events],
     }
     encoded = json.dumps(
@@ -338,6 +378,15 @@ def parse_google_snapshot_bytes(raw_bytes: bytes) -> GoogleSnapshot:
                 "snapshot contains duplicate Google event identifiers",
             )
         captured_at = _parse_datetime(document.captured_at) if document.captured_at else None
+        calculated_content_hash = _snapshot_content_hash(document, events)
+        if document.content_hash is not None and not hmac.compare_digest(
+            document.content_hash,
+            calculated_content_hash,
+        ):
+            raise GoogleSnapshotParseError(
+                "google_snapshot_content_hash_mismatch",
+                "Google snapshot content hash does not match its sanitized content",
+            )
         return GoogleSnapshot(
             schema_version=document.schema_version,
             snapshot_format=document.snapshot_format,
@@ -346,7 +395,18 @@ def parse_google_snapshot_bytes(raw_bytes: bytes) -> GoogleSnapshot:
             captured_at=captured_at,
             event_count=document.event_count,
             events=events,
-            content_hash=_snapshot_content_hash(document, events),
+            content_hash=calculated_content_hash,
+            page_count=document.page_count,
+            collection_metadata_hash=document.collection_metadata_hash,
+            cancelled_event_count=document.cancelled_event_count,
+            unknown_event_type_count=document.unknown_event_type_count,
+            dropped_private_extended_property_count=(
+                document.dropped_private_extended_property_count
+            ),
+            dropped_shared_extended_property_count=(
+                document.dropped_shared_extended_property_count
+            ),
+            forbidden_field_count=document.forbidden_field_count,
         )
     except GoogleSnapshotError:
         raise
