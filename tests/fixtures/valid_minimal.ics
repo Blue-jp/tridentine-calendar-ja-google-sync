@@ -1,0 +1,11 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example Test Calendar//EN
+BEGIN:VEVENT
+UID:fixture-valid-001@example.invalid
+DTSTAMP:20260101T000000Z
+DTSTART;VALUE=DATE:20260115
+SUMMARY:Synthetic all-day observance
+DESCRIPTION:Safe fixture description
+END:VEVENT
+END:VCALENDAR
