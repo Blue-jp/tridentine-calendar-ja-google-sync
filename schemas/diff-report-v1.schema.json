@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/diff-report-v1.schema.json",
+  "title": "Offline source-to-Google-snapshot diff report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tool_version",
+    "mode",
+    "source",
+    "target",
+    "counts",
+    "events",
+    "differences",
+    "warnings",
+    "fatal_errors",
+    "proposed_operations",
+    "fatal",
+    "content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "mode": { "const": "offline" },
+    "source": { "$ref": "#/$defs/source" },
+    "target": { "$ref": "#/$defs/target" },
+    "counts": { "$ref": "#/$defs/counts" },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/eventDiff" }
+    },
+    "differences": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/eventDiff" }
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/warning" }
+    },
+    "fatal_errors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/eventDiff" }
+    },
+    "proposed_operations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/proposedOperation" }
+    },
+    "fatal": { "type": "boolean" },
+    "content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sourceRef": { "type": ["string", "null"], "pattern": "^U-[0-9a-f]{12}$" },
+    "googleRef": { "type": "string", "pattern": "^G-[0-9a-f]{12}$" },
+    "classification": {
+      "enum": [
+        "unchanged",
+        "add",
+        "update",
+        "delete_candidate",
+        "duplicate_source_uid",
+        "duplicate_google_icaluid",
+        "ambiguous",
+        "unmanaged_google_event",
+        "invalid_source",
+        "fatal_guard"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "sha256", "sha256_match", "event_count"],
+      "properties": {
+        "profile_id": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "sha256_match": { "type": "boolean" },
+        "event_count": { "$ref": "#/$defs/count" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "snapshot_sha256", "event_count", "complete"],
+      "properties": {
+        "fingerprint": { "$ref": "#/$defs/sha256" },
+        "snapshot_sha256": { "$ref": "#/$defs/sha256" },
+        "event_count": { "$ref": "#/$defs/count" },
+        "complete": { "type": "boolean" }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fatal_guard",
+        "invalid_source",
+        "duplicate_source_uid",
+        "duplicate_google_icaluid",
+        "ambiguous",
+        "add",
+        "update",
+        "delete_candidate",
+        "unmanaged_google_event",
+        "unchanged"
+      ],
+      "properties": {
+        "unchanged": { "$ref": "#/$defs/count" },
+        "add": { "$ref": "#/$defs/count" },
+        "update": { "$ref": "#/$defs/count" },
+        "delete_candidate": { "$ref": "#/$defs/count" },
+        "duplicate_source_uid": { "$ref": "#/$defs/count" },
+        "duplicate_google_icaluid": { "$ref": "#/$defs/count" },
+        "ambiguous": { "$ref": "#/$defs/count" },
+        "unmanaged_google_event": { "$ref": "#/$defs/count" },
+        "invalid_source": { "$ref": "#/$defs/count" },
+        "fatal_guard": { "$ref": "#/$defs/count" }
+      }
+    },
+    "eventDiff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "source_ref",
+        "google_refs",
+        "source_date",
+        "google_date",
+        "differences",
+        "reason_codes",
+        "ownership_evidence",
+        "warnings",
+        "fatal"
+      ],
+      "properties": {
+        "classification": { "$ref": "#/$defs/classification" },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "google_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/googleRef" },
+          "uniqueItems": true
+        },
+        "source_date": { "type": ["string", "null"], "format": "date" },
+        "google_date": { "type": ["string", "null"], "format": "date" },
+        "differences": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fieldDifference" }
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+        },
+        "ownership_evidence": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "trusted_source_uid",
+              "trusted_google_event_id",
+              "private_extended_property"
+            ]
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+        },
+        "fatal": { "type": "boolean" }
+      }
+    },
+    "fieldDifference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "current_present",
+        "desired_present",
+        "current_hash",
+        "desired_hash",
+        "current_length",
+        "desired_length"
+      ],
+      "properties": {
+        "field": { "enum": ["summary", "description", "start_date", "end_date"] },
+        "current_present": { "type": "boolean" },
+        "desired_present": { "type": "boolean" },
+        "current_hash": { "$ref": "#/$defs/sha256" },
+        "desired_hash": { "$ref": "#/$defs/sha256" },
+        "current_length": { "$ref": "#/$defs/count" },
+        "desired_length": { "$ref": "#/$defs/count" }
+      }
+    },
+    "warning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "source_ref", "google_ref"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "message": { "type": "string", "minLength": 1 },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "google_ref": { "type": ["string", "null"], "pattern": "^G-[0-9a-f]{12}$" }
+      }
+    },
+    "proposedOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "source_ref", "google_refs"],
+      "properties": {
+        "classification": { "enum": ["add", "update", "delete_candidate"] },
+        "source_ref": { "$ref": "#/$defs/sourceRef" },
+        "google_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/googleRef" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "count": { "type": "integer", "minimum": 0 }
+  }
+}

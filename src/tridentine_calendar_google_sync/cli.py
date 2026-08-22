@@ -8,13 +8,25 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Never
 
+from tridentine_calendar_google_sync.diff_engine import diff_source_to_snapshot
+from tridentine_calendar_google_sync.diff_models import CalendarDiff, ManagedScope
+from tridentine_calendar_google_sync.diff_report import (
+    render_diff_json_report,
+    render_diff_text_report,
+)
+from tridentine_calendar_google_sync.google_snapshot import (
+    GoogleSnapshotError,
+    load_google_snapshot,
+)
 from tridentine_calendar_google_sync.profiles import ProfileError, load_profile
 from tridentine_calendar_google_sync.source_ics import SourceInputError, inspect_source
 from tridentine_calendar_google_sync.source_report import render_json_report, render_text_report
 
 EXIT_VALID = 0
+EXIT_DIFFERENCES = 1
 EXIT_CLI_ERROR = 2
 EXIT_INVALID_SOURCE = 3
+EXIT_INVALID_SNAPSHOT = 4
 EXIT_FATAL_GUARD = 5
 EXIT_INTERNAL_ERROR = 8
 
@@ -27,11 +39,11 @@ class SafeArgumentParser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the Phase 1 offline-only argument parser."""
+    """Build the offline-only source and snapshot argument parser."""
 
     parser = SafeArgumentParser(
         prog="tridentine-calendar-google-sync",
-        description="Offline validation of an Accepted HTML ICS local file.",
+        description="Offline validation and comparison of sanitized calendar files.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command_name, help_text in (
@@ -57,6 +69,35 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="retain the default content-redacted report policy",
         )
+    diff_command = subparsers.add_parser(
+        "diff-snapshot",
+        help="compare a local Accepted HTML ICS with a sanitized Google snapshot",
+    )
+    diff_command.add_argument("--source", required=True, help="local ICS path")
+    diff_command.add_argument("--profile", required=True, help="Accepted source profile ID")
+    diff_command.add_argument(
+        "--profiles-dir",
+        help="optional local directory containing source profiles",
+    )
+    diff_command.add_argument(
+        "--google-snapshot",
+        "--snapshot",
+        dest="google_snapshot",
+        required=True,
+        help="local sanitized Google snapshot JSON path",
+    )
+    diff_command.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    diff_command.add_argument("--output", help="optional local report output path")
+    diff_command.add_argument(
+        "--redact-content",
+        action="store_true",
+        help="retain the mandatory content-redacted report policy",
+    )
     return parser
 
 
@@ -94,6 +135,16 @@ def _inspection_exit_code(fatal_codes: set[str]) -> int:
     return EXIT_FATAL_GUARD
 
 
+def _diff_exit_code(diff: CalendarDiff) -> int:
+    if diff.counts.invalid_source:
+        return EXIT_INVALID_SOURCE
+    if diff.fatal:
+        return EXIT_FATAL_GUARD
+    if diff.has_changes:
+        return EXIT_DIFFERENCES
+    return EXIT_VALID
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the offline CLI and return a documented process exit code.
 
@@ -110,19 +161,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(effective_argv)
         profile = load_profile(args.profile, args.profiles_dir)
         inspection = inspect_source(args.source, profile)
-        rendered = (
-            render_json_report(inspection, profile)
-            if args.report_format == "json"
-            else render_text_report(inspection, profile)
-        )
+        if args.command == "diff-snapshot":
+            snapshot = load_google_snapshot(args.google_snapshot)
+            diff = diff_source_to_snapshot(
+                inspection,
+                snapshot,
+                ManagedScope(),
+            )
+            rendered = (
+                render_diff_json_report(diff)
+                if args.report_format == "json"
+                else render_diff_text_report(diff)
+            )
+            exit_code = _diff_exit_code(diff)
+        else:
+            rendered = (
+                render_json_report(inspection, profile)
+                if args.report_format == "json"
+                else render_text_report(inspection, profile)
+            )
+            fatal_codes = {
+                finding.code for finding in inspection.findings if finding.severity == "fatal"
+            }
+            exit_code = _inspection_exit_code(fatal_codes)
         if args.output:
             _write_report(args.output, rendered)
         else:
             sys.stdout.write(rendered)
-        fatal_codes = {
-            finding.code for finding in inspection.findings if finding.severity == "fatal"
-        }
-        return _inspection_exit_code(fatal_codes)
+        return exit_code
     except argparse.ArgumentError as exc:
         parser.print_usage(sys.stderr)
         sys.stderr.write(f"error: {exc}\n")
@@ -130,6 +196,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ProfileError, SourceInputError) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_CLI_ERROR
+    except GoogleSnapshotError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
     except Exception:
         sys.stderr.write("error: internal failure; no source content was reported\n")
         return EXIT_INTERNAL_ERROR
@@ -137,8 +206,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "EXIT_CLI_ERROR",
+    "EXIT_DIFFERENCES",
     "EXIT_FATAL_GUARD",
     "EXIT_INTERNAL_ERROR",
+    "EXIT_INVALID_SNAPSHOT",
     "EXIT_INVALID_SOURCE",
     "EXIT_VALID",
     "build_parser",

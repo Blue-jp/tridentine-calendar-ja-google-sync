@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/google-snapshot-v1.schema.json",
+  "title": "Sanitized local Google Calendar snapshot",
+  "description": "Strict offline boundary format. It is not a raw Google Calendar API response.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "snapshot_format",
+    "target_fingerprint",
+    "complete",
+    "event_count",
+    "events"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "snapshot_format": { "const": "sanitized-google-calendar-v1" },
+    "target_fingerprint": { "$ref": "#/$defs/sha256" },
+    "complete": { "type": "boolean" },
+    "captured_at": { "type": ["string", "null"], "format": "date-time" },
+    "event_count": { "$ref": "#/$defs/count" },
+    "events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/event" }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "eventTime": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["date"],
+          "properties": {
+            "date": { "type": "string", "format": "date" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["dateTime"],
+          "properties": {
+            "dateTime": { "type": "string", "format": "date-time" }
+          }
+        }
+      ]
+    },
+    "reminderOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "minutes"],
+      "properties": {
+        "method": { "type": "string", "minLength": 1 },
+        "minutes": { "$ref": "#/$defs/count" }
+      }
+    },
+    "reminders": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["useDefault"],
+      "properties": {
+        "useDefault": { "type": "boolean" },
+        "overrides": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/reminderOverride" }
+        }
+      }
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "propertyNames": { "minLength": 1 }
+    },
+    "extendedProperties": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "private": { "$ref": "#/$defs/stringMap" },
+        "shared": { "$ref": "#/$defs/stringMap" }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["self"],
+      "properties": {
+        "self": { "type": "boolean" }
+      }
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start", "end", "allDay", "status", "eventType"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "iCalUID": { "type": ["string", "null"], "minLength": 1 },
+        "summary": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] },
+        "start": { "$ref": "#/$defs/eventTime" },
+        "end": { "$ref": "#/$defs/eventTime" },
+        "allDay": { "type": "boolean" },
+        "status": { "type": "string", "minLength": 1 },
+        "eventType": { "type": "string", "minLength": 1 },
+        "etag": { "type": ["string", "null"], "minLength": 1 },
+        "sequence": { "type": ["integer", "null"], "minimum": 0 },
+        "recurrence": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "recurringEventId": { "type": ["string", "null"], "minLength": 1 },
+        "originalStartTime": {
+          "oneOf": [
+            { "$ref": "#/$defs/eventTime" },
+            { "type": "null" }
+          ]
+        },
+        "transparency": { "type": ["string", "null"], "minLength": 1 },
+        "visibility": { "type": ["string", "null"], "minLength": 1 },
+        "colorId": { "type": ["string", "null"], "minLength": 1 },
+        "eventLabelId": { "type": ["string", "null"], "minLength": 1 },
+        "reminders": {
+          "oneOf": [
+            { "$ref": "#/$defs/reminders" },
+            { "type": "null" }
+          ]
+        },
+        "location": { "type": ["string", "null"] },
+        "extendedProperties": {
+          "oneOf": [
+            { "$ref": "#/$defs/extendedProperties" },
+            { "type": "null" }
+          ]
+        },
+        "created": { "type": ["string", "null"], "format": "date-time" },
+        "updated": { "type": ["string", "null"], "format": "date-time" },
+        "htmlLinkPresent": { "type": "boolean" },
+        "creator": {
+          "oneOf": [
+            { "$ref": "#/$defs/actor" },
+            { "type": "null" }
+          ]
+        },
+        "organizer": {
+          "oneOf": [
+            { "$ref": "#/$defs/actor" },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -60,7 +60,7 @@ packages = ["src/tridentine_calendar_google_sync"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "profiles/accepted-20260814.toml" = "tridentine_calendar_google_sync/_profiles/accepted-20260814.toml"
-"schemas/source-inspection-v1.schema.json" = "tridentine_calendar_google_sync/_schemas/source-inspection-v1.schema.json"
+"schemas" = "tridentine_calendar_google_sync/_schemas"
 
 [tool.pytest.ini_options]
 addopts = [

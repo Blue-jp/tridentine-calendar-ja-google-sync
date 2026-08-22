@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "snapshot_format": "sanitized-google-calendar-v1",
+  "target_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_count": 2,
+  "complete": true,
+  "events": [
+    {
+      "id": "evtfixture001",
+      "iCalUID": "fixture-valid-001@example.invalid",
+      "summary": "Synthetic all-day observance",
+      "description": "Safe fixture description",
+      "start": {"date": "2026-01-15"},
+      "end": {"date": "2026-01-16"},
+      "allDay": true,
+      "status": "confirmed",
+      "eventType": "default",
+      "etag": "fixture-etag-001",
+      "updated": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "evtfixturemanaged001",
+      "iCalUID": "fixture-managed-001@example.invalid",
+      "summary": "Synthetic managed orphan",
+      "description": "Safe managed fixture description",
+      "start": {"date": "2026-02-20"},
+      "end": {"date": "2026-02-21"},
+      "allDay": true,
+      "status": "confirmed",
+      "eventType": "default",
+      "etag": "fixture-etag-managed-001",
+      "updated": "2026-01-01T00:00:00Z",
+      "extendedProperties": {
+        "private": {
+          "tridentine-calendar-managed": "true"
+        }
+      }
+    }
+  ]
+}
