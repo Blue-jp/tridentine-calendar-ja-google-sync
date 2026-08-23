@@ -97,7 +97,7 @@ def test_source_package_has_no_eager_network_google_or_oauth_imports() -> None:
 
         assert top_level.isdisjoint(FORBIDDEN_IMPORT_ROOTS)
         assert discovered.isdisjoint(FORBIDDEN_IMPORT_ROOTS - OPTIONAL_GOOGLE_IMPORT_ROOTS)
-        if source_file.name != "google_client.py":
+        if source_file.name not in {"google_client.py", "google_test_write_client.py"}:
             assert discovered.isdisjoint(OPTIONAL_GOOGLE_IMPORT_ROOTS)
 
 
