@@ -95,6 +95,7 @@ class ApplySimulationResult(StrictFrozenModel):
     plan_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_integrity_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_reference: str = Field(pattern=r"^T-[0-9a-f]{12}$")
+    target_label: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     total_operation_count: int = Field(ge=0)
     add_count: int = Field(ge=0)
     update_count: int = Field(ge=0)
@@ -167,7 +168,7 @@ def _journal_status(decision: RetryDecision) -> JournalEntryStatus:
         RetryDecision.RETRY: JournalEntryStatus.RETRYING,
         RetryDecision.STOP_FAILURE: JournalEntryStatus.FAILED,
         RetryDecision.STOP_UNCERTAIN: JournalEntryStatus.UNCERTAIN,
-        RetryDecision.STOP_CONFLICT: JournalEntryStatus.ETAG_CONFLICT,
+        RetryDecision.STOP_CONFLICT: JournalEntryStatus.FAILED,
     }[decision]
 
 
@@ -188,6 +189,7 @@ def _result_hash_data(result: ApplySimulationResult) -> dict[str, object]:
         "plan_content_hash": result.plan_content_hash,
         "baseline_integrity_hash": result.baseline_integrity_hash,
         "target_reference": result.target_reference,
+        "target_label": result.target_label,
         "total_operation_count": result.total_operation_count,
         "add_count": result.add_count,
         "update_count": result.update_count,
@@ -252,11 +254,15 @@ def verify_apply_simulation_result(result: ApplySimulationResult) -> None:
         for status in JournalEntryStatus
     }
     expected_failed = status_counts[JournalEntryStatus.FAILED]
+    expected_etag_conflicts = sum(
+        item.status is JournalEntryStatus.FAILED and item.outcome_code == "etag_conflict"
+        for item in result.operation_results
+    )
     if (
         result.succeeded_count != status_counts[JournalEntryStatus.SUCCEEDED]
         or result.failed_count != expected_failed
         or result.uncertain_count != status_counts[JournalEntryStatus.UNCERTAIN]
-        or result.etag_conflict_count != status_counts[JournalEntryStatus.ETAG_CONFLICT]
+        or result.etag_conflict_count != expected_etag_conflicts
         or result.skipped_count != status_counts[JournalEntryStatus.SKIPPED]
         or result.attempted_operation_count != result.total_operation_count - result.skipped_count
         or result.retry_count != sum(item.retry_count for item in result.operation_results)
@@ -293,7 +299,7 @@ def verify_apply_simulation_result(result: ApplySimulationResult) -> None:
         ApplySimulationState.ETAG_CONFLICT: (
             JournalState.ETAG_CONFLICT,
             ApplyBundleState.SIMULATION_FAILED,
-            JournalEntryStatus.ETAG_CONFLICT,
+            JournalEntryStatus.FAILED,
         ),
         ApplySimulationState.BLOCKED: (
             JournalState.BLOCKED,
@@ -320,6 +326,12 @@ def verify_apply_simulation_result(result: ApplySimulationResult) -> None:
             "simulation_terminal_result_mismatch",
             "fake simulation terminal result verification failed",
         )
+    state_has_etag_conflict = result.state is ApplySimulationState.ETAG_CONFLICT
+    if state_has_etag_conflict is not (result.etag_conflict_count == 1):
+        raise ApplySimulationError(
+            "simulation_etag_conflict_count_mismatch",
+            "fake simulation ETag conflict verification failed",
+        )
     terminal_seen = False
     journal_cursor = 0
     for operation_result in result.operation_results:
@@ -337,7 +349,6 @@ def verify_apply_simulation_result(result: ApplySimulationResult) -> None:
             JournalEntryStatus.SUCCEEDED,
             JournalEntryStatus.FAILED,
             JournalEntryStatus.UNCERTAIN,
-            JournalEntryStatus.ETAG_CONFLICT,
             JournalEntryStatus.SKIPPED,
         }:
             raise ApplySimulationError(
@@ -568,7 +579,8 @@ def run_apply_simulation(
     failed_count = sum(item.status is JournalEntryStatus.FAILED for item in operation_results)
     uncertain_count = sum(item.status is JournalEntryStatus.UNCERTAIN for item in operation_results)
     etag_conflict_count = sum(
-        item.status is JournalEntryStatus.ETAG_CONFLICT for item in operation_results
+        item.status is JournalEntryStatus.FAILED and item.outcome_code == "etag_conflict"
+        for item in operation_results
     )
     provisional = ApplySimulationResult(
         state=terminal_state,
@@ -581,6 +593,7 @@ def run_apply_simulation(
         plan_content_hash=bundle.plan_content_hash,
         baseline_integrity_hash=bundle.baseline_integrity_hash,
         target_reference=bundle.target_reference,
+        target_label=bundle.target_label,
         total_operation_count=len(bundle.operations),
         add_count=bundle.add_count,
         update_count=bundle.update_count,

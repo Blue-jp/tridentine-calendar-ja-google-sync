@@ -55,6 +55,7 @@ def build_update_apply_bundle(
         baseline,
         plan,
         ApplyEnvironment.TEST,
+        target_label="test",
     )
     return SyntheticApplyBundle(profile, source, snapshot, baseline, plan, bundle)
 
@@ -83,6 +84,7 @@ def build_add_apply_bundle(
         baseline,
         plan,
         ApplyEnvironment.TEST,
+        target_label="test",
     )
     return SyntheticApplyBundle(profile, source, snapshot, baseline, plan, bundle)
 
@@ -115,6 +117,40 @@ def build_multi_apply_bundle(
         baseline,
         plan,
         ApplyEnvironment.TEST,
+        target_label="test",
+    )
+    return SyntheticApplyBundle(profile, source, snapshot, baseline, plan, bundle)
+
+
+def build_two_update_apply_bundle(
+    tmp_path: Path,
+    profile_factory: Any,
+) -> SyntheticApplyBundle:
+    profile, source, _snapshot, document, baseline = _large_bundle(
+        tmp_path,
+        profile_factory,
+        count=202,
+    )
+    for index, event in enumerate(document["events"]):
+        event["etag"] = f"fixture-etag-two-update-{index:04d}"
+    document["events"][0]["summary"] = "Changed first synthetic update summary"
+    document["events"][1]["summary"] = "Changed second synthetic update summary"
+    snapshot = parse_google_snapshot_bytes(json.dumps(document, ensure_ascii=False).encode("utf-8"))
+    plan = build_sync_plan(
+        profile,
+        source,
+        snapshot,
+        baseline,
+        thresholds=PlanThresholds(max_update=2),
+    )
+    bundle = build_apply_bundle(
+        profile,
+        source,
+        snapshot,
+        baseline,
+        plan,
+        ApplyEnvironment.TEST,
+        target_label="test",
     )
     return SyntheticApplyBundle(profile, source, snapshot, baseline, plan, bundle)
 

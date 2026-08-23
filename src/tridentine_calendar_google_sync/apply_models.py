@@ -173,6 +173,7 @@ class ApplyBundle(StrictFrozenModel):
         exclude=True,
     )
     target_reference: str = Field(pattern=r"^T-[0-9a-f]{12}$")
+    target_label: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     source_profile: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     accepted_tag: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
     accepted_commit: str = Field(pattern=r"^[0-9a-f]{40}$")

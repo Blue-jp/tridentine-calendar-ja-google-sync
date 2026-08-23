@@ -148,6 +148,7 @@ def private_bundle_data(bundle: ApplyBundle) -> dict[str, object]:
         "environment": bundle.environment.value,
         "target_fingerprint": bundle.target_fingerprint,
         "target_reference": bundle.target_reference,
+        "target_label": bundle.target_label,
         "source_profile": bundle.source_profile,
         "accepted_tag": bundle.accepted_tag,
         "accepted_commit": bundle.accepted_commit,
@@ -594,6 +595,7 @@ def _bundle_with_hash(
     environment: ApplyEnvironment,
     target_fingerprint: str,
     target_reference: str,
+    target_label: str,
     profile: AcceptedSourceProfile,
     source: SourceCalendarInspection,
     snapshot: GoogleSnapshot,
@@ -615,6 +617,7 @@ def _bundle_with_hash(
         environment=environment,
         target_fingerprint=target_fingerprint,
         target_reference=target_reference,
+        target_label=target_label,
         source_profile=profile.profile_id,
         accepted_tag=profile.accepted_tag,
         accepted_commit=profile.accepted_commit,
@@ -684,11 +687,17 @@ def build_apply_bundle(
     trusted: TrustedBaseline,
     plan: SyncPlan,
     environment: ApplyEnvironment,
+    target_label: str,
 ) -> ApplyBundle:
     """Build an integrity-pinned offline add/update bundle without executing it."""
 
     if not isinstance(environment, ApplyEnvironment):
         raise ApplyInputError("explicit_environment_required", "apply environment is required")
+    reference = validate_environment_target(
+        environment,
+        snapshot.target_fingerprint,
+        target_label,
+    )
     source_hash, snapshot_hash, baseline_hash, plan_hash = _validate_inputs(
         profile,
         source,
@@ -697,13 +706,6 @@ def build_apply_bundle(
         plan,
     )
     _validate_plan_for_apply(plan)
-    reference = validate_environment_target(environment, snapshot.target_fingerprint)
-    operation_count = len(plan.proposed_actions)
-    if environment is ApplyEnvironment.PRODUCTION and operation_count != 0:
-        raise ApplyGuardError(
-            "production_nonzero_apply_forbidden",
-            "Production apply bundle must contain zero operations",
-        )
     source_by_ref, _source_by_uid = _source_maps(source)
     google_by_ref = _google_map(snapshot)
     operations = tuple(
@@ -716,6 +718,7 @@ def build_apply_bundle(
         environment=environment,
         target_fingerprint=snapshot.target_fingerprint,
         target_reference=reference,
+        target_label=target_label,
         profile=profile,
         source=source,
         snapshot=snapshot,

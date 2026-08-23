@@ -124,6 +124,14 @@ EXIT_FATAL_GUARD = 5
 EXIT_GOOGLE_READ_ERROR = 6
 EXIT_INTERNAL_ERROR = 8
 
+_APPLY_SAFETY_HELP = (
+    "Offline synthetic fake safety only.\n"
+    "No live Google Calendar API.\n"
+    "Does not write to Google Calendar.\n"
+    "Production targets are refused.\n"
+    "Delete execution is not implemented."
+)
+
 
 class SafeArgumentParser(argparse.ArgumentParser):
     """Argument parser that raises a safe exception instead of exiting early."""
@@ -355,6 +363,8 @@ def build_parser() -> argparse.ArgumentParser:
     bundle_command = subparsers.add_parser(
         "build-apply-bundle",
         help="build a private non-executable apply bundle from canonical local inputs",
+        description=f"Build a private non-executable apply bundle. {_APPLY_SAFETY_HELP}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     bundle_command.add_argument("--source", required=True, help="local ICS path")
     bundle_command.add_argument("--profile", required=True, help="Accepted source profile ID")
@@ -384,6 +394,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit apply target environment; there is no default",
     )
     bundle_command.add_argument(
+        "--target-label",
+        required=True,
+        help="explicit safe synthetic target label; Production is refused",
+    )
+    bundle_command.add_argument(
         "--output",
         required=True,
         help="absolute private apply bundle output path",
@@ -391,6 +406,8 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_bundle_command = subparsers.add_parser(
         "inspect-apply-bundle",
         help="inspect a private apply bundle through a redacted public report",
+        description=f"Inspect a redacted private apply bundle. {_APPLY_SAFETY_HELP}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     inspect_bundle_command.add_argument(
         "--bundle",
@@ -410,6 +427,8 @@ def build_parser() -> argparse.ArgumentParser:
     simulate_command = subparsers.add_parser(
         "simulate-apply",
         help="approve and run one test-only bundle against the offline fake transport",
+        description=f"Run a fake in-memory simulation. {_APPLY_SAFETY_HELP}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     simulate_command.add_argument(
         "--bundle",
@@ -445,6 +464,8 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_journal_command = subparsers.add_parser(
         "inspect-operation-journal",
         help="inspect a private journal through a redacted public report",
+        description=f"Inspect a redacted fake operation journal. {_APPLY_SAFETY_HELP}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     inspect_journal_command.add_argument(
         "--journal",
@@ -705,7 +726,8 @@ def _build_apply_bundle_command(args: argparse.Namespace) -> int:
         snapshot,
         baseline,
         plan,
-        environment,
+        environment=environment,
+        target_label=args.target_label,
     )
     write_apply_bundle(bundle, args.output)
     report = build_apply_bundle_json_report(bundle)

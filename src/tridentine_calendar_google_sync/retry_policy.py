@@ -45,7 +45,7 @@ class RetryDecision(StrEnum):
 class ApplyRetryPolicy(StrictFrozenModel):
     """Bounded abstract retry units; this model never sleeps."""
 
-    max_attempts: int = Field(default=3, ge=1, le=10)
+    max_attempts: int = Field(default=5, ge=1, le=10)
     base_delay_units: int = Field(default=1, ge=1, le=1024)
     maximum_delay_units: int = Field(default=16, ge=1, le=65536)
     maximum_jitter_units: int = Field(default=1, ge=0, le=1024)

@@ -49,6 +49,38 @@ def test_phase4b_command_names_and_help_are_registered(
         assert command in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "command",
+    (
+        "build-apply-bundle",
+        "inspect-apply-bundle",
+        "simulate-apply",
+        "inspect-operation-journal",
+    ),
+)
+def test_each_phase4b_help_states_all_offline_simulation_safety_boundaries(
+    command: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args([command, "--help"])
+
+    assert caught.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.casefold().split())
+    for required_concept in (
+        "offline",
+        "synthetic",
+        "fake",
+        "no live google calendar api",
+        "does not write to google calendar",
+        "production targets are refused",
+        "delete execution is not implemented",
+    ):
+        assert required_concept in help_text
+
+
 def test_cli_bundle_inspect_simulate_and_journal_round_trip_is_offline_and_redacted(
     tmp_path: Path,
     synthetic_profile_factory: object,
@@ -78,6 +110,8 @@ def test_cli_bundle_inspect_simulate_and_journal_round_trip_is_offline_and_redac
             "--plan",
             str(plan_path),
             "--environment",
+            "test",
+            "--target-label",
             "test",
             "--output",
             str(bundle_path),
@@ -169,6 +203,8 @@ def test_cli_simulation_wrong_confirmation_writes_no_journal_or_report(
             "--plan",
             str(plan_path),
             "--environment",
+            "test",
+            "--target-label",
             "test",
             "--output",
             str(bundle_path),

@@ -170,9 +170,9 @@ Phase 4Bのcommandは`build-apply-bundle`、`inspect-apply-bundle`、`simulate-a
 
 Apply bundleを作れるのは、trusted baselineに基づく`draft` zero-action plan、またはfatal guardのない`review_required` add/update planだけです。Delete countが1件でもあるplan、blocked plan、warning付きplan、stale planは拒否されます。
 
-Nonzero test bundleはexact challengeとcurrent plan hashの再照合後にだけ`approved_for_simulation`へ遷移できます。Simulationは`FakeMutationTransport`だけを受け付け、add/updateを順番にmemory内で処理します。Failure、uncertain outcome、ETag conflictでは即停止し、後続operationを`skipped`としてjournalへ記録します。Rollbackは提供しません。
+Nonzero test bundleはexact challengeとcurrent plan hashの再照合後にだけ`approved_for_simulation`へ遷移できます。Simulationは`FakeMutationTransport`だけを受け付け、add/updateを順番にmemory内で処理します。Retryはdefault最大5 attemptsで、実時間のsleepは行いません。Failure、uncertain outcome、ETag conflictでは即停止し、後続operationを`skipped`としてjournalへ記録します。Rollbackは提供しません。
 
-Productionではzero-operation bundleをmemory内で検証できるだけです。Production bundle file write、approval、simulation、journal作成は常に拒否されます。詳細は[Offline apply safety](docs/offline-apply-safety.md)を参照してください。
+Bundle作成時は明示的なtest target labelが必要です。Production environment、Production label、既知のProduction target safe referenceはoperation countが0でもbundle生成前に拒否されます。Production bundle file write、approval、simulation、journal作成も常に拒否されます。詳細は[Offline apply safety](docs/offline-apply-safety.md)を参照してください。
 
 ### Google read-only commands
 
@@ -216,14 +216,14 @@ Phase 4AのProduction candidate integrationは次の2環境変数が明示され
 
 このtestはcandidateをmemory内で検証するだけで、trust transitionやbaseline/plan file writeを行いません。
 
-Phase 4BのProduction zero-bundle integrationは次の4環境変数が明示された場合だけ実行されます。
+Phase 4BのProduction lock integrationは次の4環境変数が明示された場合だけ実行されます。
 
 - `TRIDENTINE_ACCEPTED_HTML_ICS_PATH`
 - `TRIDENTINE_PRODUCTION_GOOGLE_SNAPSHOT_PATH`
 - `TRIDENTINE_PRODUCTION_TRUSTED_BASELINE_PATH`
 - `TRIDENTINE_PRODUCTION_SYNC_PLAN_PATH`
 
-このtestは4入力をstrict loadし、memory内zero bundleと入力byte preservationを検証します。Production bundle、journal、simulation resultを保存しません。
+このtestは4入力をstrict loadしてzero-difference planをmemory内で再構築し、Production bundle生成がoperation count 0でも拒否されることと入力byte preservationを検証します。Production bundle、journal、simulation resultを作成・保存しません。
 
 ## Exit code
 

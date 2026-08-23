@@ -12,7 +12,7 @@ BundleはSource、snapshot、trusted baseline、planのhash/provenanceを再計�
 
 Operation kindは`add`と`update`だけです。Add payloadはSource UID、summary、description、start、exclusive endを、update payloadはGoogle event ID、ETag、changed fieldだけを含みます。Raw valueはprivate bundle内部だけに保存され、public inspection reportにはsafe refsとshort hashしか出しません。
 
-Bundleは`production_locked=true`、`execution_enabled=false`です。Test nonzero bundleは`approval_required`、zero bundleは`draft`になります。
+Bundleは`production_locked=true`、`execution_enabled=false`です。Test nonzero bundleは`approval_required`、test zero bundleは`draft`になります。Production environment、Production label、既知のProduction target safe referenceはoperation countにかかわらずbundle生成前に拒否されます。
 
 ## Approval
 
@@ -26,7 +26,7 @@ Confirmation mismatch、stale plan、zero bundle、Production bundleは拒否し
 
 Retryable outcomeは`rate_limit`、`server_500`、`server_502`、`server_503`です。それ以外のvalidation、permission、target missing、ETag conflict、ambiguous、uncertain、duplicate、permanent failureはretryしません。
 
-Retry delayはabstract unitとしてjournalへ記録し、sleepやnetworkを行いません。Permanent failure、uncertain outcome、ETag conflictでは直ちに停止します。先行successは明示的に残し、後続operationは`skipped`です。Rollbackは`not_available`です。
+Retryはdefault最大5 attemptsです。Delayはabstract unitとしてjournalへ記録し、sleepやnetworkを行いません。Permanent failure、uncertain outcome、ETag conflictでは直ちに停止します。先行successは明示的に残し、後続operationは`skipped`です。Rollbackは`not_available`です。
 
 ## Operation journal
 
@@ -36,9 +36,9 @@ Journal entryはoperation ordinal/key、safe refs、attempt、allowlisted outcom
 
 ## Production lock
 
-Production inputからはactions 0・guards 0・thresholds 0のdraft planに対するzero-operation bundleだけをmemory内で構築できます。Production bundle write、approval、simulation、journalは常に拒否します。
+Production inputはactions 0・guards 0・thresholds 0のdraft planとしてoffline inspectionできますが、zero-operationの場合もapply bundle生成を拒否します。Production environment、大小文字を問わないProduction label、既知のProduction target safe referenceを独立したguardで判定します。Production bundle write、approval、simulation、journalも常に拒否します。
 
-Production integration testは4入力fileのbefore/after hashを比較し、bundle、journal、simulation resultを保存しません。
+Production integration testは4入力fileをstrict loadしてzero-difference planを再構築し、bundle生成拒否とbefore/after hash一致を確認します。Bundle、journal、simulation resultは作成・保存しません。
 
 ## Storage and privacy
 

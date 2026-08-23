@@ -5,12 +5,14 @@ from phase4b_helpers import (
     approved_bundle,
     build_add_apply_bundle,
     build_multi_apply_bundle,
+    build_two_update_apply_bundle,
     build_update_apply_bundle,
 )
 
 import tridentine_calendar_google_sync.apply_simulation as simulation_module
 from tridentine_calendar_google_sync.apply_models import ApplyBundleState
 from tridentine_calendar_google_sync.apply_policy import ApplyGuardError
+from tridentine_calendar_google_sync.apply_report import build_apply_json_report
 from tridentine_calendar_google_sync.apply_simulation import (
     ApplySimulationError,
     ApplySimulationState,
@@ -135,7 +137,7 @@ def test_retryable_outcomes_retry_once_with_abstract_delay_only(
         (
             SimulationOutcomeKind.ETAG_CONFLICT,
             ApplySimulationState.ETAG_CONFLICT,
-            JournalEntryStatus.ETAG_CONFLICT,
+            JournalEntryStatus.FAILED,
         ),
     ),
 )
@@ -164,14 +166,58 @@ def test_nonretryable_outcomes_stop_after_one_attempt(
     assert result.journal.completion_marker == "simulation_failed"
 
 
-def test_retry_exhaustion_is_bounded_and_fails_closed(
+def test_default_retry_policy_allows_four_retries_then_fifth_attempt_success(
     tmp_path: object,
     synthetic_profile_factory: object,
 ) -> None:
     value = build_update_apply_bundle(tmp_path, synthetic_profile_factory)  # type: ignore[arg-type]
     approved = approved_bundle(value)
     operation = approved.operations[0]
-    policy = ApplyRetryPolicy(max_attempts=3)
+    retryable_outcomes = (
+        SimulationOutcomeKind.RATE_LIMIT,
+        SimulationOutcomeKind.SERVER_500,
+        SimulationOutcomeKind.SERVER_502,
+        SimulationOutcomeKind.SERVER_503,
+    )
+    transport = FakeMutationTransport.from_bundle(
+        approved,
+        injected_outcomes={operation.operation_integrity_hash: retryable_outcomes},
+    )
+    jitter_calls: list[int] = []
+
+    def zero_jitter(_key: str, attempt: int, _maximum: int) -> int:
+        jitter_calls.append(attempt)
+        return 0
+
+    result = run_apply_simulation(
+        approved,
+        transport,
+        jitter=zero_jitter,
+    )
+
+    assert ApplyRetryPolicy().max_attempts == 5
+    assert result.state is ApplySimulationState.COMPLETED
+    assert result.retry_count == 4
+    assert result.operation_results[0].attempts == 5
+    assert result.operation_results[0].outcome_code == "success"
+    assert jitter_calls == [1, 2, 3, 4]
+    assert [entry.status for entry in result.journal.entries] == [
+        JournalEntryStatus.RETRYING,
+        JournalEntryStatus.RETRYING,
+        JournalEntryStatus.RETRYING,
+        JournalEntryStatus.RETRYING,
+        JournalEntryStatus.SUCCEEDED,
+    ]
+
+
+def test_default_retry_exhaustion_stops_after_fifth_attempt_without_sixth_call(
+    tmp_path: object,
+    synthetic_profile_factory: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = build_update_apply_bundle(tmp_path, synthetic_profile_factory)  # type: ignore[arg-type]
+    approved = approved_bundle(value)
+    operation = approved.operations[0]
     transport = FakeMutationTransport.from_bundle(
         approved,
         injected_outcomes={
@@ -179,26 +225,109 @@ def test_retry_exhaustion_is_bounded_and_fails_closed(
                 SimulationOutcomeKind.RATE_LIMIT,
                 SimulationOutcomeKind.RATE_LIMIT,
                 SimulationOutcomeKind.RATE_LIMIT,
+                SimulationOutcomeKind.RATE_LIMIT,
+                SimulationOutcomeKind.RATE_LIMIT,
+                SimulationOutcomeKind.SUCCESS,
             )
         },
     )
+    attempts: list[int] = []
+    jitter_calls: list[int] = []
+    original_simulate_update = FakeMutationTransport.simulate_update
 
-    result = run_apply_simulation(
-        approved,
-        transport,
-        retry_policy=policy,
-        jitter=lambda _key, _attempt, _maximum: 0,
-    )
+    def count_simulate_update(
+        self: FakeMutationTransport,
+        current_operation: object,
+        *,
+        attempt: int,
+    ) -> object:
+        attempts.append(attempt)
+        return original_simulate_update(
+            self,
+            current_operation,  # type: ignore[arg-type]
+            attempt=attempt,
+        )
+
+    def zero_jitter(_key: str, attempt: int, _maximum: int) -> int:
+        jitter_calls.append(attempt)
+        return 0
+
+    monkeypatch.setattr(FakeMutationTransport, "simulate_update", count_simulate_update)
+    result = run_apply_simulation(approved, transport, jitter=zero_jitter)
 
     assert result.state is ApplySimulationState.PARTIAL_FAILURE
-    assert result.retry_count == 2
-    assert result.operation_results[0].attempts == 3
+    assert result.retry_count == 4
+    assert result.operation_results[0].attempts == 5
     assert result.operation_results[0].outcome_code == "retry_exhausted"
+    assert attempts == [1, 2, 3, 4, 5]
+    assert jitter_calls == [1, 2, 3, 4]
     assert [entry.status for entry in result.journal.entries] == [
+        JournalEntryStatus.RETRYING,
+        JournalEntryStatus.RETRYING,
         JournalEntryStatus.RETRYING,
         JournalEntryStatus.RETRYING,
         JournalEntryStatus.FAILED,
     ]
+
+
+def test_retry_exhaustion_is_bounded_and_fails_closed(
+    tmp_path: object,
+    synthetic_profile_factory: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retain the earlier bounded-retry regression at the new five-attempt limit."""
+
+    test_default_retry_exhaustion_stops_after_fifth_attempt_without_sixth_call(
+        tmp_path,
+        synthetic_profile_factory,
+        monkeypatch,
+    )
+
+
+def test_etag_conflict_fails_once_without_retry_or_mutation_and_skips_tail(
+    tmp_path: object,
+    synthetic_profile_factory: object,
+) -> None:
+    value = build_two_update_apply_bundle(tmp_path, synthetic_profile_factory)  # type: ignore[arg-type]
+    approved = approved_bundle(value)
+    first_operation = approved.operations[0]
+    transport = FakeMutationTransport.from_bundle(
+        approved,
+        injected_outcomes={
+            first_operation.operation_integrity_hash: (SimulationOutcomeKind.ETAG_CONFLICT,)
+        },
+    )
+    initial_transport_state = transport.state_hash()
+
+    result = run_apply_simulation(approved, transport)
+    report = build_apply_json_report(result)
+
+    assert result.state is ApplySimulationState.ETAG_CONFLICT
+    assert result.attempted_operation_count == 1
+    assert result.failed_count == 1
+    assert result.etag_conflict_count == 1
+    assert result.retry_count == 0
+    assert result.succeeded_count == 0
+    assert result.skipped_count == 1
+    assert result.partial_results is False
+    assert transport.state_hash() == initial_transport_state
+    assert result.final_transport_state_hash == initial_transport_state
+    assert [item.status for item in result.operation_results] == [
+        JournalEntryStatus.FAILED,
+        JournalEntryStatus.SKIPPED,
+    ]
+    assert result.operation_results[0].outcome_code == "etag_conflict"
+    assert result.operation_results[1].attempts == 0
+    assert report["stopped_early"] is True
+    assert result.journal.state is JournalState.ETAG_CONFLICT
+    assert result.journal.completion_marker == "simulation_failed"
+    assert [entry.status for entry in result.journal.entries] == [
+        JournalEntryStatus.FAILED,
+        JournalEntryStatus.SKIPPED,
+    ]
+    assert result.journal.entries[0].outcome_code == "etag_conflict"
+    verify_operation_journal(result.journal)
+    verify_apply_simulation_result(result)
 
 
 def test_partial_failure_preserves_prior_success_and_skips_later_operation(

@@ -79,6 +79,25 @@
       "then": {
         "properties": { "completion_marker": { "const": "simulation_failed" } }
       }
+    },
+    {
+      "if": { "properties": { "state": { "const": "etag_conflict" } } },
+      "then": {
+        "properties": {
+          "entries": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "status": { "const": "failed" },
+                "outcome_code": { "const": "etag_conflict" }
+              },
+              "required": ["status", "outcome_code"]
+            },
+            "minContains": 1,
+            "maxContains": 1
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -143,7 +162,6 @@
             "retrying",
             "failed",
             "uncertain",
-            "etag_conflict",
             "skipped"
           ]
         },

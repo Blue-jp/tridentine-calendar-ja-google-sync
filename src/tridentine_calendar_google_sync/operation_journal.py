@@ -45,7 +45,6 @@ class JournalEntryStatus(StrEnum):
     RETRYING = "retrying"
     FAILED = "failed"
     UNCERTAIN = "uncertain"
-    ETAG_CONFLICT = "etag_conflict"
     SKIPPED = "skipped"
 
 
@@ -281,6 +280,7 @@ def _verify_operation_journal_semantics(journal: OperationJournal) -> None:
     cursor = 0
     seen_operation_attempts: set[tuple[int, int]] = set()
     terminal_failure: JournalEntryStatus | None = None
+    terminal_failure_outcome: str | None = None
     skipped_started = False
     last_group_was_retrying = False
 
@@ -372,7 +372,6 @@ def _verify_operation_journal_semantics(journal: OperationJournal) -> None:
         elif terminal_entry.status in {
             JournalEntryStatus.FAILED,
             JournalEntryStatus.UNCERTAIN,
-            JournalEntryStatus.ETAG_CONFLICT,
         }:
             if terminal_entry.result_state_hash is not None:
                 _raise_semantic_error("journal_failure_state_hash_invalid")
@@ -385,13 +384,14 @@ def _verify_operation_journal_semantics(journal: OperationJournal) -> None:
                     "duplicate_identity",
                     "permanent_failure",
                     "retry_exhausted",
+                    "etag_conflict",
                 },
                 JournalEntryStatus.UNCERTAIN: {"uncertain_outcome"},
-                JournalEntryStatus.ETAG_CONFLICT: {"etag_conflict"},
             }[terminal_entry.status]
             if terminal_entry.outcome_code not in allowed_outcomes:
                 _raise_semantic_error("journal_terminal_outcome_invalid")
             terminal_failure = terminal_entry.status
+            terminal_failure_outcome = terminal_entry.outcome_code
         else:
             _raise_semantic_error("journal_terminal_status_invalid")
 
@@ -401,14 +401,30 @@ def _verify_operation_journal_semantics(journal: OperationJournal) -> None:
         return
     if last_group_was_retrying:
         _raise_semantic_error("journal_terminal_retry_incomplete")
-    expected_failure = {
-        JournalState.COMPLETED: None,
-        JournalState.PARTIAL_FAILURE: JournalEntryStatus.FAILED,
-        JournalState.UNCERTAIN: JournalEntryStatus.UNCERTAIN,
-        JournalState.ETAG_CONFLICT: JournalEntryStatus.ETAG_CONFLICT,
-        JournalState.BLOCKED: JournalEntryStatus.FAILED,
-    }[journal.state]
-    if terminal_failure is not expected_failure:
+    terminal_matches_state = (
+        (
+            journal.state is JournalState.COMPLETED
+            and terminal_failure is None
+            and terminal_failure_outcome is None
+        )
+        or (
+            journal.state is JournalState.PARTIAL_FAILURE
+            and terminal_failure is JournalEntryStatus.FAILED
+            and terminal_failure_outcome != "etag_conflict"
+        )
+        or (
+            journal.state is JournalState.UNCERTAIN
+            and terminal_failure is JournalEntryStatus.UNCERTAIN
+            and terminal_failure_outcome == "uncertain_outcome"
+        )
+        or (
+            journal.state is JournalState.ETAG_CONFLICT
+            and terminal_failure is JournalEntryStatus.FAILED
+            and terminal_failure_outcome == "etag_conflict"
+        )
+        or (journal.state is JournalState.BLOCKED and terminal_failure is JournalEntryStatus.FAILED)
+    )
+    if not terminal_matches_state:
         _raise_semantic_error("journal_terminal_state_mismatch")
     if expected_operation_index - 1 != journal.operation_count:
         _raise_semantic_error("journal_terminal_operation_missing")

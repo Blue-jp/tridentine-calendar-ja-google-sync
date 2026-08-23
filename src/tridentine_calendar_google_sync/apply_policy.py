@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
 from tridentine_calendar_google_sync.apply_models import (
     ApplyBundle,
-    ApplyBundleState,
     ApplyEnvironment,
 )
 
@@ -56,20 +57,34 @@ def target_reference(target_fingerprint: str) -> str:
 def validate_environment_target(
     environment: ApplyEnvironment,
     target_fingerprint: str,
+    target_label: str,
 ) -> str:
-    """Reject Production/test disguise using an exact collision-safe reference."""
+    """Reject every Production or disguised-Production bundle at entry."""
 
-    reference = target_reference(target_fingerprint)
+    if (
+        not isinstance(target_label, str)
+        or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
+            target_label,
+        )
+        is None
+    ):
+        raise ApplyInputError("invalid_apply_target_label", "apply target label is invalid")
     if environment is ApplyEnvironment.PRODUCTION:
-        if reference != PRODUCTION_TARGET_REFERENCE:
-            raise ApplyGuardError(
-                "production_target_mismatch",
-                "Production environment does not match the locked target",
-            )
-    elif reference == PRODUCTION_TARGET_REFERENCE:
         raise ApplyGuardError(
-            "production_target_disguised_as_test",
-            "Production target cannot be used as a test environment",
+            "production_bundle_generation_forbidden",
+            "Production apply bundle generation is forbidden",
+        )
+    if target_label.casefold() == "production":
+        raise ApplyGuardError(
+            "production_label_forbidden",
+            "Production-labelled apply bundle generation is forbidden",
+        )
+    reference = target_reference(target_fingerprint)
+    if reference == PRODUCTION_TARGET_REFERENCE:
+        raise ApplyGuardError(
+            "production_target_bundle_generation_forbidden",
+            "Production target apply bundle generation is forbidden",
         )
     return reference
 
@@ -77,7 +92,11 @@ def validate_environment_target(
 def validate_bundle_environment_policy(bundle: ApplyBundle) -> None:
     """Enforce immutable Production lock and test-only lifecycle states."""
 
-    reference = validate_environment_target(bundle.environment, bundle.target_fingerprint)
+    reference = validate_environment_target(
+        bundle.environment,
+        bundle.target_fingerprint,
+        bundle.target_label,
+    )
     if reference != bundle.target_reference:
         raise ApplyGuardError(
             "apply_target_reference_mismatch",
@@ -88,17 +107,6 @@ def validate_bundle_environment_policy(bundle: ApplyBundle) -> None:
             "delete_operation_forbidden",
             "delete operations are not supported",
         )
-    if bundle.environment is ApplyEnvironment.PRODUCTION:
-        if bundle.generated_operation_count != 0:
-            raise ApplyGuardError(
-                "production_nonzero_apply_forbidden",
-                "Production apply bundle must contain zero operations",
-            )
-        if bundle.state is not ApplyBundleState.DRAFT:
-            raise ApplyGuardError(
-                "production_apply_transition_forbidden",
-                "Production approval and simulation are forbidden",
-            )
 
 
 def require_test_bundle(bundle: ApplyBundle) -> None:

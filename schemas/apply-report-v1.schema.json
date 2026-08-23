@@ -20,6 +20,10 @@
       "type": "string",
       "pattern": "^T-[0-9a-f]{12}$"
     },
+    "targetLabel": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
     "planReference": {
       "type": "string",
       "pattern": "^P-[0-9a-f]{12}$"
@@ -94,7 +98,7 @@
         "source_ref": { "$ref": "#/$defs/sourceReference" },
         "google_ref": { "$ref": "#/$defs/googleReference" },
         "status": {
-          "enum": ["succeeded", "failed", "uncertain", "etag_conflict", "skipped"]
+          "enum": ["succeeded", "failed", "uncertain", "skipped"]
         },
         "attempts": { "$ref": "#/$defs/count" },
         "retry_count": { "$ref": "#/$defs/count" },
@@ -145,6 +149,7 @@
         "mode",
         "environment",
         "source_profile",
+        "target_label",
         "target_reference",
         "plan_reference",
         "bundle_reference",
@@ -167,6 +172,7 @@
         "mode": { "const": "offline simulation" },
         "environment": { "const": "test" },
         "source_profile": { "$ref": "#/$defs/sourceProfile" },
+        "target_label": { "$ref": "#/$defs/targetLabel" },
         "target_reference": { "$ref": "#/$defs/targetReference" },
         "plan_reference": { "$ref": "#/$defs/planReference" },
         "bundle_reference": { "$ref": "#/$defs/bundleReference" },
@@ -220,6 +226,34 @@
               "fatal_guard": { "const": true }
             }
           }
+        },
+        {
+          "if": {
+            "properties": { "simulation_state": { "const": "etag_conflict" } }
+          },
+          "then": {
+            "properties": {
+              "result_counts": {
+                "properties": {
+                  "failed": { "const": 1 },
+                  "etag_conflict": { "const": 1 },
+                  "retries": { "const": 0 }
+                }
+              },
+              "operation_results": {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "const": "failed" },
+                    "outcome_code": { "const": "etag_conflict" }
+                  },
+                  "required": ["status", "outcome_code"]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              }
+            }
+          }
         }
       ]
     },
@@ -232,6 +266,7 @@
         "mode",
         "environment",
         "source_profile",
+        "target_label",
         "state",
         "target_reference",
         "plan_reference",
@@ -250,6 +285,7 @@
         "mode": { "const": "bundle inspection" },
         "environment": { "enum": ["test", "production"] },
         "source_profile": { "$ref": "#/$defs/sourceProfile" },
+        "target_label": { "$ref": "#/$defs/targetLabel" },
         "state": {
           "enum": [
             "draft",
@@ -324,7 +360,6 @@
             "retrying",
             "failed",
             "uncertain",
-            "etag_conflict",
             "skipped"
           ],
           "properties": {
@@ -332,7 +367,6 @@
             "retrying": { "$ref": "#/$defs/count" },
             "failed": { "$ref": "#/$defs/count" },
             "uncertain": { "$ref": "#/$defs/count" },
-            "etag_conflict": { "$ref": "#/$defs/count" },
             "skipped": { "$ref": "#/$defs/count" }
           }
         },
@@ -364,6 +398,16 @@
           },
           "then": {
             "properties": { "completion_marker": { "const": "simulation_failed" } }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "etag_conflict" } } },
+          "then": {
+            "properties": {
+              "status_counts": {
+                "properties": { "failed": { "const": 1 } }
+              }
+            }
           }
         }
       ]

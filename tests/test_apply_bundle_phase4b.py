@@ -47,8 +47,6 @@ from tridentine_calendar_google_sync.apply_policy import (
     ApplyIOError,
     ApplyValidationError,
 )
-from tridentine_calendar_google_sync.fake_mutation_transport import FakeMutationTransport
-from tridentine_calendar_google_sync.operation_journal import initialize_operation_journal
 from tridentine_calendar_google_sync.plan_engine import build_sync_plan
 from tridentine_calendar_google_sync.plan_models import PlanThresholds
 
@@ -62,6 +60,7 @@ def test_update_bundle_is_private_integrity_pinned_and_non_executable(
 
     assert bundle.state is ApplyBundleState.APPROVAL_REQUIRED
     assert bundle.environment is ApplyEnvironment.TEST
+    assert bundle.target_label == "test"
     assert bundle.generated_operation_count == 1
     assert bundle.add_count == 0
     assert bundle.update_count == 1
@@ -256,6 +255,7 @@ def test_delete_plan_and_blocked_plan_cannot_build_bundle(
             baseline,
             delete_plan,
             ApplyEnvironment.TEST,
+            target_label="test",
         )
     assert caught.value.code == "unsafe_sync_plan_counts"
 
@@ -274,6 +274,7 @@ def test_explicit_environment_is_required_and_production_nonzero_is_forbidden(
             value.baseline,
             value.plan,
             "test",  # type: ignore[arg-type]
+            target_label="test",
         )
     with pytest.raises(ApplyGuardError):
         build_apply_bundle(
@@ -283,6 +284,7 @@ def test_explicit_environment_is_required_and_production_nonzero_is_forbidden(
             value.baseline,
             value.plan,
             ApplyEnvironment.PRODUCTION,
+            target_label="test",
         )
 
 
@@ -304,7 +306,7 @@ def test_production_bundle_persistence_is_always_forbidden(
     assert caught.value.code == "production_apply_bundle_write_forbidden"
 
 
-def test_valid_production_zero_bundle_cannot_be_written_approved_or_journaled(
+def test_zero_operation_production_environment_is_rejected_before_bundle_generation(
     tmp_path: Path,
     synthetic_profile_factory: object,
 ) -> None:
@@ -314,33 +316,79 @@ def test_valid_production_zero_bundle_cannot_be_written_approved_or_journaled(
         count=101,
     )
     plan = build_sync_plan(profile, source, snapshot, baseline)
-    test_zero = build_apply_bundle(
-        profile,
-        source,
-        snapshot,
-        baseline,
-        plan,
-        ApplyEnvironment.TEST,
-    )
-    provisional = test_zero.model_copy(
-        update={
-            "environment": ApplyEnvironment.PRODUCTION,
-            "target_reference": "T-e10f0095ab8f",
-            "target_fingerprint": "e10f0095ab8f" + "0" * 52,
-            "bundle_integrity_hash": "0" * 64,
-        }
-    )
-    production = provisional.model_copy(
-        update={"bundle_integrity_hash": calculate_apply_bundle_integrity(provisional)}
+    with pytest.raises(ApplyGuardError) as caught:
+        build_apply_bundle(
+            profile,
+            source,
+            snapshot,
+            baseline,
+            plan,
+            ApplyEnvironment.PRODUCTION,
+            target_label="test",
+        )
+    assert caught.value.code == "production_bundle_generation_forbidden"
+
+
+def test_valid_production_zero_bundle_cannot_be_written_approved_or_journaled(
+    tmp_path: Path,
+    synthetic_profile_factory: object,
+) -> None:
+    """Retain the earlier regression while enforcing the stronger generation lock."""
+
+    test_zero_operation_production_environment_is_rejected_before_bundle_generation(
+        tmp_path,
+        synthetic_profile_factory,
     )
 
-    verify_apply_bundle_integrity(production)
-    assert production.generated_operation_count == 0
-    with pytest.raises(ApplyGuardError):
-        write_apply_bundle(production, tmp_path / "must-not-write-production.json")
-    with pytest.raises(ApplyGuardError):
-        apply_approval_challenge(production, production.plan_content_hash)
-    with pytest.raises(ApplyGuardError):
-        FakeMutationTransport.from_bundle(production)
-    with pytest.raises(ApplyGuardError):
-        initialize_operation_journal(production)
+
+@pytest.mark.parametrize("target_label", ["Production", "PRODUCTION"])
+def test_zero_operation_production_label_is_rejected_before_bundle_generation(
+    target_label: str,
+    tmp_path: Path,
+    synthetic_profile_factory: object,
+) -> None:
+    profile, source, snapshot, _document, baseline = _large_bundle(
+        tmp_path,
+        synthetic_profile_factory,
+        count=101,
+    )
+    plan = build_sync_plan(profile, source, snapshot, baseline)
+
+    with pytest.raises(ApplyGuardError) as caught:
+        build_apply_bundle(
+            profile,
+            source,
+            snapshot,
+            baseline,
+            plan,
+            ApplyEnvironment.TEST,
+            target_label=target_label,
+        )
+    assert caught.value.code == "production_label_forbidden"
+
+
+def test_zero_operation_production_safe_reference_is_rejected_before_bundle_generation(
+    tmp_path: Path,
+    synthetic_profile_factory: object,
+) -> None:
+    profile, source, snapshot, _document, baseline = _large_bundle(
+        tmp_path,
+        synthetic_profile_factory,
+        count=101,
+    )
+    plan = build_sync_plan(profile, source, snapshot, baseline)
+    production_target_snapshot = snapshot.model_copy(
+        update={"target_fingerprint": "e10f0095ab8f" + "0" * 52}
+    )
+
+    with pytest.raises(ApplyGuardError) as caught:
+        build_apply_bundle(
+            profile,
+            source,
+            production_target_snapshot,
+            baseline,
+            plan,
+            ApplyEnvironment.TEST,
+            target_label="test",
+        )
+    assert caught.value.code == "production_target_bundle_generation_forbidden"
