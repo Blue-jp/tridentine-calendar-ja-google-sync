@@ -32,6 +32,12 @@ google-read = [
   "google-auth-httplib2>=0.2,<1",
   "google-auth-oauthlib>=1.2,<2",
 ]
+google-test-write = [
+  "google-api-python-client>=2.154,<3",
+  "google-auth>=2.36,<3",
+  "google-auth-httplib2>=0.2,<1",
+  "google-auth-oauthlib>=1.2,<2",
+]
 dev = [
   "build>=1.2,<2",
   "jsonschema>=4.23,<5",
@@ -78,6 +84,7 @@ testpaths = ["tests"]
 markers = [
   "integration: opt-in test requiring a verified Accepted ICS file outside the repository",
   "google_read: mock-only tests requiring the optional google-read extra",
+  "google_test_write: mock-only tests requiring the optional google-test-write extra",
 ]
 
 [tool.coverage.run]

@@ -740,14 +740,24 @@ google-read = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
 ]
+google-test-write = [
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "google-auth-httplib2" },
+    { name = "google-auth-oauthlib" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2,<2" },
     { name = "google-api-python-client", marker = "extra == 'google-read'", specifier = ">=2.154,<3" },
+    { name = "google-api-python-client", marker = "extra == 'google-test-write'", specifier = ">=2.154,<3" },
     { name = "google-auth", marker = "extra == 'google-read'", specifier = ">=2.36,<3" },
+    { name = "google-auth", marker = "extra == 'google-test-write'", specifier = ">=2.36,<3" },
     { name = "google-auth-httplib2", marker = "extra == 'google-read'", specifier = ">=0.2,<1" },
+    { name = "google-auth-httplib2", marker = "extra == 'google-test-write'", specifier = ">=0.2,<1" },
     { name = "google-auth-oauthlib", marker = "extra == 'google-read'", specifier = ">=1.2,<2" },
+    { name = "google-auth-oauthlib", marker = "extra == 'google-test-write'", specifier = ">=1.2,<2" },
     { name = "icalendar", specifier = ">=6,<7" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<2" },
@@ -758,7 +768,7 @@ requires-dist = [
     { name = "pytest-socket", marker = "extra == 'dev'", specifier = ">=0.7,<1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11,<1" },
 ]
-provides-extras = ["google-read", "dev"]
+provides-extras = ["google-read", "google-test-write", "dev"]
 
 [[package]]
 name = "typing-extensions"
