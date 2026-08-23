@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/test-write-report-v1.schema.json",
+  "title": "Public-safe Test Calendar write report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "live_test_write",
+    "test_only",
+    "production_locked",
+    "target_safe_ref",
+    "run_spec_ref",
+    "source_ref",
+    "operation",
+    "state",
+    "success",
+    "read_back_verified",
+    "recovered_after_uncertain",
+    "api_call_count",
+    "read_retry_count",
+    "mutation_attempt_count",
+    "mutation_retry_count",
+    "stopped",
+    "safe_findings",
+    "journal_hash",
+    "result_hash",
+    "report_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "report_type": { "const": "test-calendar-write-report-v1" },
+    "live_test_write": { "const": true },
+    "test_only": { "const": true },
+    "production_locked": { "const": true },
+    "target_safe_ref": { "type": "string", "pattern": "^T-[0-9a-f]{12}$" },
+    "run_spec_ref": { "type": "string", "pattern": "^R-[0-9a-f]{12}$" },
+    "source_ref": { "type": "string", "pattern": "^U-[0-9a-f]{12}$" },
+    "operation": { "enum": ["add", "update"] },
+    "state": { "enum": ["succeeded", "failed", "uncertain", "etag_conflict"] },
+    "success": { "type": "boolean" },
+    "read_back_verified": { "type": "boolean" },
+    "recovered_after_uncertain": { "type": "boolean" },
+    "api_call_count": { "type": "integer", "minimum": 0, "maximum": 10 },
+    "read_retry_count": { "type": "integer", "minimum": 0 },
+    "mutation_attempt_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+    "mutation_retry_count": { "const": 0 },
+    "stopped": { "type": "boolean" },
+    "safe_findings": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+      "uniqueItems": true
+    },
+    "journal_hash": { "$ref": "#/$defs/sha256" },
+    "result_hash": { "$ref": "#/$defs/sha256" },
+    "report_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
