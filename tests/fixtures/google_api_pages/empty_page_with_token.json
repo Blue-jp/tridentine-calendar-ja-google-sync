@@ -1,0 +1,27 @@
+{
+  "scenario": "empty_page_with_token",
+  "responses": [
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-003a",
+      "nextPageToken": "fixture-after-empty",
+      "items": []
+    },
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-003b",
+      "items": [
+        {
+          "id": "evtfixtureapi004",
+          "status": "confirmed",
+          "summary": "Synthetic event after empty page",
+          "description": "Safe pagination description",
+          "start": {"date": "2026-03-01"},
+          "end": {"date": "2026-03-02"},
+          "iCalUID": "fixture-api-004@example.invalid",
+          "eventType": "default"
+        }
+      ]
+    }
+  ]
+}

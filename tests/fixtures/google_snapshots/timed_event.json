@@ -3,6 +3,7 @@
   "snapshot_format": "sanitized-google-calendar-v1",
   "target_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "event_count": 1,
+  "page_count": 1,
   "complete": true,
   "events": [
     {

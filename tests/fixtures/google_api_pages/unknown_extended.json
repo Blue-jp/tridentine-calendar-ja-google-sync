@@ -1,0 +1,33 @@
+{
+  "scenario": "unknown_extended",
+  "responses": [
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-007",
+      "items": [
+        {
+          "id": "evtfixtureapi008",
+          "status": "confirmed",
+          "summary": "Synthetic extended event",
+          "description": "Safe extended event description",
+          "start": {"date": "2026-07-01"},
+          "end": {"date": "2026-07-02"},
+          "iCalUID": "fixture-api-008@example.invalid",
+          "eventType": "default",
+          "extendedProperties": {
+            "private": {
+              "tridentine_calendar_google_sync.managed": "true",
+              "fixture-private-key": "fixture-private-value"
+            },
+            "shared": {
+              "fixture-shared-key": "fixture-shared-value"
+            }
+          },
+          "fixtureUnknown": {
+            "nested": "discard-this-field"
+          }
+        }
+      ]
+    }
+  ]
+}

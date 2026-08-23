@@ -1,0 +1,38 @@
+{
+  "scenario": "two_pages",
+  "responses": [
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-002a",
+      "nextPageToken": "fixture-page-2",
+      "items": [
+        {
+          "id": "evtfixtureapi002",
+          "status": "confirmed",
+          "summary": "Synthetic first page event",
+          "description": "Safe first page description",
+          "start": {"date": "2026-02-01"},
+          "end": {"date": "2026-02-02"},
+          "iCalUID": "fixture-api-002@example.invalid",
+          "eventType": "default"
+        }
+      ]
+    },
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-002b",
+      "items": [
+        {
+          "id": "evtfixtureapi003",
+          "status": "confirmed",
+          "summary": "Synthetic second page event",
+          "description": "Safe second page description",
+          "start": {"date": "2026-02-02"},
+          "end": {"date": "2026-02-03"},
+          "iCalUID": "fixture-api-003@example.invalid",
+          "eventType": "default"
+        }
+      ]
+    }
+  ]
+}

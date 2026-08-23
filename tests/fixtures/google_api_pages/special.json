@@ -1,0 +1,21 @@
+{
+  "scenario": "special",
+  "responses": [
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-005",
+      "items": [
+        {
+          "id": "evtfixtureapi006",
+          "status": "confirmed",
+          "summary": "Synthetic special event",
+          "description": "Safe special event description",
+          "start": {"date": "2026-05-01"},
+          "end": {"date": "2026-05-02"},
+          "iCalUID": "fixture-api-006@example.invalid",
+          "eventType": "focusTime"
+        }
+      ]
+    }
+  ]
+}

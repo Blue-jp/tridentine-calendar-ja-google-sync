@@ -1,0 +1,10 @@
+{
+  "scenario": "malformed",
+  "responses": [
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-008",
+      "items": "not-an-array"
+    }
+  ]
+}

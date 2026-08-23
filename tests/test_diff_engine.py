@@ -38,6 +38,7 @@ def _snapshot_document_for_source(source: SourceCalendarInspection) -> dict[str,
         "target_fingerprint": "b" * 64,
         "complete": True,
         "event_count": 1,
+        "page_count": 1,
         "events": [
             {
                 "id": "evtfixturememory001",

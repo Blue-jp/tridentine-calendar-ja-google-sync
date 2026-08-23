@@ -41,6 +41,7 @@ def _memory_snapshot_document(
         "target_fingerprint": "c" * 64,
         "complete": True,
         "event_count": len(events),
+        "page_count": 1,
         "events": events,
     }
 

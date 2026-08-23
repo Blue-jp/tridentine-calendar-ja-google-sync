@@ -18,8 +18,17 @@ build/
 .env.*
 credentials*.json
 client_secret*.json
+oauth_client*.json
+authorized_user*.json
 token*.json
 .secrets/
+secrets/
+private-config/
+google-target*.toml
+target-secret*.toml
+target*.local.toml
+google-snapshot*.json
+!schemas/google-snapshot-v1.schema.json
 state/
 snapshots/
 cache/

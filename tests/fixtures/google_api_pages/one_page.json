@@ -1,0 +1,27 @@
+{
+  "scenario": "one_page",
+  "responses": [
+    {
+      "kind": "calendar#events",
+      "etag": "fixture-page-etag-001",
+      "items": [
+        {
+          "kind": "calendar#event",
+          "etag": "fixture-event-etag-001",
+          "id": "evtfixtureapi001",
+          "status": "confirmed",
+          "summary": "Synthetic API observance",
+          "description": "Safe synthetic API description",
+          "start": {"date": "2026-01-15"},
+          "end": {"date": "2026-01-16"},
+          "iCalUID": "fixture-api-001@example.invalid",
+          "sequence": 0,
+          "eventType": "default",
+          "creator": {"self": true},
+          "organizer": {"self": true},
+          "reminders": {"useDefault": false}
+        }
+      ]
+    }
+  ]
+}
