@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/test-write-target-v1.schema.json",
+  "title": "Private Test Calendar write target configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "target_environment",
+    "target_label",
+    "target_purpose",
+    "calendar_id",
+    "expected_target_fingerprint",
+    "expected_summary",
+    "expected_access_role",
+    "expected_time_zone"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "target_environment": { "const": "test" },
+    "target_label": { "const": "test" },
+    "target_purpose": { "const": "test_calendar_write_acceptance" },
+    "calendar_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "not": { "pattern": "^[Pp][Rr][Ii][Mm][Aa][Rr][Yy]$" }
+    },
+    "expected_target_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "expected_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "anyOf": [
+        { "pattern": "[Tt][Ee][Ss][Tt]" },
+        { "pattern": "テスト" }
+      ]
+    },
+    "expected_access_role": { "const": "owner" },
+    "expected_time_zone": { "const": "Asia/Tokyo" }
+  }
+}

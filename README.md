@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 4Bの範囲
+## Phase 5Aの範囲
 
-Phase 4Bはtrusted baselineとnon-executable planに、test環境限定のprivate apply bundle、fake-only mutation simulation、tamper-evident operation journalを追加します。すべてoffline処理であり、Google API mutation clientは存在しません。
+Phase 5Aは将来の専用Test Calendar受入検証に向け、Test限定write transportのcode foundationを追加します。Production hard lock、1回1operation、exact approval、ETag / `If-Match`、read-back、uncertain-outcome read checkを必須とします。
 
-Phase 4Bの開発・testはOAuth、Google API、browser、networkを使用しません。Fake transportはmemory内の架空inventoryだけを変更し、外部Calendarへ接続しません。
+Phase 5Aの開発・CIはmock・synthetic fixtureのみを使います。Live OAuth、browser authorization、token取得、Google API call、Test / Production Calendarへの接続・変更は行いません。
 
 ### Implemented
 
@@ -35,13 +35,19 @@ Phase 4Bの開発・testはOAuth、Google API、browser、networkを使用しま
 - Partial failureとskipped tailを記録するhash-chain journal
 - Redacted bundle/simulation/journal reports
 - Production dataを含まないsynthetic fixture test
+- `calendar.events.owned`だけを許可する、Production read tokenと分離されたTest write認証境界
+- Test target config、Production hard lock、exact approvalに結び付く1-operation run spec
+- Add用`events.import`とUpdate用`events.patch`だけに限定したGoogle adapter
+- Source UID / Google `iCalUID`維持、fresh event ID / ETag、exact `If-Match`
+- post-write read-back、uncertain outcomeのread-after-check、mutation blind retry禁止
+- raw identity・ETag・本文を除外したTest write journal / report
+- Productionへ到達不可能なmock-only Test write safety test
 
 ### Not implemented
 
-- Google Calendar write scopeおよびwrite method
-- Test Calendar / Production Calendarへのapply
-- add/update/delete executionとexecutable plan
-- Google mutation transport、HTTP request、live executor
+- Test write OAuthの実行、browser authorization、token取得
+- Test Calendar APIの実接続とadd/update実行
+- Production Calendar write
 - Delete operation model・payload・transport method
 - `syncToken`、incremental state、automation
 
@@ -54,7 +60,7 @@ Production ICS、Production snapshot、runtime stateをrepositoryへcommitしな
 - Python `>=3.12,<3.13`
 - 対応platform：WindowsおよびLinux
 
-Base runtime dependencyは`icalendar`と`pydantic`だけです。Google公式Python packageはoptional `google-read` extraに隔離され、base installには入りません。
+Base runtime dependencyは`icalendar`と`pydantic`だけです。Google公式Python packageはoptional `google-read`と`google-test-write` extraに隔離され、base installには入りません。
 
 ## セットアップ
 
@@ -87,6 +93,13 @@ Windows標準venvとpipでmock layerも検証する場合は次のoptional extra
 ```powershell
 python -m pip install -e ".[dev,google-read]"
 python -m pytest -m google_read
+```
+
+Test write mock layerを検証する場合だけ、分離されたoptional extraを使います。InstallだけでOAuthやAPI callは始まりません。
+
+```powershell
+uv sync --extra dev --extra google-test-write --frozen
+uv run pytest -m google_test_write
 ```
 
 ## CLI
@@ -174,6 +187,14 @@ Nonzero test bundleはexact challengeとcurrent plan hashの再照合後にだ�
 
 Bundle作成時は明示的なtest target labelが必要です。Production environment、Production label、既知のProduction target safe referenceはoperation countが0でもbundle生成前に拒否されます。Production bundle file write、approval、simulation、journal作成も常に拒否されます。詳細は[Offline apply safety](docs/offline-apply-safety.md)を参照してください。
 
+### Test Calendar write foundation
+
+Phase 5Aのcommandは`authorize-test-google-write`、`build-test-write-run-spec`、`inspect-test-write-run-spec`、`run-test-calendar-write`です。OAuthとwrite runnerは`--online`、repository外の専用token / target config、Test targetのexact policy、exact approval phraseを要求します。
+
+Run specはaddまたはupdateを1件だけ含みます。AddはSource UIDを`iCalUID`として保持する`events.import`、updateはchanged fieldsだけをexact ETagの`If-Match`付きで変更する`events.patch`に限定されます。Mutationは1 attemptだけで自動retryせず、read-backまたはread-after-uncertainで確認します。Delete、batch、rollbackはありません。
+
+Phase 5Aではこれらのlive commandを実行していません。将来のTest Calendar利用には、別の明示的なOAuth / API / event-change承認が必要です。詳細は[Test Calendar write transport foundation](docs/test-calendar-write-foundation.md)を参照してください。
+
 ### Google read-only commands
 
 `authorize-google-readonly`と`fetch-google-snapshot`はPhase 3Aで追加された明示的online commandです。両commandは`--online`を要求し、別途承認されたread-only workflowでだけ利用します。Phase 4Aのbaseline/plan commandから呼び出されることはありません。準備要件とsecret配置方針は[Google read-only setup](docs/google-readonly-setup.md)を参照してください。
@@ -255,6 +276,8 @@ Validation mismatchは通常の利用時にPython tracebackやfile本文を表�
 - Sync plan reportはsafe referencesだけを使用し、raw UID、Google event ID、ETag、event本文、payload、method、endpointを含めません。
 - Private apply bundleはraw UID、Google event ID、ETag、managed field payloadを含むため、baselineやsnapshotと同等のsensitive dataです。
 - Public apply reportとoperation journalはsafe references・hash・allowlisted outcome codeだけを使用します。
+- Test write tokenはProduction read-only tokenと別fileに保存し、scope追加・上書き・再利用を拒否します。
+- Test Write Run Specはprivate artifactです。Public report / journalはraw UID、Google event ID、ETag、SUMMARY、DESCRIPTION、payloadを含みません。
 
 詳細は[Security Policy](SECURITY.md)も参照してください。
 
@@ -268,15 +291,15 @@ uv run pytest
 uv run python -m build
 ```
 
-Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれぞれでbase layerとoptional `google-read` mock layerを分離し、credentialsやProduction dataを使用しません。
+Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれぞれでbase、optional `google-read`、optional `google-test-write` mock layerを分離し、credentialsやProduction dataを使用しません。
 
 ## Roadmap
 
-Phase 4Bまでに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulationを実装しました。以下は未実装または未承認です。
+Phase 5Aまでに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport code foundationを実装しました。以下は未実施または未承認です。
 
 1. Production baseline candidateの別承認によるtrusted化
-2. Live request payload生成とconditional request検証
-3. 専用test Calendarに限定したwrite検証
+2. 専用Test Calendarの別承認OAuth・API・1件add検証
+3. 専用Test Calendarの別承認1件update検証
 4. Production apply、delete、syncToken、automation
 
 ## Provenanceとlicense

@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/test-write-journal-v1.schema.json",
+  "title": "Public-safe Test Calendar write journal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "journal_type",
+    "live_test_write",
+    "test_only",
+    "production_locked",
+    "run_spec_ref",
+    "target_safe_ref",
+    "source_ref",
+    "operation",
+    "state",
+    "entries",
+    "entry_count",
+    "api_call_count",
+    "read_retry_count",
+    "mutation_attempt_count",
+    "mutation_retry_count",
+    "recovered_after_uncertain",
+    "last_entry_hash",
+    "rollback_available",
+    "journal_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "journal_type": { "const": "test-write-operation-journal-v1" },
+    "live_test_write": { "const": true },
+    "test_only": { "const": true },
+    "production_locked": { "const": true },
+    "run_spec_ref": { "$ref": "#/$defs/runReference" },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "source_ref": { "$ref": "#/$defs/sourceReference" },
+    "operation": { "enum": ["add", "update"] },
+    "state": {
+      "enum": ["initialized", "running", "completed", "failed", "uncertain", "etag_conflict"]
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "entry_count": { "$ref": "#/$defs/count" },
+    "api_call_count": { "type": "integer", "minimum": 0, "maximum": 10 },
+    "read_retry_count": { "$ref": "#/$defs/count" },
+    "mutation_attempt_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+    "mutation_retry_count": { "const": 0 },
+    "recovered_after_uncertain": { "type": "boolean" },
+    "last_entry_hash": { "$ref": "#/$defs/sha256" },
+    "rollback_available": { "const": false },
+    "journal_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "initialized" } } },
+      "then": {
+        "properties": {
+          "entries": { "maxItems": 0 },
+          "entry_count": { "const": 0 },
+          "api_call_count": { "const": 0 },
+          "read_retry_count": { "const": 0 },
+          "mutation_attempt_count": { "const": 0 },
+          "recovered_after_uncertain": { "const": false }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "running" } } },
+      "then": { "properties": { "entries": { "minItems": 1, "maxItems": 2 } } }
+    },
+    {
+      "if": { "properties": { "state": { "const": "completed" } } },
+      "then": {
+        "properties": {
+          "entries": { "minItems": 3, "maxItems": 3 },
+          "entry_count": { "const": 3 },
+          "mutation_attempt_count": { "const": 1 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "failed" } } },
+      "then": { "properties": { "entries": { "minItems": 1, "maxItems": 3 } } }
+    },
+    {
+      "if": { "properties": { "state": { "const": "uncertain" } } },
+      "then": {
+        "properties": {
+          "entries": { "minItems": 3, "maxItems": 3 },
+          "entry_count": { "const": 3 },
+          "mutation_attempt_count": { "const": 1 }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "state": { "const": "etag_conflict" } } },
+      "then": { "properties": { "entries": { "minItems": 1, "maxItems": 2 } } }
+    }
+  ],
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "runReference": { "type": "string", "pattern": "^R-[0-9a-f]{12}$" },
+    "targetReference": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$",
+      "not": { "const": "T-e10f0095ab8f" }
+    },
+    "sourceReference": { "type": "string", "pattern": "^U-[0-9a-f]{12}$" },
+    "safeErrorCode": {
+      "type": "string",
+      "enum": [
+        "bad_request",
+        "backend_error",
+        "duplicate_identity",
+        "etag_conflict",
+        "forbidden",
+        "invalid_response",
+        "not_found",
+        "pagination_cycle",
+        "pagination_limit",
+        "production_or_mismatched_test_write_target",
+        "production_test_write_forbidden",
+        "quota_exceeded",
+        "rate_limited",
+        "retry_exhausted",
+        "service_unavailable",
+        "target_mismatch",
+        "test_write_add_identity_exists",
+        "test_write_api_call_budget_exceeded",
+        "test_write_desired_text_missing",
+        "test_write_duplicate_identity",
+        "test_write_guard_failed",
+        "test_write_mutation_attempt_exceeded",
+        "test_write_pagination_cycle",
+        "test_write_pagination_limit",
+        "test_write_read_back_etag_missing",
+        "test_write_read_back_identity_missing",
+        "test_write_read_back_mismatch",
+        "test_write_read_retry_exhausted",
+        "test_write_snapshot_hash_mismatch",
+        "test_write_target_access_role_mismatch",
+        "test_write_target_metadata_changed",
+        "test_write_target_metadata_missing",
+        "test_write_target_not_owned",
+        "test_write_target_summary_mismatch",
+        "test_write_target_timezone_mismatch",
+        "test_write_update_identity_missing",
+        "test_write_update_snapshot_mismatch",
+        "timeout",
+        "transport_error",
+        "unauthorized",
+        "unexpected_event_color_or_label",
+        "unknown",
+        "write_outcome_uncertain"
+      ]
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "run_spec_ref",
+        "target_safe_ref",
+        "source_ref",
+        "operation",
+        "phase",
+        "status",
+        "safe_error_code",
+        "api_call_count",
+        "read_retry_count",
+        "mutation_attempt_count",
+        "mutation_retry_count",
+        "recovered_after_uncertain",
+        "previous_entry_hash",
+        "entry_hash"
+      ],
+      "properties": {
+        "sequence": { "$ref": "#/$defs/count" },
+        "run_spec_ref": { "$ref": "#/$defs/runReference" },
+        "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+        "source_ref": { "$ref": "#/$defs/sourceReference" },
+        "operation": { "enum": ["add", "update"] },
+        "phase": { "enum": ["preflight", "mutation", "read_back", "uncertain_check", "complete"] },
+        "status": { "enum": ["succeeded", "failed", "uncertain", "recovered"] },
+        "safe_error_code": {
+          "oneOf": [
+            { "$ref": "#/$defs/safeErrorCode" },
+            { "type": "null" }
+          ]
+        },
+        "api_call_count": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "read_retry_count": { "$ref": "#/$defs/count" },
+        "mutation_attempt_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "mutation_retry_count": { "const": 0 },
+        "recovered_after_uncertain": { "type": "boolean" },
+        "previous_entry_hash": { "$ref": "#/$defs/sha256" },
+        "entry_hash": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

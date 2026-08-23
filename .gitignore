@@ -35,6 +35,10 @@ plans/
 apply-bundles/
 journals/
 simulations/
+test-write-run-specs/
+test-write-journals/
+test-write-reports/
+test-write-receipts/
 snapshots/
 cache/
 reports/internal/
@@ -44,6 +48,11 @@ reports/internal/
 *.apply-bundle.json
 *.operation-journal.json
 *.simulation.json
+*.test-write-run-spec.json
+*.test-write-journal.json
+*.test-write-report.json
+*.test-write-receipt.json
+test-write-target*.toml
 local-data/
 input/
 .DS_Store

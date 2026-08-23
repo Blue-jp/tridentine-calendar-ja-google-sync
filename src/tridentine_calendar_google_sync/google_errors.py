@@ -10,6 +10,7 @@ ALLOWED_GOOGLE_REASONS: Final[frozenset[str]] = frozenset(
     {
         "bad_request",
         "backend_error",
+        "etag_conflict",
         "forbidden",
         "invalid_response",
         "not_found",
@@ -32,6 +33,9 @@ ALLOWED_GOOGLE_OPERATIONS: Final[frozenset[str]] = frozenset(
         "client.build",
         "credentials.refresh",
         "events.list",
+        "events.get",
+        "events.import",
+        "events.patch",
         "snapshot.sanitize",
         "snapshot.write",
         "target.validate",
@@ -40,6 +44,7 @@ ALLOWED_GOOGLE_OPERATIONS: Final[frozenset[str]] = frozenset(
 
 _RAW_REASON_MAP: Final[dict[str, str]] = {
     "backendError": "backend_error",
+    "conditionNotMet": "etag_conflict",
     "internalError": "backend_error",
     "quotaExceeded": "quota_exceeded",
     "rateLimitExceeded": "rate_limited",
@@ -201,6 +206,7 @@ def _classify_exception(error: BaseException) -> tuple[int | None, str, bool]:
         403: ("forbidden", False),
         404: ("not_found", False),
         408: ("timeout", True),
+        412: ("etag_conflict", False),
         429: ("rate_limited", True),
         500: ("backend_error", True),
         502: ("backend_error", True),

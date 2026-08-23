@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/test-write-run-spec-v1.schema.json",
+  "title": "Private one-operation Test Calendar write Run Spec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_type",
+    "test_only",
+    "production_locked",
+    "tool_version",
+    "target_fingerprint",
+    "target_safe_ref",
+    "target_environment",
+    "source_profile",
+    "source_sha256",
+    "source_event_count",
+    "current_snapshot_hash",
+    "plan_hash",
+    "trusted_baseline_hash",
+    "operation_count",
+    "add_count",
+    "update_count",
+    "operation",
+    "approval_required",
+    "run_spec_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "run_type": { "const": "test-calendar-write-run-spec-v1" },
+    "test_only": { "const": true },
+    "production_locked": { "const": true },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "target_fingerprint": { "$ref": "#/$defs/sha256" },
+    "target_safe_ref": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$",
+      "not": { "const": "T-e10f0095ab8f" }
+    },
+    "target_environment": { "const": "test" },
+    "source_profile": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "source_sha256": { "$ref": "#/$defs/sha256" },
+    "source_event_count": { "$ref": "#/$defs/count" },
+    "current_snapshot_hash": { "$ref": "#/$defs/sha256" },
+    "plan_hash": { "$ref": "#/$defs/sha256" },
+    "trusted_baseline_hash": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "operation_count": { "const": 1 },
+    "add_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+    "update_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+    "operation": { "$ref": "#/$defs/operation" },
+    "approval_required": { "const": true },
+    "run_spec_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "add_count": { "const": 1 },
+        "update_count": { "const": 0 },
+        "trusted_baseline_hash": { "type": "null" },
+        "operation": {
+          "allOf": [
+            { "$ref": "#/$defs/operation" },
+            { "properties": { "operation": { "const": "add" } } }
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "add_count": { "const": 0 },
+        "update_count": { "const": 1 },
+        "trusted_baseline_hash": { "$ref": "#/$defs/sha256" },
+        "operation": {
+          "allOf": [
+            { "$ref": "#/$defs/operation" },
+            { "properties": { "operation": { "const": "update" } } }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "count": { "type": "integer", "minimum": 0 },
+    "managedState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "iCalUID",
+        "summary",
+        "description",
+        "start_date",
+        "end_date",
+        "all_day",
+        "event_type"
+      ],
+      "properties": {
+        "iCalUID": { "type": "string", "minLength": 1 },
+        "summary": { "type": ["string", "null"] },
+        "description": { "type": ["string", "null"] },
+        "start_date": { "type": "string", "format": "date" },
+        "end_date": { "type": "string", "format": "date" },
+        "all_day": { "const": true },
+        "event_type": { "const": "default" }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "source_ref",
+        "google_ref",
+        "changed_fields",
+        "current_state",
+        "desired_state",
+        "google_event_id",
+        "expected_etag",
+        "operation_content_hash"
+      ],
+      "properties": {
+        "operation": { "enum": ["add", "update"] },
+        "source_ref": { "type": "string", "pattern": "^U-[0-9a-f]{12}$" },
+        "google_ref": {
+          "type": ["string", "null"],
+          "pattern": "^G-[0-9a-f]{12}$"
+        },
+        "changed_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["summary", "description", "start_date", "end_date"] }
+        },
+        "current_state": {
+          "oneOf": [
+            { "$ref": "#/$defs/managedState" },
+            { "type": "null" }
+          ]
+        },
+        "desired_state": { "$ref": "#/$defs/managedState" },
+        "google_event_id": { "type": ["string", "null"], "minLength": 1 },
+        "expected_etag": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "not": { "const": "*" }
+        },
+        "operation_content_hash": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

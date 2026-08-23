@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
+import json
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -89,6 +91,16 @@ from tridentine_calendar_google_sync.google_target import (
     verify_target_fingerprint,
     verify_target_metadata,
 )
+from tridentine_calendar_google_sync.google_test_write_auth import (
+    TestWriteAuthConfigError,
+    TestWriteAuthError,
+    authorize_test_google_write,
+    load_test_write_credentials,
+)
+from tridentine_calendar_google_sync.google_test_write_client import (
+    TestWriteClientError,
+    build_test_calendar_write_client,
+)
 from tridentine_calendar_google_sync.operation_journal import (
     OperationJournalError,
     load_operation_journal,
@@ -114,6 +126,39 @@ from tridentine_calendar_google_sync.snapshot_io import (
 )
 from tridentine_calendar_google_sync.source_ics import SourceInputError, inspect_source
 from tridentine_calendar_google_sync.source_report import render_json_report, render_text_report
+from tridentine_calendar_google_sync.test_write_approval import (
+    TestWriteApprovalError,
+    approve_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_journal import (
+    TestWriteJournalError,
+    write_test_write_journal,
+)
+from tridentine_calendar_google_sync.test_write_report import (
+    render_test_write_json_report,
+    render_test_write_text_report,
+)
+from tridentine_calendar_google_sync.test_write_run_spec import (
+    TestWriteRunSpecError,
+    build_test_write_run_spec,
+    verify_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_run_spec_io import (
+    TestWriteRunSpecIOError,
+    load_test_write_run_spec,
+    write_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_target import (
+    TestWriteTargetConfigError,
+    TestWriteTargetError,
+    load_test_write_target_config,
+    test_write_target_reference,
+)
+from tridentine_calendar_google_sync.test_write_transport import (
+    TestWriteExecutionState,
+    TestWriteTransportError,
+    run_test_calendar_write,
+)
 
 EXIT_VALID = 0
 EXIT_DIFFERENCES = 1
@@ -130,6 +175,16 @@ _APPLY_SAFETY_HELP = (
     "Does not write to Google Calendar.\n"
     "Production targets are refused.\n"
     "Delete execution is not implemented."
+)
+
+_TEST_WRITE_SAFETY_HELP = (
+    "Test Calendar only; Production Calendar targets are refused.\n"
+    "Only run-test-calendar-write can perform a Google Calendar write, and it requires "
+    "explicit --online plus an exact approval phrase.\n"
+    "Each run contains exactly one Add or Update operation. Delete is not implemented.\n"
+    "Add uses events.import and Update uses events.patch with an exact If-Match ETag.\n"
+    "The Test write token is separate from the Production read-only token.\n"
+    "No batch execution and no automatic mutation retry are implemented."
 )
 
 
@@ -482,6 +537,171 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         help="optional local public inspection report path",
     )
+
+    authorize_test_write = subparsers.add_parser(
+        "authorize-test-google-write",
+        help="authorize the exact Test Calendar owned-events write scope",
+        description=(
+            "Create a separate Test Calendar write token through explicit desktop OAuth. "
+            f"{_TEST_WRITE_SAFETY_HELP}"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    authorize_test_write.add_argument(
+        "--online",
+        action="store_true",
+        help="explicitly allow the Test-only OAuth flow",
+    )
+    authorize_test_write.add_argument(
+        "--credentials-file",
+        required=True,
+        help="absolute repository-external desktop OAuth client JSON path",
+    )
+    authorize_test_write.add_argument(
+        "--token-file",
+        required=True,
+        help="new absolute repository-external Test write token output path",
+    )
+    authorize_test_write.add_argument(
+        "--production-read-token-file",
+        required=True,
+        help="protected Production read-token path used only for path-separation checks",
+    )
+    authorize_test_write.add_argument(
+        "--target-config",
+        required=True,
+        help="absolute repository-external Test target TOML path",
+    )
+
+    build_test_run = subparsers.add_parser(
+        "build-test-write-run-spec",
+        help="build one private offline Test Calendar write Run Spec",
+        description=(
+            "Build one private one-operation Run Spec without OAuth or API access. "
+            f"{_TEST_WRITE_SAFETY_HELP}"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    build_test_run.add_argument("--source", required=True, help="local ICS path")
+    build_test_run.add_argument("--profile", required=True, help="Accepted source profile ID")
+    build_test_run.add_argument(
+        "--profiles-dir",
+        help="optional local directory containing source profiles",
+    )
+    build_test_run.add_argument(
+        "--google-snapshot",
+        required=True,
+        help="absolute repository-external sanitized Test snapshot path",
+    )
+    build_test_run.add_argument(
+        "--plan",
+        required=True,
+        help="absolute repository-external canonical one-operation Sync Plan path",
+    )
+    build_test_run.add_argument(
+        "--target-config",
+        required=True,
+        help="absolute repository-external Test target TOML path",
+    )
+    build_test_run.add_argument(
+        "--trusted-baseline",
+        help="absolute repository-external trusted Test baseline path; required for Update",
+    )
+    build_test_run.add_argument(
+        "--output",
+        required=True,
+        help="new absolute repository-external private Run Spec path",
+    )
+
+    inspect_test_run = subparsers.add_parser(
+        "inspect-test-write-run-spec",
+        help="inspect a private Test Write Run Spec through safe metadata",
+        description=(
+            "Inspect a redacted Test Calendar Run Spec without revealing event content. "
+            f"{_TEST_WRITE_SAFETY_HELP}"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inspect_test_run.add_argument(
+        "--run-spec",
+        required=True,
+        help="absolute repository-external private Run Spec path",
+    )
+    inspect_test_run.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_test_run.add_argument(
+        "--output",
+        help="optional repository-external safe inspection report path",
+    )
+
+    run_test_write = subparsers.add_parser(
+        "run-test-calendar-write",
+        help="run one explicitly approved Test Calendar Add or Update",
+        description=(
+            "Perform the sole live-write entry point for a dedicated Test Calendar. "
+            f"{_TEST_WRITE_SAFETY_HELP}"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    run_test_write.add_argument(
+        "--online",
+        action="store_true",
+        help="explicitly allow the bounded Test Calendar API run",
+    )
+    run_test_write.add_argument(
+        "--run-spec",
+        required=True,
+        help="absolute repository-external approved private Run Spec path",
+    )
+    run_test_write.add_argument(
+        "--plan",
+        required=True,
+        help="absolute repository-external canonical current Sync Plan path",
+    )
+    run_test_write.add_argument(
+        "--target-config",
+        required=True,
+        help="absolute repository-external Test target TOML path",
+    )
+    run_test_write.add_argument(
+        "--token-file",
+        required=True,
+        help="absolute repository-external Test write token path",
+    )
+    run_test_write.add_argument(
+        "--production-read-token-file",
+        required=True,
+        help="protected Production read-token path used only for path-separation checks",
+    )
+    run_test_write.add_argument(
+        "--trusted-baseline",
+        help="absolute repository-external trusted Test baseline path; required for Update",
+    )
+    run_test_write.add_argument(
+        "--confirmation",
+        required=True,
+        help="exact Test Calendar write approval phrase",
+    )
+    run_test_write.add_argument(
+        "--journal-output",
+        required=True,
+        help="new absolute repository-external safe journal path",
+    )
+    run_test_write.add_argument(
+        "--report-output",
+        required=True,
+        help="new absolute repository-external redacted report path",
+    )
+    run_test_write.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
     return parser
 
 
@@ -532,6 +752,209 @@ def _diff_exit_code(diff: CalendarDiff) -> int:
 def _require_online(args: argparse.Namespace) -> None:
     if getattr(args, "online", False) is not True:
         raise argparse.ArgumentError(None, "explicit --online is required")
+
+
+def _test_write_run_spec_inspection_data(run_spec: object) -> dict[str, object]:
+    from tridentine_calendar_google_sync.test_write_models import TestWriteRunSpec
+
+    if not isinstance(run_spec, TestWriteRunSpec):
+        raise TestWriteRunSpecError(
+            "invalid_test_write_run_spec",
+            "Test write Run Spec is invalid",
+        )
+    verify_test_write_run_spec(run_spec)
+    data: dict[str, object] = {
+        "schema_version": "1.0",
+        "report_type": "test-calendar-write-run-spec-inspection-v1",
+        "test_only": run_spec.test_only,
+        "production_locked": run_spec.production_locked,
+        "target_safe_ref": run_spec.target_safe_ref,
+        "run_spec_ref": f"R-{run_spec.run_spec_content_hash[:12]}",
+        "source_profile": run_spec.source_profile,
+        "source_event_count": run_spec.source_event_count,
+        "operation_count": run_spec.operation_count,
+        "add_count": run_spec.add_count,
+        "update_count": run_spec.update_count,
+        "operation": run_spec.operation.operation.value,
+        "source_ref": run_spec.operation.source_ref,
+        "approval_required": run_spec.approval_required,
+    }
+    canonical = json.dumps(
+        data,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        **data,
+        "report_content_hash": hashlib.sha256(
+            b"tridentine-calendar-google-sync:test-write-run-spec-inspection:v1\x00" + canonical
+        ).hexdigest(),
+    }
+
+
+def _render_test_write_run_spec_inspection(run_spec: object, report_format: str) -> str:
+    data = _test_write_run_spec_inspection_data(run_spec)
+    if report_format == "json":
+        return json.dumps(data, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
+    return "\n".join(
+        (
+            "Test Calendar write Run Spec inspection",
+            "Test Calendar only: yes",
+            "Production locked: yes",
+            f"target reference: {data['target_safe_ref']}",
+            f"Run Spec reference: {data['run_spec_ref']}",
+            f"source profile: {data['source_profile']}",
+            f"source events: {data['source_event_count']}",
+            f"operation: {data['operation']}",
+            f"operations: {data['operation_count']}",
+            f"add: {data['add_count']}",
+            f"update: {data['update_count']}",
+            f"source reference: {data['source_ref']}",
+            "approval required: yes",
+            f"report hash: {data['report_content_hash']}",
+            "",
+        )
+    )
+
+
+def _authorize_test_google_write_command(args: argparse.Namespace) -> int:
+    _require_online(args)
+    target = load_test_write_target_config(args.target_config)
+    authorize_test_google_write(
+        args.credentials_file,
+        args.token_file,
+        args.production_read_token_file,
+        target,
+    )
+    sys.stdout.write(
+        "Test Calendar write authorization completed: "
+        f"target={test_write_target_reference(target)}; "
+        "scope=calendar.events.owned; token-separated=yes; token-content-displayed=no.\n"
+    )
+    return EXIT_VALID
+
+
+def _build_test_write_run_spec_command(args: argparse.Namespace) -> int:
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    snapshot = load_google_snapshot(args.google_snapshot)
+    plan = load_sync_plan_report(args.plan)
+    target = load_test_write_target_config(args.target_config)
+    baseline = load_baseline(args.trusted_baseline) if args.trusted_baseline else None
+    run_spec = build_test_write_run_spec(
+        profile,
+        source,
+        snapshot,
+        plan,
+        target,
+        trusted_baseline=baseline,
+    )
+    write_test_write_run_spec(run_spec, args.output)
+    data = _test_write_run_spec_inspection_data(run_spec)
+    sys.stdout.write(
+        "Private Test Calendar write Run Spec stored: "
+        f"target={data['target_safe_ref']}; run={data['run_spec_ref']}; "
+        f"operation={data['operation']}; add={data['add_count']}; "
+        f"update={data['update_count']}; approval-required=yes.\n"
+    )
+    return EXIT_DIFFERENCES
+
+
+def _inspect_test_write_run_spec_command(args: argparse.Namespace) -> int:
+    run_spec = load_test_write_run_spec(args.run_spec)
+    rendered = _render_test_write_run_spec_inspection(run_spec, args.report_format)
+    if args.output:
+        atomic_write_private_text(args.output, rendered, overwrite=False)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
+
+
+def _test_write_output_paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    journal_path = validate_sensitive_output_path(args.journal_output, overwrite=False)
+    report_path = validate_sensitive_output_path(args.report_output, overwrite=False)
+    try:
+        if journal_path.resolve(strict=False) == report_path.resolve(strict=False):
+            raise TestWriteTransportError(
+                "test_write_output_paths_collide",
+                "Test write journal and report paths must be different",
+            )
+    except OSError as exc:
+        raise TestWriteTransportError(
+            "test_write_output_path_resolution_failed",
+            "Test write output paths could not be resolved safely",
+        ) from exc
+    return journal_path, report_path
+
+
+def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
+    _require_online(args)
+    journal_path, report_path = _test_write_output_paths(args)
+    target = load_test_write_target_config(args.target_config)
+    run_spec = load_test_write_run_spec(args.run_spec)
+    plan = load_sync_plan_report(args.plan)
+    baseline = load_baseline(args.trusted_baseline) if args.trusted_baseline else None
+    baseline_hash = baseline.baseline_content_hash if baseline is not None else None
+
+    # All local Production, integrity, provenance, and approval guards execute
+    # before credentials are loaded or an API-capable client can be constructed.
+    target_ref = test_write_target_reference(target)
+    if run_spec.target_safe_ref != target_ref or not hmac.compare_digest(
+        run_spec.target_fingerprint,
+        target.expected_target_fingerprint,
+    ):
+        raise TestWriteTransportError(
+            "production_or_mismatched_test_write_target",
+            "Production or mismatched Calendar write access is forbidden",
+        )
+    approve_test_write_run_spec(
+        run_spec,
+        args.confirmation,
+        current_snapshot_hash=run_spec.current_snapshot_hash,
+        current_plan_hash=plan.plan_content_hash,
+        current_baseline_hash=baseline_hash,
+    )
+
+    bindings = load_google_optional_bindings()
+    credentials = load_test_write_credentials(
+        args.token_file,
+        args.production_read_token_file,
+        target,
+        bindings=bindings,
+    )
+    client = build_test_calendar_write_client(
+        credentials,
+        target_config=target,
+        build_service=bindings.build_service,
+    )
+    result = run_test_calendar_write(
+        run_spec,
+        target,
+        client,
+        args.confirmation,
+        current_snapshot_hash=run_spec.current_snapshot_hash,
+        current_plan_hash=plan.plan_content_hash,
+        current_baseline_hash=baseline_hash,
+    )
+    rendered = (
+        render_test_write_json_report(result)
+        if args.report_format == "json"
+        else render_test_write_text_report(result)
+    )
+    write_test_write_journal(result.journal, journal_path)
+    atomic_write_private_text(report_path, rendered, overwrite=False)
+    report = json.loads(render_test_write_json_report(result))
+    sys.stdout.write(
+        "Test Calendar write run stored: "
+        f"target={report['target_safe_ref']}; run={report['run_spec_ref']}; "
+        f"operation={report['operation']}; state={report['state']}; "
+        f"success={'yes' if report['success'] else 'no'}; "
+        f"API-calls={report['api_call_count']}; "
+        f"mutation-attempts={report['mutation_attempt_count']}; "
+        "mutation-retries=0.\n"
+    )
+    return EXIT_VALID if result.state is TestWriteExecutionState.SUCCEEDED else EXIT_FATAL_GUARD
 
 
 def _authorize_google_command(args: argparse.Namespace) -> int:
@@ -836,6 +1259,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.print_help(sys.stdout)
             return EXIT_CLI_ERROR
         args = parser.parse_args(effective_argv)
+        if args.command == "authorize-test-google-write":
+            return _authorize_test_google_write_command(args)
+        if args.command == "build-test-write-run-spec":
+            return _build_test_write_run_spec_command(args)
+        if args.command == "inspect-test-write-run-spec":
+            return _inspect_test_write_run_spec_command(args)
+        if args.command == "run-test-calendar-write":
+            return _run_test_calendar_write_command(args)
         if args.command == "authorize-google-readonly":
             return _authorize_google_command(args)
         if args.command == "fetch-google-snapshot":
@@ -899,6 +1330,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (GoogleAuthConfigError, TargetConfigError) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_CLI_ERROR
+    except (TestWriteAuthConfigError, TestWriteTargetConfigError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_CLI_ERROR
+    except TestWriteApprovalError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_CLI_ERROR
     except (TargetIdentityError, GoogleTargetError) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
@@ -908,6 +1345,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (GoogleAuthError, SafeGoogleError) as exc:
         public_message = str(exc) if isinstance(exc, SafeGoogleError) else exc.public_message
         sys.stderr.write(f"error: {public_message}\n")
+        return EXIT_GOOGLE_READ_ERROR
+    except TestWriteAuthError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_GOOGLE_READ_ERROR
     except SnapshotWriteError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
@@ -930,10 +1370,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (PlanReportError, OperationJournalError) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
+    except (TestWriteRunSpecIOError, TestWriteJournalError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
     except ApplyError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
     except PlanError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_FATAL_GUARD
+    except (TestWriteTargetError, TestWriteRunSpecError, TestWriteTransportError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_FATAL_GUARD
+    except TestWriteClientError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except SensitivePathError as exc:

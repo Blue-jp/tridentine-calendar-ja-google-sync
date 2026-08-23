@@ -1,4 +1,4 @@
-name: Offline and mocked Google read tests
+name: Offline and mocked calendar safety tests
 
 on:
   push:
@@ -24,11 +24,11 @@ jobs:
           - os: ubuntu-latest
             layer: base
             sync_args: --extra dev
-            pytest_args: -m "not google_read"
+            pytest_args: -m "not google_read and not google_test_write"
           - os: windows-latest
             layer: base
             sync_args: --extra dev
-            pytest_args: -m "not google_read"
+            pytest_args: -m "not google_read and not google_test_write"
           - os: ubuntu-latest
             layer: google-read
             sync_args: --extra dev --extra google-read
@@ -37,6 +37,14 @@ jobs:
             layer: google-read
             sync_args: --extra dev --extra google-read
             pytest_args: -m google_read
+          - os: ubuntu-latest
+            layer: google-test-write
+            sync_args: --extra dev --extra google-test-write
+            pytest_args: -m google_test_write
+          - os: windows-latest
+            layer: google-test-write
+            sync_args: --extra dev --extra google-test-write
+            pytest_args: -m google_test_write
 
     steps:
       - name: Check out source
@@ -62,7 +70,7 @@ jobs:
         run: uv run --frozen ruff format --check .
 
       - name: Type check
-        if: matrix.layer == 'google-read'
+        if: matrix.layer == 'google-read' || matrix.layer == 'google-test-write'
         run: uv run --frozen mypy --strict src
 
       - name: Run isolated test layer
