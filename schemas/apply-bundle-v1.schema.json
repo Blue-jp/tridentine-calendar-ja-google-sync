@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/apply-bundle-v1.schema.json",
+  "title": "Private non-executable add/update apply bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_type",
+    "tool_version",
+    "state",
+    "environment",
+    "target_fingerprint",
+    "target_reference",
+    "source_profile",
+    "accepted_tag",
+    "accepted_commit",
+    "source_sha256",
+    "source_canonical_hash",
+    "source_event_count",
+    "snapshot_integrity_hash",
+    "snapshot_event_count",
+    "baseline_integrity_hash",
+    "baseline_managed_uid_count",
+    "plan_integrity_hash",
+    "plan_content_hash",
+    "plan_state",
+    "generated_operation_count",
+    "add_count",
+    "update_count",
+    "delete_count",
+    "operations",
+    "production_locked",
+    "execution_enabled",
+    "bundle_integrity_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "bundle_type": { "const": "non-executable-apply-bundle-v1" },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "state": {
+      "enum": [
+        "draft",
+        "approval_required",
+        "approved_for_simulation",
+        "simulation_complete",
+        "simulation_failed"
+      ]
+    },
+    "environment": { "enum": ["production", "test"] },
+    "target_fingerprint": { "$ref": "#/$defs/sha256" },
+    "target_reference": { "$ref": "#/$defs/targetReference" },
+    "source_profile": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "accepted_tag": { "type": "string", "minLength": 1 },
+    "accepted_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "source_sha256": { "$ref": "#/$defs/sha256" },
+    "source_canonical_hash": { "$ref": "#/$defs/sha256" },
+    "source_event_count": { "$ref": "#/$defs/count" },
+    "snapshot_integrity_hash": { "$ref": "#/$defs/sha256" },
+    "snapshot_event_count": { "$ref": "#/$defs/count" },
+    "baseline_integrity_hash": { "$ref": "#/$defs/sha256" },
+    "baseline_managed_uid_count": { "$ref": "#/$defs/count" },
+    "plan_integrity_hash": { "$ref": "#/$defs/sha256" },
+    "plan_content_hash": { "$ref": "#/$defs/sha256" },
+    "plan_state": { "enum": ["draft", "review_required", "blocked"] },
+    "generated_operation_count": { "$ref": "#/$defs/count" },
+    "add_count": { "$ref": "#/$defs/count" },
+    "update_count": { "$ref": "#/$defs/count" },
+    "delete_count": { "const": 0 },
+    "operations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/operation" }
+    },
+    "production_locked": { "const": true },
+    "execution_enabled": { "const": false },
+    "bundle_integrity_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "environment": { "const": "production" } } },
+      "then": {
+        "properties": {
+          "target_reference": { "const": "T-e10f0095ab8f" },
+          "state": { "const": "draft" },
+          "generated_operation_count": { "const": 0 },
+          "add_count": { "const": 0 },
+          "update_count": { "const": 0 },
+          "operations": { "maxItems": 0 }
+        }
+      },
+      "else": {
+        "properties": {
+          "target_reference": { "not": { "const": "T-e10f0095ab8f" } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "targetReference": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$"
+    },
+    "sourceReference": {
+      "type": "string",
+      "pattern": "^U-[0-9a-f]{12}$"
+    },
+    "googleReference": {
+      "type": "string",
+      "pattern": "^G-[0-9a-f]{12}$"
+    },
+    "changedField": {
+      "enum": ["summary", "description", "start_date", "end_date"]
+    },
+    "timeBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "dateTime"],
+      "properties": {
+        "date": { "type": ["string", "null"], "format": "date" },
+        "dateTime": { "type": ["string", "null"], "format": "date-time" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "date": { "type": "string" },
+            "dateTime": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "date": { "type": "null" },
+            "dateTime": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "addPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "payload_type",
+        "uid",
+        "summary",
+        "description",
+        "start",
+        "effective_end",
+        "all_day",
+        "event_type"
+      ],
+      "properties": {
+        "payload_type": { "const": "add" },
+        "uid": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "start": { "$ref": "#/$defs/timeBoundary" },
+        "effective_end": { "$ref": "#/$defs/timeBoundary" },
+        "all_day": { "type": "boolean" },
+        "event_type": { "const": "default" }
+      }
+    },
+    "updatePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["payload_type", "event_id", "etag", "changed_fields"],
+      "properties": {
+        "payload_type": { "const": "update" },
+        "event_id": { "type": "string", "minLength": 1 },
+        "etag": { "type": "string", "minLength": 1 },
+        "changed_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/changedField" }
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "start": { "$ref": "#/$defs/timeBoundary" },
+        "effective_end": { "$ref": "#/$defs/timeBoundary" }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "operation_sequence",
+        "source_ref",
+        "google_ref",
+        "start_date",
+        "changed_fields",
+        "source_event_hash",
+        "before_hash",
+        "after_hash",
+        "payload_hash",
+        "source_uid",
+        "payload",
+        "destructive",
+        "approval_required",
+        "operation_integrity_hash"
+      ],
+      "properties": {
+        "operation": { "enum": ["add", "update"] },
+        "operation_sequence": { "type": "integer", "minimum": 1 },
+        "source_ref": { "$ref": "#/$defs/sourceReference" },
+        "google_ref": {
+          "oneOf": [
+            { "$ref": "#/$defs/googleReference" },
+            { "type": "null" }
+          ]
+        },
+        "start_date": { "type": "string", "format": "date" },
+        "changed_fields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/changedField" }
+        },
+        "source_event_hash": { "$ref": "#/$defs/sha256" },
+        "before_hash": { "$ref": "#/$defs/sha256" },
+        "after_hash": { "$ref": "#/$defs/sha256" },
+        "payload_hash": { "$ref": "#/$defs/sha256" },
+        "source_uid": { "type": "string", "minLength": 1 },
+        "payload": {
+          "oneOf": [
+            { "$ref": "#/$defs/addPayload" },
+            { "$ref": "#/$defs/updatePayload" }
+          ]
+        },
+        "destructive": { "const": false },
+        "approval_required": { "const": true },
+        "operation_integrity_hash": { "$ref": "#/$defs/sha256" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "operation": { "const": "add" } } },
+          "then": {
+            "properties": {
+              "google_ref": { "type": "null" },
+              "changed_fields": {
+                "const": ["summary", "description", "start_date", "end_date"]
+              },
+              "payload": { "$ref": "#/$defs/addPayload" }
+            }
+          },
+          "else": {
+            "properties": {
+              "google_ref": { "$ref": "#/$defs/googleReference" },
+              "payload": { "$ref": "#/$defs/updatePayload" }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
