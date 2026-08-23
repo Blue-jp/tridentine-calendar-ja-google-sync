@@ -3,12 +3,40 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
+from tridentine_calendar_google_sync.apply_approval import approve_apply_bundle
+from tridentine_calendar_google_sync.apply_bundle import build_apply_bundle
+from tridentine_calendar_google_sync.apply_bundle_io import (
+    load_apply_bundle,
+    write_apply_bundle,
+)
+from tridentine_calendar_google_sync.apply_models import ApplyEnvironment
+from tridentine_calendar_google_sync.apply_policy import (
+    ApplyConfirmationError,
+    ApplyError,
+    ApplyGuardError,
+)
+from tridentine_calendar_google_sync.apply_report import (
+    build_apply_bundle_json_report,
+    build_apply_json_report,
+    render_apply_bundle_json_report,
+    render_apply_bundle_text_report,
+    render_apply_json_report,
+    render_apply_text_report,
+    render_operation_journal_json_report,
+    render_operation_journal_text_report,
+)
+from tridentine_calendar_google_sync.apply_simulation import (
+    ApplySimulationError,
+    ApplySimulationState,
+    run_apply_simulation,
+)
 from tridentine_calendar_google_sync.baseline_engine import (
     BaselineConfirmationError,
     BaselineError,
@@ -26,6 +54,10 @@ from tridentine_calendar_google_sync.diff_models import CalendarDiff, ManagedSco
 from tridentine_calendar_google_sync.diff_report import (
     render_diff_json_report,
     render_diff_text_report,
+)
+from tridentine_calendar_google_sync.fake_mutation_transport import (
+    FakeMutationError,
+    FakeMutationTransport,
 )
 from tridentine_calendar_google_sync.google_auth import (
     GoogleAuthConfigError,
@@ -57,7 +89,13 @@ from tridentine_calendar_google_sync.google_target import (
     verify_target_fingerprint,
     verify_target_metadata,
 )
+from tridentine_calendar_google_sync.operation_journal import (
+    OperationJournalError,
+    load_operation_journal,
+    write_operation_journal,
+)
 from tridentine_calendar_google_sync.plan_engine import PlanError, build_sync_plan
+from tridentine_calendar_google_sync.plan_io import PlanReportError, load_sync_plan_report
 from tridentine_calendar_google_sync.plan_models import PlanState, PlanThresholds
 from tridentine_calendar_google_sync.plan_report import (
     render_plan_json_report,
@@ -67,6 +105,7 @@ from tridentine_calendar_google_sync.profiles import ProfileError, load_profile
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     atomic_write_private_text,
+    validate_sensitive_output_path,
 )
 from tridentine_calendar_google_sync.snapshot_io import (
     SnapshotWriteError,
@@ -313,6 +352,115 @@ def build_parser() -> argparse.ArgumentParser:
     plan_command.add_argument("--max-add", type=_nonnegative_int, default=0)
     plan_command.add_argument("--max-update", type=_nonnegative_int, default=0)
     plan_command.add_argument("--max-delete", type=_nonnegative_int, default=0)
+    bundle_command = subparsers.add_parser(
+        "build-apply-bundle",
+        help="build a private non-executable apply bundle from canonical local inputs",
+    )
+    bundle_command.add_argument("--source", required=True, help="local ICS path")
+    bundle_command.add_argument("--profile", required=True, help="Accepted source profile ID")
+    bundle_command.add_argument(
+        "--profiles-dir",
+        help="optional local directory containing source profiles",
+    )
+    bundle_command.add_argument(
+        "--google-snapshot",
+        required=True,
+        help="local sanitized Google snapshot JSON path",
+    )
+    bundle_command.add_argument(
+        "--trusted-baseline",
+        required=True,
+        help="absolute private trusted baseline path",
+    )
+    bundle_command.add_argument(
+        "--plan",
+        required=True,
+        help="absolute canonical JSON sync plan report path",
+    )
+    bundle_command.add_argument(
+        "--environment",
+        required=True,
+        choices=(ApplyEnvironment.TEST.value, ApplyEnvironment.PRODUCTION.value),
+        help="explicit apply target environment; there is no default",
+    )
+    bundle_command.add_argument(
+        "--output",
+        required=True,
+        help="absolute private apply bundle output path",
+    )
+    inspect_bundle_command = subparsers.add_parser(
+        "inspect-apply-bundle",
+        help="inspect a private apply bundle through a redacted public report",
+    )
+    inspect_bundle_command.add_argument(
+        "--bundle",
+        required=True,
+        help="absolute private apply bundle path",
+    )
+    inspect_bundle_command.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_bundle_command.add_argument(
+        "--output",
+        help="optional local public inspection report path",
+    )
+    simulate_command = subparsers.add_parser(
+        "simulate-apply",
+        help="approve and run one test-only bundle against the offline fake transport",
+    )
+    simulate_command.add_argument(
+        "--bundle",
+        required=True,
+        help="absolute private approval-required test bundle path",
+    )
+    simulate_command.add_argument(
+        "--plan",
+        required=True,
+        help="absolute canonical JSON current sync plan report path",
+    )
+    simulate_command.add_argument(
+        "--confirmation",
+        required=True,
+        help="exact test-only simulation approval phrase",
+    )
+    simulate_command.add_argument(
+        "--journal-output",
+        required=True,
+        help="absolute private final operation journal output path",
+    )
+    simulate_command.add_argument(
+        "--report-output",
+        required=True,
+        help="absolute private redacted simulation report output path",
+    )
+    simulate_command.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_journal_command = subparsers.add_parser(
+        "inspect-operation-journal",
+        help="inspect a private journal through a redacted public report",
+    )
+    inspect_journal_command.add_argument(
+        "--journal",
+        required=True,
+        help="absolute private operation journal path",
+    )
+    inspect_journal_command.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_journal_command.add_argument(
+        "--output",
+        help="optional local public inspection report path",
+    )
     return parser
 
 
@@ -529,6 +677,129 @@ def _plan_sync_command(args: argparse.Namespace) -> int:
     return EXIT_FATAL_GUARD
 
 
+def _build_apply_bundle_command(args: argparse.Namespace) -> int:
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    snapshot = load_google_snapshot(args.google_snapshot)
+    baseline = load_baseline(args.trusted_baseline)
+    plan = load_sync_plan_report(args.plan)
+    recomputed = build_sync_plan(
+        profile,
+        source,
+        snapshot,
+        baseline,
+        thresholds=plan.thresholds,
+    )
+    if not hmac.compare_digest(
+        render_plan_json_report(plan).encode("utf-8"),
+        render_plan_json_report(recomputed).encode("utf-8"),
+    ):
+        raise ApplyGuardError(
+            "apply_plan_recomputation_mismatch",
+            "apply inputs do not exactly reproduce the supplied plan",
+        )
+    environment = ApplyEnvironment(args.environment)
+    bundle = build_apply_bundle(
+        profile,
+        source,
+        snapshot,
+        baseline,
+        plan,
+        environment,
+    )
+    write_apply_bundle(bundle, args.output)
+    report = build_apply_bundle_json_report(bundle)
+    counts = report["operation_counts"]
+    assert isinstance(counts, dict)
+    sys.stdout.write(
+        "Non-executable apply bundle stored: "
+        f"environment={report['environment']}; state={report['state']}; "
+        f"target={report['target_reference']}; plan={report['plan_reference']}; "
+        f"bundle={report['bundle_reference']}; operations={counts['total']}; "
+        f"add={counts['add']}; update={counts['update']}; delete={counts['delete']}.\n"
+    )
+    return EXIT_VALID if bundle.generated_operation_count == 0 else EXIT_DIFFERENCES
+
+
+def _inspect_apply_bundle_command(args: argparse.Namespace) -> int:
+    bundle = load_apply_bundle(args.bundle)
+    rendered = (
+        render_apply_bundle_json_report(bundle)
+        if args.report_format == "json"
+        else render_apply_bundle_text_report(bundle)
+    )
+    if args.output:
+        _write_report(args.output, rendered)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
+
+
+def _simulation_output_paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    journal_path = validate_sensitive_output_path(args.journal_output, overwrite=False)
+    report_path = validate_sensitive_output_path(args.report_output, overwrite=False)
+    try:
+        paths_collide = journal_path.resolve(strict=False) == report_path.resolve(strict=False)
+    except OSError as exc:
+        raise ApplyGuardError(
+            "simulation_output_path_resolution_failed",
+            "simulation output paths could not be safely resolved",
+        ) from exc
+    if paths_collide:
+        raise ApplyGuardError(
+            "simulation_output_paths_collide",
+            "journal and report outputs must be different files",
+        )
+    return journal_path, report_path
+
+
+def _simulate_apply_command(args: argparse.Namespace) -> int:
+    journal_path, report_path = _simulation_output_paths(args)
+    bundle = load_apply_bundle(args.bundle)
+    plan = load_sync_plan_report(args.plan)
+    approved = approve_apply_bundle(
+        bundle,
+        args.confirmation,
+        plan.plan_content_hash,
+    )
+    transport = FakeMutationTransport.from_bundle(approved)
+    result = run_apply_simulation(approved, transport)
+    rendered = (
+        render_apply_json_report(result)
+        if args.report_format == "json"
+        else render_apply_text_report(result)
+    )
+    write_operation_journal(result.journal, journal_path)
+    atomic_write_private_text(report_path, rendered, overwrite=False)
+    report = build_apply_json_report(result)
+    sys.stdout.write(
+        "Offline fake apply simulation stored: "
+        f"state={report['simulation_state']}; target={report['target_reference']}; "
+        f"plan={report['plan_reference']}; bundle={report['bundle_reference']}; "
+        f"stopped_early={'yes' if report['stopped_early'] else 'no'}; "
+        f"fatal_guard={'yes' if report['fatal_guard'] else 'no'}.\n"
+    )
+    if result.state is ApplySimulationState.COMPLETED:
+        return EXIT_VALID
+    if result.state is ApplySimulationState.PARTIAL_FAILURE:
+        return EXIT_DIFFERENCES
+    return EXIT_FATAL_GUARD
+
+
+def _inspect_operation_journal_command(args: argparse.Namespace) -> int:
+    journal = load_operation_journal(args.journal)
+    rendered = (
+        render_operation_journal_json_report(journal)
+        if args.report_format == "json"
+        else render_operation_journal_text_report(journal)
+    )
+    if args.output:
+        _write_report(args.output, rendered)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the offline CLI and return a documented process exit code.
 
@@ -555,6 +826,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _trust_baseline_command(args)
         if args.command == "plan-sync":
             return _plan_sync_command(args)
+        if args.command == "build-apply-bundle":
+            return _build_apply_bundle_command(args)
+        if args.command == "inspect-apply-bundle":
+            return _inspect_apply_bundle_command(args)
+        if args.command == "simulate-apply":
+            return _simulate_apply_command(args)
+        if args.command == "inspect-operation-journal":
+            return _inspect_operation_journal_command(args)
         profile = load_profile(args.profile, args.profiles_dir)
         inspection = inspect_source(args.source, profile)
         if args.command == "diff-snapshot":
@@ -618,6 +897,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except BaselineError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
+    except ApplyConfirmationError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_CLI_ERROR
+    except (ApplyGuardError, ApplySimulationError, FakeMutationError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_FATAL_GUARD
+    except (PlanReportError, OperationJournalError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
+    except ApplyError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
     except PlanError as exc:

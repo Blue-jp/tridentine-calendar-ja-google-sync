@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/operation-journal-v1.schema.json",
+  "title": "Fake apply operation journal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "journal_type",
+    "start_marker",
+    "completion_marker",
+    "state",
+    "bundle_integrity_hash",
+    "plan_content_hash",
+    "baseline_integrity_hash",
+    "target_reference",
+    "operation_count",
+    "entries",
+    "entry_count",
+    "last_entry_hash",
+    "mutation_mode",
+    "rollback_available",
+    "journal_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "journal_type": { "const": "fake-apply-operation-journal-v1" },
+    "start_marker": { "const": "simulation_start" },
+    "completion_marker": {
+      "enum": [null, "simulation_complete", "simulation_failed"]
+    },
+    "state": {
+      "enum": [
+        "initialized",
+        "running",
+        "completed",
+        "partial_failure",
+        "uncertain",
+        "etag_conflict",
+        "blocked"
+      ]
+    },
+    "bundle_integrity_hash": { "$ref": "#/$defs/sha256" },
+    "plan_content_hash": { "$ref": "#/$defs/sha256" },
+    "baseline_integrity_hash": { "$ref": "#/$defs/sha256" },
+    "target_reference": { "$ref": "#/$defs/targetReference" },
+    "operation_count": { "type": "integer", "minimum": 1 },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "entry_count": { "$ref": "#/$defs/count" },
+    "last_entry_hash": { "$ref": "#/$defs/sha256" },
+    "mutation_mode": { "const": "fake" },
+    "rollback_available": { "const": false },
+    "journal_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "state": { "enum": ["initialized", "running"] } }
+      },
+      "then": { "properties": { "completion_marker": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "state": { "const": "completed" } } },
+      "then": {
+        "properties": { "completion_marker": { "const": "simulation_complete" } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": ["partial_failure", "uncertain", "etag_conflict", "blocked"]
+          }
+        }
+      },
+      "then": {
+        "properties": { "completion_marker": { "const": "simulation_failed" } }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "nullableSha256": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "targetReference": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$"
+    },
+    "sourceReference": {
+      "type": "string",
+      "pattern": "^U-[0-9a-f]{12}$"
+    },
+    "googleReference": {
+      "type": ["string", "null"],
+      "pattern": "^G-[0-9a-f]{12}$"
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "operation_index",
+        "operation_key",
+        "operation",
+        "source_ref",
+        "google_ref",
+        "attempt",
+        "status",
+        "outcome_code",
+        "delay_units",
+        "payload_hash",
+        "response_hash",
+        "expected_etag_hash",
+        "result_state_hash",
+        "previous_entry_hash",
+        "entry_hash"
+      ],
+      "properties": {
+        "sequence": { "$ref": "#/$defs/count" },
+        "operation_index": { "type": "integer", "minimum": 1 },
+        "operation_key": { "$ref": "#/$defs/sha256" },
+        "operation": { "enum": ["add", "update"] },
+        "source_ref": { "$ref": "#/$defs/sourceReference" },
+        "google_ref": { "$ref": "#/$defs/googleReference" },
+        "attempt": { "$ref": "#/$defs/count" },
+        "status": {
+          "enum": [
+            "succeeded",
+            "retrying",
+            "failed",
+            "uncertain",
+            "etag_conflict",
+            "skipped"
+          ]
+        },
+        "outcome_code": {
+          "enum": [
+            "success",
+            "rate_limit",
+            "server_500",
+            "server_502",
+            "server_503",
+            "validation_failure",
+            "permission_denied",
+            "target_missing",
+            "etag_conflict",
+            "ambiguous_identity",
+            "uncertain_outcome",
+            "duplicate_identity",
+            "permanent_failure",
+            "retry_exhausted",
+            "skipped_after_stop"
+          ]
+        },
+        "delay_units": { "$ref": "#/$defs/count" },
+        "payload_hash": { "$ref": "#/$defs/sha256" },
+        "response_hash": { "$ref": "#/$defs/sha256" },
+        "expected_etag_hash": { "$ref": "#/$defs/nullableSha256" },
+        "result_state_hash": { "$ref": "#/$defs/nullableSha256" },
+        "previous_entry_hash": { "$ref": "#/$defs/sha256" },
+        "entry_hash": { "$ref": "#/$defs/sha256" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "operation": { "const": "add" } } },
+          "then": { "properties": { "google_ref": { "type": "null" } } },
+          "else": {
+            "properties": {
+              "google_ref": {
+                "type": "string",
+                "pattern": "^G-[0-9a-f]{12}$"
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "skipped" } } },
+          "then": {
+            "properties": {
+              "attempt": { "const": 0 },
+              "delay_units": { "const": 0 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
