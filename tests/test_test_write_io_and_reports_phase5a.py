@@ -20,7 +20,11 @@ from tridentine_calendar_google_sync.test_write_journal import (
     TestWriteJournalPhase as JournalPhase,
 )
 from tridentine_calendar_google_sync.test_write_journal import (
+    TestWriteJournalState as JournalState,
+)
+from tridentine_calendar_google_sync.test_write_journal import (
     append_test_write_journal_entry,
+    calculate_test_write_journal_hash,
     initialize_test_write_journal,
     parse_test_write_journal_bytes,
     render_test_write_journal_json,
@@ -46,6 +50,13 @@ from tridentine_calendar_google_sync.test_write_run_spec_io import (
     parse_test_write_run_spec_bytes,
     render_test_write_run_spec_json,
     write_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_transport import (
+    TestWriteTransportError as TransportError,
+)
+from tridentine_calendar_google_sync.test_write_transport import (
+    calculate_test_write_execution_result_hash,
+    verify_test_write_execution_result,
 )
 
 pytestmark = pytest.mark.google_test_write
@@ -155,6 +166,103 @@ def test_journal_parser_and_writer_reject_tamper_unknown_and_overwrite(
     write_test_write_journal(journal, output)
     with pytest.raises(JournalError):
         write_test_write_journal(journal, output)
+
+
+def test_rehashed_empty_completed_journal_is_rejected_by_parser_and_schema(
+    tmp_path: Any,
+    synthetic_profile_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = initialize_test_write_journal(
+        journal_run_spec(tmp_path, synthetic_profile_factory, monkeypatch)
+    )
+    provisional = initial.model_copy(
+        update={"state": JournalState.COMPLETED, "journal_content_hash": "0" * 64}
+    )
+    forged = provisional.model_copy(
+        update={"journal_content_hash": calculate_test_write_journal_hash(provisional)}
+    )
+    document = forged.model_dump(mode="json")
+
+    with pytest.raises(JournalError):
+        parse_test_write_journal_bytes(json.dumps(document).encode("utf-8"))
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(document, _schema("test-write-journal-v1.schema.json"))
+
+
+def test_rehashed_succeeded_result_rejects_zero_mutation_or_mismatched_terminal_journal(
+    tmp_path: Any,
+    synthetic_profile_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec, _bundle, target, challenge = _prepare(
+        tmp_path, synthetic_profile_factory, monkeypatch, update=True
+    )
+    current = _raw_event(
+        spec.operation.current_state,
+        event_id=spec.operation.google_event_id,
+        etag=spec.operation.expected_etag,
+    )
+    desired = _raw_event(
+        spec.operation.desired_state,
+        event_id=spec.operation.google_event_id,
+        etag="fixture-etag-lifecycle-regression",
+    )
+    legitimate = _run(
+        spec,
+        target,
+        _Client(get_queue=[current, desired], patch_queue=[desired]),
+        challenge,
+    )
+
+    initial = initialize_test_write_journal(spec)
+    empty_provisional = initial.model_copy(
+        update={"state": JournalState.COMPLETED, "journal_content_hash": "0" * 64}
+    )
+    empty_completed = empty_provisional.model_copy(
+        update={"journal_content_hash": calculate_test_write_journal_hash(empty_provisional)}
+    )
+    zero_provisional = legitimate.model_copy(
+        update={
+            "journal": empty_completed,
+            "api_call_count": 0,
+            "read_retry_count": 0,
+            "mutation_attempt_count": 0,
+            "result_content_hash": "0" * 64,
+        }
+    )
+    zero_mutation = zero_provisional.model_copy(
+        update={"result_content_hash": calculate_test_write_execution_result_hash(zero_provisional)}
+    )
+    with pytest.raises((TransportError, JournalError)):
+        verify_test_write_execution_result(zero_mutation)
+
+    failed_journal = append_test_write_journal_entry(
+        initial,
+        phase=JournalPhase.PREFLIGHT,
+        status=EntryStatus.FAILED,
+        api_call_count=1,
+        read_retry_count=0,
+        mutation_attempt_count=0,
+        safe_error_code="test_write_snapshot_hash_mismatch",
+        terminal_state=JournalState.FAILED,
+    )
+    mismatch_provisional = legitimate.model_copy(
+        update={
+            "journal": failed_journal,
+            "api_call_count": 1,
+            "read_retry_count": 0,
+            "mutation_attempt_count": 0,
+            "result_content_hash": "0" * 64,
+        }
+    )
+    mismatched_terminal = mismatch_provisional.model_copy(
+        update={
+            "result_content_hash": calculate_test_write_execution_result_hash(mismatch_provisional)
+        }
+    )
+    with pytest.raises(TransportError):
+        verify_test_write_execution_result(mismatched_terminal)
 
 
 def test_public_text_and_json_reports_are_deterministic_schema_valid_and_redacted(

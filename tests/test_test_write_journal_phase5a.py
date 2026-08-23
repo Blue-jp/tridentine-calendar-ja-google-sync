@@ -88,20 +88,11 @@ def test_journal_hash_chain_and_terminal_success_are_valid(
         api_call_count=3,
         read_retry_count=0,
         mutation_attempt_count=1,
-    )
-    journal = append_test_write_journal_entry(
-        journal,
-        phase=JournalPhase.COMPLETE,
-        status=EntryStatus.SUCCEEDED,
-        api_call_count=3,
-        read_retry_count=0,
-        mutation_attempt_count=1,
         terminal_state=JournalState.COMPLETED,
     )
-
     verify_test_write_journal(journal)
     assert journal.state is JournalState.COMPLETED
-    assert journal.entry_count == 4
+    assert journal.entry_count == 3
     assert journal.mutation_attempt_count == 1
     assert journal.mutation_retry_count == 0
     assert journal.rollback_available is False
@@ -115,6 +106,23 @@ def test_recovered_uncertain_entry_records_safe_flag_and_zero_mutation_retry(
 ) -> None:
     journal = initialize_test_write_journal(
         _run_spec(tmp_path, synthetic_profile_factory, monkeypatch)
+    )
+    journal = append_test_write_journal_entry(
+        journal,
+        phase=JournalPhase.PREFLIGHT,
+        status=EntryStatus.SUCCEEDED,
+        api_call_count=1,
+        read_retry_count=0,
+        mutation_attempt_count=0,
+    )
+    journal = append_test_write_journal_entry(
+        journal,
+        phase=JournalPhase.MUTATION,
+        status=EntryStatus.UNCERTAIN,
+        api_call_count=2,
+        read_retry_count=0,
+        mutation_attempt_count=1,
+        safe_error_code="write_outcome_uncertain",
     )
     journal = append_test_write_journal_entry(
         journal,
@@ -169,6 +177,14 @@ def test_journal_rejects_count_regression_and_api_or_mutation_budget_excess(
 ) -> None:
     journal = initialize_test_write_journal(
         _run_spec(tmp_path, synthetic_profile_factory, monkeypatch)
+    )
+    journal = append_test_write_journal_entry(
+        journal,
+        phase=JournalPhase.PREFLIGHT,
+        status=EntryStatus.SUCCEEDED,
+        api_call_count=1,
+        read_retry_count=0,
+        mutation_attempt_count=0,
     )
     journal = append_test_write_journal_entry(
         journal,
@@ -239,3 +255,92 @@ def test_production_reference_cannot_be_verified_or_appended(
     with pytest.raises(JournalError) as captured:
         verify_test_write_journal(production)
     assert captured.value.code == "production_test_write_forbidden"
+
+
+def _rehash_journal(journal: Any) -> Any:
+    value = journal.model_copy(update={"journal_content_hash": "0" * 64})
+    return value.model_copy(
+        update={"journal_content_hash": calculate_test_write_journal_hash(value)}
+    )
+
+
+def test_rehashed_empty_completed_journal_is_rejected_by_model_verifier(
+    tmp_path: Any,
+    synthetic_profile_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = initialize_test_write_journal(
+        _run_spec(tmp_path, synthetic_profile_factory, monkeypatch)
+    )
+    forged = _rehash_journal(initial.model_copy(update={"state": JournalState.COMPLETED}))
+
+    with pytest.raises(JournalError) as captured:
+        verify_test_write_journal(forged)
+    assert captured.value.code == "test_write_journal_lifecycle_mismatch"
+
+
+@pytest.mark.parametrize("include_mutation", (False, True))
+def test_rehashed_completed_prefix_missing_mutation_or_readback_is_rejected(
+    tmp_path: Any,
+    synthetic_profile_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    include_mutation: bool,
+) -> None:
+    journal = initialize_test_write_journal(
+        _run_spec(tmp_path, synthetic_profile_factory, monkeypatch)
+    )
+    journal = append_test_write_journal_entry(
+        journal,
+        phase=JournalPhase.PREFLIGHT,
+        status=EntryStatus.SUCCEEDED,
+        api_call_count=1,
+        read_retry_count=0,
+        mutation_attempt_count=0,
+    )
+    if include_mutation:
+        journal = append_test_write_journal_entry(
+            journal,
+            phase=JournalPhase.MUTATION,
+            status=EntryStatus.SUCCEEDED,
+            api_call_count=2,
+            read_retry_count=0,
+            mutation_attempt_count=1,
+        )
+    forged = _rehash_journal(journal.model_copy(update={"state": JournalState.COMPLETED}))
+
+    with pytest.raises(JournalError) as captured:
+        verify_test_write_journal(forged)
+    assert captured.value.code == "test_write_journal_lifecycle_mismatch"
+
+
+def test_legitimate_preflight_failure_and_etag_conflict_journals_remain_valid(
+    tmp_path: Any,
+    synthetic_profile_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _run_spec(tmp_path, synthetic_profile_factory, monkeypatch)
+    failed = append_test_write_journal_entry(
+        initialize_test_write_journal(spec),
+        phase=JournalPhase.PREFLIGHT,
+        status=EntryStatus.FAILED,
+        api_call_count=1,
+        read_retry_count=0,
+        mutation_attempt_count=0,
+        safe_error_code="test_write_snapshot_hash_mismatch",
+        terminal_state=JournalState.FAILED,
+    )
+    conflict = append_test_write_journal_entry(
+        initialize_test_write_journal(spec),
+        phase=JournalPhase.PREFLIGHT,
+        status=EntryStatus.FAILED,
+        api_call_count=1,
+        read_retry_count=0,
+        mutation_attempt_count=0,
+        safe_error_code="etag_conflict",
+        terminal_state=JournalState.ETAG_CONFLICT,
+    )
+
+    verify_test_write_journal(failed)
+    verify_test_write_journal(conflict)
+    assert failed.state is JournalState.FAILED
+    assert conflict.state is JournalState.ETAG_CONFLICT

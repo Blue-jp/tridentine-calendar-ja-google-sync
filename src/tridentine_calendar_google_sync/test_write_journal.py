@@ -193,6 +193,7 @@ class TestWriteJournal(StrictFrozenModel):
             )
         ):
             raise ValueError("empty Test write journal must have zero counts")
+        _verify_test_write_journal_semantics(self)
         return self
 
 
@@ -203,6 +204,139 @@ class TestWriteJournalError(ValueError):
         self.code = code
         self.public_message = public_message
         super().__init__(public_message)
+
+
+def _verify_test_write_journal_semantics(journal: TestWriteJournal) -> None:
+    """Require an exact lifecycle topology, not merely recomputable hashes."""
+
+    shape = tuple((entry.phase, entry.status) for entry in journal.entries)
+    preflight_succeeded = (
+        TestWriteJournalPhase.PREFLIGHT,
+        TestWriteJournalEntryStatus.SUCCEEDED,
+    )
+    mutation_succeeded = (
+        TestWriteJournalPhase.MUTATION,
+        TestWriteJournalEntryStatus.SUCCEEDED,
+    )
+    mutation_uncertain = (
+        TestWriteJournalPhase.MUTATION,
+        TestWriteJournalEntryStatus.UNCERTAIN,
+    )
+    running_shapes = {
+        (preflight_succeeded,),
+        (preflight_succeeded, mutation_succeeded),
+        (preflight_succeeded, mutation_uncertain),
+    }
+    completed_shapes = {
+        (
+            preflight_succeeded,
+            mutation_succeeded,
+            (TestWriteJournalPhase.READ_BACK, TestWriteJournalEntryStatus.SUCCEEDED),
+        ),
+        (
+            preflight_succeeded,
+            mutation_uncertain,
+            (TestWriteJournalPhase.UNCERTAIN_CHECK, TestWriteJournalEntryStatus.RECOVERED),
+        ),
+    }
+    failed_shapes = {
+        ((TestWriteJournalPhase.PREFLIGHT, TestWriteJournalEntryStatus.FAILED),),
+        (
+            preflight_succeeded,
+            (TestWriteJournalPhase.MUTATION, TestWriteJournalEntryStatus.FAILED),
+        ),
+        (
+            preflight_succeeded,
+            mutation_succeeded,
+            (TestWriteJournalPhase.READ_BACK, TestWriteJournalEntryStatus.FAILED),
+        ),
+        (
+            preflight_succeeded,
+            mutation_uncertain,
+            (TestWriteJournalPhase.UNCERTAIN_CHECK, TestWriteJournalEntryStatus.FAILED),
+        ),
+    }
+    uncertain_shape = (
+        preflight_succeeded,
+        mutation_uncertain,
+        (TestWriteJournalPhase.UNCERTAIN_CHECK, TestWriteJournalEntryStatus.UNCERTAIN),
+    )
+    etag_conflict_shapes = {
+        ((TestWriteJournalPhase.PREFLIGHT, TestWriteJournalEntryStatus.FAILED),),
+        (
+            preflight_succeeded,
+            (TestWriteJournalPhase.MUTATION, TestWriteJournalEntryStatus.FAILED),
+        ),
+    }
+
+    valid_shape = {
+        TestWriteJournalState.INITIALIZED: shape == (),
+        TestWriteJournalState.RUNNING: shape in running_shapes,
+        TestWriteJournalState.COMPLETED: shape in completed_shapes,
+        TestWriteJournalState.FAILED: shape in failed_shapes,
+        TestWriteJournalState.UNCERTAIN: shape == uncertain_shape,
+        TestWriteJournalState.ETAG_CONFLICT: shape in etag_conflict_shapes,
+    }[journal.state]
+    if not valid_shape:
+        raise TestWriteJournalError(
+            "test_write_journal_lifecycle_mismatch",
+            "Test write journal lifecycle verification failed",
+        )
+
+    if journal.entries:
+        first = journal.entries[0]
+        if (
+            first.phase is not TestWriteJournalPhase.PREFLIGHT
+            or first.api_call_count < 1
+            or first.mutation_attempt_count != 0
+        ):
+            raise TestWriteJournalError(
+                "test_write_journal_preflight_mismatch",
+                "Test write journal preflight verification failed",
+            )
+        for entry in journal.entries:
+            expected_mutations = 0 if entry.phase is TestWriteJournalPhase.PREFLIGHT else 1
+            if (
+                entry.mutation_attempt_count != expected_mutations
+                or entry.read_retry_count > entry.api_call_count
+            ):
+                raise TestWriteJournalError(
+                    "test_write_journal_counter_semantics_mismatch",
+                    "Test write journal counter verification failed",
+                )
+        for previous, current in zip(journal.entries, journal.entries[1:], strict=False):
+            if current.api_call_count <= previous.api_call_count:
+                raise TestWriteJournalError(
+                    "test_write_journal_api_sequence_mismatch",
+                    "Test write journal API sequence verification failed",
+                )
+
+    if journal.state is TestWriteJournalState.COMPLETED:
+        if journal.mutation_attempt_count != 1 or journal.api_call_count < 3:
+            raise TestWriteJournalError(
+                "test_write_journal_completion_mismatch",
+                "Completed Test write journal verification failed",
+            )
+    elif journal.state is TestWriteJournalState.ETAG_CONFLICT:
+        final = journal.entries[-1]
+        if final.safe_error_code != "etag_conflict":
+            raise TestWriteJournalError(
+                "test_write_journal_etag_conflict_mismatch",
+                "ETag conflict journal verification failed",
+            )
+    elif journal.state is TestWriteJournalState.FAILED:
+        if journal.entries[-1].safe_error_code == "etag_conflict":
+            raise TestWriteJournalError(
+                "test_write_journal_failed_state_mismatch",
+                "Failed Test write journal verification failed",
+            )
+    elif journal.state is TestWriteJournalState.UNCERTAIN:
+        final = journal.entries[-1]
+        if final.safe_error_code != "write_outcome_uncertain":
+            raise TestWriteJournalError(
+                "test_write_journal_uncertain_mismatch",
+                "Uncertain Test write journal verification failed",
+            )
 
 
 def _hash(domain: bytes, value: object) -> str:
@@ -384,6 +518,7 @@ def append_test_write_journal_entry(
 def verify_test_write_journal(journal: TestWriteJournal) -> None:
     """Verify safe identity, sequence, chain, and aggregate content hash."""
 
+    _verify_test_write_journal_semantics(journal)
     if journal.target_safe_ref == PRODUCTION_TARGET_REFERENCE:
         raise TestWriteJournalError(
             "production_test_write_forbidden",

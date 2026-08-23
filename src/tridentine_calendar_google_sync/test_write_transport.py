@@ -95,29 +95,7 @@ class TestWriteExecutionResult(StrictFrozenModel):
 
     @model_validator(mode="after")
     def terminal_shape(self) -> Self:
-        if self.target_safe_ref == PRODUCTION_TARGET_REFERENCE:
-            raise ValueError("Production Test write result is forbidden")
-        if self.success is (self.state is not TestWriteExecutionState.SUCCEEDED):
-            raise ValueError("Test write success state mismatch")
-        if self.success and (not self.read_back_verified or self.stopped):
-            raise ValueError("successful Test write result is incomplete")
-        if not self.success and not self.stopped:
-            raise ValueError("failed Test write result must be stopped")
-        if self.recovered_after_uncertain and not self.success:
-            raise ValueError("uncertain recovery must end in success")
-        if self.mutation_retry_count != TEST_WRITE_MUTATION_RETRY_COUNT:
-            raise ValueError("Test write mutation retries are forbidden")
-        if (
-            self.journal.target_safe_ref != self.target_safe_ref
-            or self.journal.run_spec_ref != self.run_spec_ref
-            or self.journal.source_ref != self.source_ref
-            or self.journal.operation is not self.operation
-            or self.journal.api_call_count != self.api_call_count
-            or self.journal.read_retry_count != self.read_retry_count
-            or self.journal.mutation_attempt_count != self.mutation_attempt_count
-            or self.journal.recovered_after_uncertain != self.recovered_after_uncertain
-        ):
-            raise ValueError("Test write result journal binding mismatch")
+        _verify_test_write_execution_result_semantics(self)
         return self
 
 
@@ -128,6 +106,67 @@ class TestWriteTransportError(ValueError):
         self.code = code
         self.public_message = public_message
         super().__init__(public_message)
+
+
+def _verify_test_write_execution_result_semantics(result: TestWriteExecutionResult) -> None:
+    """Bind every terminal result claim to a semantically valid journal."""
+
+    verify_test_write_journal(result.journal)
+    if result.target_safe_ref == PRODUCTION_TARGET_REFERENCE:
+        raise TestWriteTransportError(
+            "production_test_write_result_forbidden",
+            "Production Test write results are forbidden",
+        )
+    if result.success is (result.state is not TestWriteExecutionState.SUCCEEDED):
+        raise TestWriteTransportError(
+            "test_write_result_success_mismatch",
+            "Test write result success state verification failed",
+        )
+    if result.success and (not result.read_back_verified or result.stopped):
+        raise TestWriteTransportError(
+            "test_write_result_read_back_mismatch",
+            "Test write result read-back verification failed",
+        )
+    if not result.success and not result.stopped:
+        raise TestWriteTransportError(
+            "test_write_result_stop_mismatch",
+            "Test write result stop state verification failed",
+        )
+    if result.recovered_after_uncertain and not result.success:
+        raise TestWriteTransportError(
+            "test_write_result_recovery_mismatch",
+            "Test write result recovery verification failed",
+        )
+    if result.mutation_retry_count != TEST_WRITE_MUTATION_RETRY_COUNT:
+        raise TestWriteTransportError(
+            "test_write_result_mutation_retry_mismatch",
+            "Test write result mutation retry verification failed",
+        )
+    expected_journal_state = {
+        TestWriteExecutionState.SUCCEEDED: TestWriteJournalState.COMPLETED,
+        TestWriteExecutionState.FAILED: TestWriteJournalState.FAILED,
+        TestWriteExecutionState.UNCERTAIN: TestWriteJournalState.UNCERTAIN,
+        TestWriteExecutionState.ETAG_CONFLICT: TestWriteJournalState.ETAG_CONFLICT,
+    }[result.state]
+    if result.journal.state is not expected_journal_state:
+        raise TestWriteTransportError(
+            "test_write_result_journal_state_mismatch",
+            "Test write result terminal journal state verification failed",
+        )
+    if (
+        result.journal.target_safe_ref != result.target_safe_ref
+        or result.journal.run_spec_ref != result.run_spec_ref
+        or result.journal.source_ref != result.source_ref
+        or result.journal.operation is not result.operation
+        or result.journal.api_call_count != result.api_call_count
+        or result.journal.read_retry_count != result.read_retry_count
+        or result.journal.mutation_attempt_count != result.mutation_attempt_count
+        or result.journal.recovered_after_uncertain != result.recovered_after_uncertain
+    ):
+        raise TestWriteTransportError(
+            "test_write_result_journal_binding_mismatch",
+            "Test write result journal binding verification failed",
+        )
 
 
 @dataclass
@@ -198,7 +237,7 @@ def calculate_test_write_execution_result_hash(result: TestWriteExecutionResult)
 def verify_test_write_execution_result(result: TestWriteExecutionResult) -> None:
     """Verify journal binding and the deterministic result hash."""
 
-    verify_test_write_journal(result.journal)
+    _verify_test_write_execution_result_semantics(result)
     if not hmac.compare_digest(
         calculate_test_write_execution_result_hash(result),
         result.result_content_hash,
