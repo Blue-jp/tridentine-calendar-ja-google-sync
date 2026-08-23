@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 4Aの範囲
+## Phase 4Bの範囲
 
-Phase 4Aはoffline比較とread-only snapshot取得基盤に、明示的にtrustedへ遷移するprivate baselineと、構造的に実行不能なsync planを追加します。Baseline作成・trust・planningはすべてlocal fileを使うoffline処理です。
+Phase 4Bはtrusted baselineとnon-executable planに、test環境限定のprivate apply bundle、fake-only mutation simulation、tamper-evident operation journalを追加します。すべてoffline処理であり、Google API mutation clientは存在しません。
 
-Phase 4Aの開発・testはOAuth、Google API、browser、networkを使用しません。Online commandは引き続き別の明示承認が必要です。
+Phase 4Bの開発・testはOAuth、Google API、browser、networkを使用しません。Fake transportはmemory内の架空inventoryだけを変更し、外部Calendarへ接続しません。
 
 ### Implemented
 
@@ -29,6 +29,11 @@ Phase 4Aの開発・testはOAuth、Google API、browser、networkを使用しま
 - exact confirmation phraseによるcandidate→trusted transition
 - trusted baselineだけをownership evidenceに使うoffline diff
 - threshold・mass-change・ambiguity・unmanaged guardを持つnon-executable sync plan
+- Add/updateだけを含むintegrity-pinned private apply bundle
+- Exact test-only approval challengeとstale plan hash guard
+- Bounded abstract retryを持つfake mutation simulation
+- Partial failureとskipped tailを記録するhash-chain journal
+- Redacted bundle/simulation/journal reports
 - Production dataを含まないsynthetic fixture test
 
 ### Not implemented
@@ -36,9 +41,11 @@ Phase 4Aの開発・testはOAuth、Google API、browser、networkを使用しま
 - Google Calendar write scopeおよびwrite method
 - Test Calendar / Production Calendarへのapply
 - add/update/delete executionとexecutable plan
+- Google mutation transport、HTTP request、live executor
+- Delete operation model・payload・transport method
 - `syncToken`、incremental state、automation
 
-Phase 4AのbaselineとplanはGoogle Calendarへ接続せず、Google Calendarを書き換えません。`delete_candidate`とplan actionはreview用分類にすぎず、request payload、HTTP method、endpointを持ちません。
+Phase 4Bのbundle/simulationもGoogle Calendarへ接続せず、Google Calendarを書き換えません。Private bundleは将来の安全検討用payloadを保持しますが、execution enabledは常にfalseで、method・endpoint・Authorization headerを持ちません。
 
 Production ICS、Production snapshot、runtime stateをrepositoryへcommitしないでください。入力はrepository外のローカルfileとして明示的に渡します。
 
@@ -157,6 +164,16 @@ tridentine-calendar-google-sync plan-sync `
 
 Threshold defaultはadd/update/deleteすべて`0`です。Plan stateは`draft`、`review_required`、`blocked`のいずれかですが、全stateで`executable=false`です。Delete candidateは常にdestructiveかつseparate approval requiredとして表示されます。
 
+### Offline apply safety
+
+Phase 4Bのcommandは`build-apply-bundle`、`inspect-apply-bundle`、`simulate-apply`、`inspect-operation-journal`です。
+
+Apply bundleを作れるのは、trusted baselineに基づく`draft` zero-action plan、またはfatal guardのない`review_required` add/update planだけです。Delete countが1件でもあるplan、blocked plan、warning付きplan、stale planは拒否されます。
+
+Nonzero test bundleはexact challengeとcurrent plan hashの再照合後にだけ`approved_for_simulation`へ遷移できます。Simulationは`FakeMutationTransport`だけを受け付け、add/updateを順番にmemory内で処理します。Failure、uncertain outcome、ETag conflictでは即停止し、後続operationを`skipped`としてjournalへ記録します。Rollbackは提供しません。
+
+Productionではzero-operation bundleをmemory内で検証できるだけです。Production bundle file write、approval、simulation、journal作成は常に拒否されます。詳細は[Offline apply safety](docs/offline-apply-safety.md)を参照してください。
+
 ### Google read-only commands
 
 `authorize-google-readonly`と`fetch-google-snapshot`はPhase 3Aで追加された明示的online commandです。両commandは`--online`を要求し、別途承認されたread-only workflowでだけ利用します。Phase 4Aのbaseline/plan commandから呼び出されることはありません。準備要件とsecret配置方針は[Google read-only setup](docs/google-readonly-setup.md)を参照してください。
@@ -199,6 +216,15 @@ Phase 4AのProduction candidate integrationは次の2環境変数が明示され
 
 このtestはcandidateをmemory内で検証するだけで、trust transitionやbaseline/plan file writeを行いません。
 
+Phase 4BのProduction zero-bundle integrationは次の4環境変数が明示された場合だけ実行されます。
+
+- `TRIDENTINE_ACCEPTED_HTML_ICS_PATH`
+- `TRIDENTINE_PRODUCTION_GOOGLE_SNAPSHOT_PATH`
+- `TRIDENTINE_PRODUCTION_TRUSTED_BASELINE_PATH`
+- `TRIDENTINE_PRODUCTION_SYNC_PLAN_PATH`
+
+このtestは4入力をstrict loadし、memory内zero bundleと入力byte preservationを検証します。Production bundle、journal、simulation resultを保存しません。
+
 ## Exit code
 
 | Code | 意味 |
@@ -227,6 +253,8 @@ Validation mismatchは通常の利用時にPython tracebackやfile本文を表�
 - Snapshotはsanitized後もevent本文とopaque IDを含むsensitive runtime dataです。公開artifactやCI artifactにしません。
 - Candidate/trusted baselineはraw Source UID inventoryを含むためprivate dataです。Repository、CI artifact、issue、Pull Requestへ載せません。
 - Sync plan reportはsafe referencesだけを使用し、raw UID、Google event ID、ETag、event本文、payload、method、endpointを含めません。
+- Private apply bundleはraw UID、Google event ID、ETag、managed field payloadを含むため、baselineやsnapshotと同等のsensitive dataです。
+- Public apply reportとoperation journalはsafe references・hash・allowlisted outcome codeだけを使用します。
 
 詳細は[Security Policy](SECURITY.md)も参照してください。
 
@@ -244,10 +272,10 @@ Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれ�
 
 ## Roadmap
 
-Phase 4Aまでに、offline diff、read-only snapshot foundation、trusted baseline、non-executable planを実装しました。以下は未実装または未承認です。
+Phase 4Bまでに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulationを実装しました。以下は未実装または未承認です。
 
 1. Production baseline candidateの別承認によるtrusted化
-2. Plan reviewと将来のapply approvalを分離した外部workflow
+2. Live request payload生成とconditional request検証
 3. 専用test Calendarに限定したwrite検証
 4. Production apply、delete、syncToken、automation
 
