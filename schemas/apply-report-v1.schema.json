@@ -1,0 +1,416 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/apply-report-v1.schema.json",
+  "title": "Public offline apply safety reports",
+  "oneOf": [
+    { "$ref": "#/$defs/simulationReport" },
+    { "$ref": "#/$defs/bundleInspectionReport" },
+    { "$ref": "#/$defs/journalInspectionReport" }
+  ],
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "targetReference": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$"
+    },
+    "targetLabel": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "planReference": {
+      "type": "string",
+      "pattern": "^P-[0-9a-f]{12}$"
+    },
+    "bundleReference": {
+      "type": "string",
+      "pattern": "^B-[0-9a-f]{12}$"
+    },
+    "sourceProfile": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "sourceReference": {
+      "type": "string",
+      "pattern": "^U-[0-9a-f]{12}$"
+    },
+    "googleReference": {
+      "oneOf": [
+        { "type": "string", "pattern": "^G-[0-9a-f]{12}$" },
+        { "type": "null" }
+      ]
+    },
+    "operationCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "add", "update", "delete"],
+      "properties": {
+        "total": { "$ref": "#/$defs/count" },
+        "add": { "$ref": "#/$defs/count" },
+        "update": { "$ref": "#/$defs/count" },
+        "delete": { "const": 0 }
+      }
+    },
+    "resultCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attempted",
+        "succeeded",
+        "failed",
+        "uncertain",
+        "etag_conflict",
+        "skipped",
+        "retries"
+      ],
+      "properties": {
+        "attempted": { "$ref": "#/$defs/count" },
+        "succeeded": { "$ref": "#/$defs/count" },
+        "failed": { "$ref": "#/$defs/count" },
+        "uncertain": { "$ref": "#/$defs/count" },
+        "etag_conflict": { "$ref": "#/$defs/count" },
+        "skipped": { "$ref": "#/$defs/count" },
+        "retries": { "$ref": "#/$defs/count" }
+      }
+    },
+    "operationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_index",
+        "operation",
+        "source_ref",
+        "google_ref",
+        "status",
+        "attempts",
+        "retry_count",
+        "outcome_code"
+      ],
+      "properties": {
+        "operation_index": { "type": "integer", "minimum": 1 },
+        "operation": { "enum": ["add", "update"] },
+        "source_ref": { "$ref": "#/$defs/sourceReference" },
+        "google_ref": { "$ref": "#/$defs/googleReference" },
+        "status": {
+          "enum": ["succeeded", "failed", "uncertain", "skipped"]
+        },
+        "attempts": { "$ref": "#/$defs/count" },
+        "retry_count": { "$ref": "#/$defs/count" },
+        "outcome_code": {
+          "enum": [
+            "success",
+            "validation_failure",
+            "permission_denied",
+            "target_missing",
+            "etag_conflict",
+            "ambiguous_identity",
+            "uncertain_outcome",
+            "duplicate_identity",
+            "permanent_failure",
+            "retry_exhausted",
+            "skipped_after_stop"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "operation": { "const": "add" } } },
+          "then": { "properties": { "google_ref": { "type": "null" } } },
+          "else": {
+            "properties": {
+              "google_ref": { "type": "string", "pattern": "^G-[0-9a-f]{12}$" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "skipped" } } },
+          "then": {
+            "properties": {
+              "attempts": { "const": 0 },
+              "retry_count": { "const": 0 }
+            }
+          },
+          "else": { "properties": { "attempts": { "minimum": 1 } } }
+        }
+      ]
+    },
+    "simulationReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "mode",
+        "environment",
+        "source_profile",
+        "target_label",
+        "target_reference",
+        "plan_reference",
+        "bundle_reference",
+        "approval_state",
+        "simulation_state",
+        "executable",
+        "rollback_available",
+        "operation_counts",
+        "result_counts",
+        "partial_results",
+        "stopped_early",
+        "journal_integrity",
+        "fatal_guard",
+        "operation_results",
+        "report_hash"
+      ],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "report_type": { "const": "offline-apply-simulation-report-v1" },
+        "mode": { "const": "offline simulation" },
+        "environment": { "const": "test" },
+        "source_profile": { "$ref": "#/$defs/sourceProfile" },
+        "target_label": { "$ref": "#/$defs/targetLabel" },
+        "target_reference": { "$ref": "#/$defs/targetReference" },
+        "plan_reference": { "$ref": "#/$defs/planReference" },
+        "bundle_reference": { "$ref": "#/$defs/bundleReference" },
+        "approval_state": { "const": "approved_for_simulation" },
+        "simulation_state": {
+          "enum": ["completed", "partial_failure", "uncertain", "etag_conflict", "blocked"]
+        },
+        "executable": { "const": false },
+        "rollback_available": { "const": false },
+        "operation_counts": {
+          "allOf": [
+            { "$ref": "#/$defs/operationCounts" },
+            { "properties": { "total": { "minimum": 1 } } }
+          ]
+        },
+        "result_counts": { "$ref": "#/$defs/resultCounts" },
+        "partial_results": { "type": "boolean" },
+        "stopped_early": { "type": "boolean" },
+        "journal_integrity": { "const": "verified" },
+        "fatal_guard": { "type": "boolean" },
+        "operation_results": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/operationResult" }
+        },
+        "report_hash": { "$ref": "#/$defs/sha256" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "simulation_state": { "const": "completed" } }
+          },
+          "then": {
+            "properties": {
+              "partial_results": { "const": false },
+              "stopped_early": { "const": false },
+              "fatal_guard": { "const": false },
+              "result_counts": {
+                "properties": {
+                  "failed": { "const": 0 },
+                  "uncertain": { "const": 0 },
+                  "etag_conflict": { "const": 0 },
+                  "skipped": { "const": 0 }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "stopped_early": { "const": true },
+              "fatal_guard": { "const": true }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "simulation_state": { "const": "etag_conflict" } }
+          },
+          "then": {
+            "properties": {
+              "result_counts": {
+                "properties": {
+                  "failed": { "const": 1 },
+                  "etag_conflict": { "const": 1 },
+                  "retries": { "const": 0 }
+                }
+              },
+              "operation_results": {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "const": "failed" },
+                    "outcome_code": { "const": "etag_conflict" }
+                  },
+                  "required": ["status", "outcome_code"]
+                },
+                "minContains": 1,
+                "maxContains": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "bundleInspectionReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "mode",
+        "environment",
+        "source_profile",
+        "target_label",
+        "state",
+        "target_reference",
+        "plan_reference",
+        "bundle_reference",
+        "operation_counts",
+        "approval_required",
+        "approved_for_simulation",
+        "execution_enabled",
+        "production_locked",
+        "integrity",
+        "report_hash"
+      ],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "report_type": { "const": "apply-bundle-inspection-report-v1" },
+        "mode": { "const": "bundle inspection" },
+        "environment": { "enum": ["test", "production"] },
+        "source_profile": { "$ref": "#/$defs/sourceProfile" },
+        "target_label": { "$ref": "#/$defs/targetLabel" },
+        "state": {
+          "enum": [
+            "draft",
+            "approval_required",
+            "approved_for_simulation",
+            "simulation_complete",
+            "simulation_failed"
+          ]
+        },
+        "target_reference": { "$ref": "#/$defs/targetReference" },
+        "plan_reference": { "$ref": "#/$defs/planReference" },
+        "bundle_reference": { "$ref": "#/$defs/bundleReference" },
+        "operation_counts": { "$ref": "#/$defs/operationCounts" },
+        "approval_required": { "type": "boolean" },
+        "approved_for_simulation": { "type": "boolean" },
+        "execution_enabled": { "const": false },
+        "production_locked": { "const": true },
+        "integrity": { "const": "verified" },
+        "report_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "journalInspectionReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "report_type",
+        "mode",
+        "state",
+        "start_marker",
+        "completion_marker",
+        "target_reference",
+        "plan_reference",
+        "bundle_reference",
+        "entry_count",
+        "operation_count",
+        "status_counts",
+        "mutation_mode",
+        "rollback_available",
+        "journal_integrity",
+        "report_hash"
+      ],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "report_type": { "const": "operation-journal-inspection-report-v1" },
+        "mode": { "const": "journal inspection" },
+        "state": {
+          "enum": [
+            "initialized",
+            "running",
+            "completed",
+            "partial_failure",
+            "uncertain",
+            "etag_conflict",
+            "blocked"
+          ]
+        },
+        "start_marker": { "const": "simulation_start" },
+        "completion_marker": {
+          "enum": [null, "simulation_complete", "simulation_failed"]
+        },
+        "target_reference": { "$ref": "#/$defs/targetReference" },
+        "plan_reference": { "$ref": "#/$defs/planReference" },
+        "bundle_reference": { "$ref": "#/$defs/bundleReference" },
+        "entry_count": { "$ref": "#/$defs/count" },
+        "operation_count": { "type": "integer", "minimum": 1 },
+        "status_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "succeeded",
+            "retrying",
+            "failed",
+            "uncertain",
+            "skipped"
+          ],
+          "properties": {
+            "succeeded": { "$ref": "#/$defs/count" },
+            "retrying": { "$ref": "#/$defs/count" },
+            "failed": { "$ref": "#/$defs/count" },
+            "uncertain": { "$ref": "#/$defs/count" },
+            "skipped": { "$ref": "#/$defs/count" }
+          }
+        },
+        "mutation_mode": { "const": "fake" },
+        "rollback_available": { "const": false },
+        "journal_integrity": { "const": "verified" },
+        "report_hash": { "$ref": "#/$defs/sha256" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "enum": ["initialized", "running"] } }
+          },
+          "then": { "properties": { "completion_marker": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "completed" } } },
+          "then": {
+            "properties": { "completion_marker": { "const": "simulation_complete" } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": ["partial_failure", "uncertain", "etag_conflict", "blocked"]
+              }
+            }
+          },
+          "then": {
+            "properties": { "completion_marker": { "const": "simulation_failed" } }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "etag_conflict" } } },
+          "then": {
+            "properties": {
+              "status_counts": {
+                "properties": { "failed": { "const": 1 } }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
