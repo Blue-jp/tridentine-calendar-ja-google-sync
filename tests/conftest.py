@@ -2,20 +2,45 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tridentine_calendar_google_sync.models import AcceptedSourceProfile
+from tridentine_calendar_google_sync.baseline_engine import (
+    baseline_confirmation_phrase,
+    build_baseline_candidate,
+    trust_baseline,
+)
+from tridentine_calendar_google_sync.baseline_models import TrustedBaseline
+from tridentine_calendar_google_sync.diff_engine import diff_source_to_snapshot
+from tridentine_calendar_google_sync.diff_models import CalendarDiff
+from tridentine_calendar_google_sync.google_models import GoogleSnapshot
+from tridentine_calendar_google_sync.google_snapshot import load_google_snapshot
+from tridentine_calendar_google_sync.models import (
+    AcceptedSourceProfile,
+    SourceCalendarInspection,
+)
 from tridentine_calendar_google_sync.profiles import load_profile
+from tridentine_calendar_google_sync.source_ics import inspect_source
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 GOOGLE_SNAPSHOTS_DIR = FIXTURES_DIR / "google_snapshots"
 GOOGLE_API_PAGES_DIR = FIXTURES_DIR / "google_api_pages"
 PROFILES_DIR = REPOSITORY_ROOT / "profiles"
+
+
+@dataclass(frozen=True)
+class SyntheticBaselineBundle:
+    profile: AcceptedSourceProfile
+    source: SourceCalendarInspection
+    snapshot: GoogleSnapshot
+    diff: CalendarDiff
+    candidate: TrustedBaseline
+    trusted: TrustedBaseline
 
 
 DEFAULT_SYNTHETIC_EXPECTED: dict[str, Any] = {
@@ -110,6 +135,27 @@ event_x_property_count = {expected.event_x_property_count}
     return directory
 
 
+def build_synthetic_baseline_bundle(
+    source_path: Path,
+    profile_factory: Callable[..., AcceptedSourceProfile],
+    snapshot_path: Path,
+) -> SyntheticBaselineBundle:
+    profile = profile_factory(source_path)
+    source = inspect_source(source_path, profile)
+    snapshot = load_google_snapshot(snapshot_path)
+    diff = diff_source_to_snapshot(source, snapshot)
+    candidate = build_baseline_candidate(profile, source, snapshot, diff)
+    trusted = trust_baseline(candidate, baseline_confirmation_phrase(candidate))
+    return SyntheticBaselineBundle(
+        profile=profile,
+        source=source,
+        snapshot=snapshot,
+        diff=diff,
+        candidate=candidate,
+        trusted=trusted,
+    )
+
+
 @pytest.fixture
 def fixtures_dir() -> Path:
     return FIXTURES_DIR
@@ -133,3 +179,8 @@ def valid_source(fixtures_dir: Path) -> Path:
 @pytest.fixture
 def synthetic_profile_factory() -> Callable[..., AcceptedSourceProfile]:
     return build_synthetic_profile
+
+
+@pytest.fixture
+def synthetic_baseline_bundle_factory() -> Callable[..., SyntheticBaselineBundle]:
+    return build_synthetic_baseline_bundle

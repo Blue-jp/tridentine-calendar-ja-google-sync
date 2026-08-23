@@ -30,10 +30,14 @@ target*.local.toml
 google-snapshot*.json
 !schemas/google-snapshot-v1.schema.json
 state/
+baselines/
+plans/
 snapshots/
 cache/
 reports/internal/
 *.plan.json
+*.baseline.json
+*.sync-plan.json
 local-data/
 input/
 .DS_Store
