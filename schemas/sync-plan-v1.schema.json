@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/sync-plan-v1.schema.json",
+  "title": "Non-executable synchronization plan report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_type",
+    "tool_version",
+    "state",
+    "executable",
+    "approval_required",
+    "baseline",
+    "current_source",
+    "target_fingerprint",
+    "snapshot_content_hash",
+    "diff_summary",
+    "thresholds",
+    "proposed_actions",
+    "safety_guards",
+    "plan_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "plan_type": { "const": "non-executable-sync-plan-v1" },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "state": { "enum": ["draft", "review_required", "blocked"] },
+    "executable": { "const": false },
+    "approval_required": { "type": "boolean" },
+    "baseline": { "$ref": "#/$defs/baseline" },
+    "current_source": { "$ref": "#/$defs/sourceProvenance" },
+    "target_fingerprint": { "$ref": "#/$defs/sha256" },
+    "snapshot_content_hash": { "$ref": "#/$defs/sha256" },
+    "diff_summary": { "$ref": "#/$defs/diffSummary" },
+    "thresholds": { "$ref": "#/$defs/thresholds" },
+    "proposed_actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "safety_guards": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/guard" }
+    },
+    "plan_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "state": { "const": "draft" } } },
+      "then": {
+        "properties": {
+          "approval_required": { "const": false },
+          "proposed_actions": { "maxItems": 0 },
+          "safety_guards": { "maxItems": 0 },
+          "diff_summary": {
+            "properties": {
+              "fatal": { "const": false },
+              "has_changes": { "const": false },
+              "proposed_action_count": { "const": 0 }
+            }
+          }
+        }
+      },
+      "else": { "properties": { "approval_required": { "const": true } } }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "targetReference": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$"
+    },
+    "sourceReference": {
+      "type": ["string", "null"],
+      "pattern": "^U-[0-9a-f]{12}$"
+    },
+    "googleReference": {
+      "type": "string",
+      "pattern": "^G-[0-9a-f]{12}$"
+    },
+    "nullableSha256": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "nullableDate": {
+      "type": ["string", "null"],
+      "format": "date"
+    },
+    "sourceProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "accepted_tag",
+        "accepted_commit",
+        "source_sha256",
+        "source_content_hash",
+        "event_count",
+        "first_date",
+        "last_date"
+      ],
+      "properties": {
+        "profile_id": { "type": "string", "minLength": 1 },
+        "accepted_tag": { "type": "string", "minLength": 1 },
+        "accepted_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "source_sha256": { "$ref": "#/$defs/sha256" },
+        "source_content_hash": { "$ref": "#/$defs/nullableSha256" },
+        "event_count": { "$ref": "#/$defs/count" },
+        "first_date": { "$ref": "#/$defs/nullableDate" },
+        "last_date": { "$ref": "#/$defs/nullableDate" }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "baseline_content_hash",
+        "target_reference",
+        "snapshot_content_hash",
+        "managed_uid_count",
+        "source"
+      ],
+      "properties": {
+        "schema_version": { "const": "1.0" },
+        "baseline_content_hash": { "$ref": "#/$defs/sha256" },
+        "target_reference": { "$ref": "#/$defs/targetReference" },
+        "snapshot_content_hash": { "$ref": "#/$defs/sha256" },
+        "managed_uid_count": { "$ref": "#/$defs/count" },
+        "source": { "$ref": "#/$defs/sourceProvenance" }
+      }
+    },
+    "classificationCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fatal_guard",
+        "invalid_source",
+        "duplicate_source_uid",
+        "duplicate_google_icaluid",
+        "ambiguous",
+        "add",
+        "update",
+        "delete_candidate",
+        "unmanaged_google_event",
+        "unchanged"
+      ],
+      "properties": {
+        "unchanged": { "$ref": "#/$defs/count" },
+        "add": { "$ref": "#/$defs/count" },
+        "update": { "$ref": "#/$defs/count" },
+        "delete_candidate": { "$ref": "#/$defs/count" },
+        "duplicate_source_uid": { "$ref": "#/$defs/count" },
+        "duplicate_google_icaluid": { "$ref": "#/$defs/count" },
+        "ambiguous": { "$ref": "#/$defs/count" },
+        "unmanaged_google_event": { "$ref": "#/$defs/count" },
+        "invalid_source": { "$ref": "#/$defs/count" },
+        "fatal_guard": { "$ref": "#/$defs/count" }
+      }
+    },
+    "changedFields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "description", "start_date", "end_date"],
+      "properties": {
+        "summary": { "$ref": "#/$defs/count" },
+        "description": { "$ref": "#/$defs/count" },
+        "start_date": { "$ref": "#/$defs/count" },
+        "end_date": { "$ref": "#/$defs/count" }
+      }
+    },
+    "diffSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "counts",
+        "changed_fields",
+        "source_event_count",
+        "google_event_count",
+        "warning_count",
+        "fatal_event_count",
+        "proposed_action_count",
+        "fatal",
+        "has_changes",
+        "has_ambiguous",
+        "diff_content_hash"
+      ],
+      "properties": {
+        "counts": { "$ref": "#/$defs/classificationCounts" },
+        "changed_fields": { "$ref": "#/$defs/changedFields" },
+        "source_event_count": { "$ref": "#/$defs/count" },
+        "google_event_count": { "$ref": "#/$defs/count" },
+        "warning_count": { "$ref": "#/$defs/count" },
+        "fatal_event_count": { "$ref": "#/$defs/count" },
+        "proposed_action_count": { "$ref": "#/$defs/count" },
+        "fatal": { "type": "boolean" },
+        "has_changes": { "type": "boolean" },
+        "has_ambiguous": { "type": "boolean" },
+        "diff_content_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_add", "max_update", "max_delete"],
+      "properties": {
+        "max_add": { "$ref": "#/$defs/count" },
+        "max_update": { "$ref": "#/$defs/count" },
+        "max_delete": { "$ref": "#/$defs/count" }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "source_ref",
+        "google_refs",
+        "source_date",
+        "google_date",
+        "changed_fields",
+        "ownership_evidence",
+        "finding_codes",
+        "destructive",
+        "separate_approval_required"
+      ],
+      "properties": {
+        "action": { "enum": ["add", "update", "delete_candidate"] },
+        "source_ref": { "$ref": "#/$defs/sourceReference" },
+        "google_refs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/googleReference" },
+          "uniqueItems": true
+        },
+        "source_date": { "$ref": "#/$defs/nullableDate" },
+        "google_date": { "$ref": "#/$defs/nullableDate" },
+        "changed_fields": {
+          "type": "array",
+          "items": { "enum": ["summary", "description", "start_date", "end_date"] },
+          "uniqueItems": true
+        },
+        "ownership_evidence": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "trusted_baseline",
+              "trusted_source_uid",
+              "trusted_google_event_id",
+              "private_extended_property"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "finding_codes": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "uniqueItems": true
+        },
+        "destructive": { "type": "boolean" },
+        "separate_approval_required": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "const": "delete_candidate" } } },
+          "then": {
+            "properties": {
+              "destructive": { "const": true },
+              "separate_approval_required": { "const": true }
+            }
+          },
+          "else": {
+            "properties": {
+              "destructive": { "const": false },
+              "separate_approval_required": { "const": false }
+            }
+          }
+        }
+      ]
+    },
+    "guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "code", "message", "observed_count", "limit"],
+      "properties": {
+        "severity": { "enum": ["warning", "fatal"] },
+        "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "message": { "type": "string", "minLength": 1 },
+        "observed_count": {
+          "oneOf": [
+            { "$ref": "#/$defs/count" },
+            { "type": "null" }
+          ]
+        },
+        "limit": {
+          "oneOf": [
+            { "$ref": "#/$defs/count" },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}

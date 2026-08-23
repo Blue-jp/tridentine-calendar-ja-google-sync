@@ -154,6 +154,7 @@
           "type": "array",
           "items": {
             "enum": [
+              "trusted_baseline",
               "trusted_source_uid",
               "trusted_google_event_id",
               "private_extended_property"
