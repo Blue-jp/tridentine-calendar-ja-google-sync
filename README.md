@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 3Aの範囲
+## Phase 4Aの範囲
 
-Phase 3AはPhase 2のoffline比較機能に、最小権限Google read-only取得の安全なcode foundationを追加します。OAuth、API、browser、networkを使うtestはなく、公式client境界はすべてmockで検証します。
+Phase 4Aはoffline比較とread-only snapshot取得基盤に、明示的にtrustedへ遷移するprivate baselineと、構造的に実行不能なsync planを追加します。Baseline作成・trust・planningはすべてlocal fileを使うoffline処理です。
 
-**現時点ではonline commandを実行しないでください。Phase 3A中のOAuth認証開始およびGoogle Calendar API呼出しは未承認です。**
+Phase 4Aの開発・testはOAuth、Google API、browser、networkを使用しません。Online commandは引き続き別の明示承認が必要です。
 
 ### Implemented
 
@@ -25,16 +25,20 @@ Phase 3AはPhase 2のoffline比較機能に、最小権限Google read-only取得
 - `events.list`専用client、full pagination、bounded retry、target identity guard
 - raw API responseをallowlistでsanitized snapshotへ変換する処理
 - repository外へのprivate atomic snapshot writeとno-overwrite default
+- exact zero-difference auditからのcandidate baseline作成
+- exact confirmation phraseによるcandidate→trusted transition
+- trusted baselineだけをownership evidenceに使うoffline diff
+- threshold・mass-change・ambiguity・unmanaged guardを持つnon-executable sync plan
 - Production dataを含まないsynthetic fixture test
 
 ### Not implemented
 
-- 実際のOAuth認証、browser起動、Google Calendar API call、Production接続
-- `syncToken`、state persistence
-- applyおよびadd/update/delete execution
-- Production synchronization
+- Google Calendar write scopeおよびwrite method
+- Test Calendar / Production Calendarへのapply
+- add/update/delete executionとexecutable plan
+- `syncToken`、incremental state、automation
 
-Phase 3Aの開発・testではGoogle Calendarへ接続せず、Google Calendarを読み取りも書き換えもしません。`delete_candidate`は分類名にすぎず、削除操作を生成・実行しません。
+Phase 4AのbaselineとplanはGoogle Calendarへ接続せず、Google Calendarを書き換えません。`delete_candidate`とplan actionはreview用分類にすぎず、request payload、HTTP method、endpointを持ちません。
 
 Production ICS、Production snapshot、runtime stateをrepositoryへcommitしないでください。入力はrepository外のローカルfileとして明示的に渡します。
 
@@ -112,20 +116,61 @@ tridentine-calendar-google-sync diff-snapshot `
 
 `diff-snapshot`はローカルfileだけを読み、networkへ接続しません。snapshotは`sanitized-google-calendar-v1`形式で、targetは秘密のCalendar IDではなくSHA-256 fingerprintで識別します。通常reportにはraw `iCalUID`、Google event ID、event title、description、local pathを含めません。
 
+### Candidate baselineの作成とinspection
+
+```powershell
+tridentine-calendar-google-sync create-baseline-candidate `
+  --source "<repository外のAccepted HTML ICS path>" `
+  --profile accepted-20260814 `
+  --google-snapshot "<repository外のsanitized snapshot path>" `
+  --output "<repository外のcandidate baseline path>"
+
+tridentine-calendar-google-sync inspect-baseline `
+  --baseline "<repository外のbaseline path>" `
+  --format text
+```
+
+Candidateはexact zero-difference、全件unchanged、warning 0、snapshot safety counter 0の場合だけ作れます。Baseline fileはraw Source UID inventoryを含むsensitive runtime dataです。`inspect-baseline`はraw UIDを表示しません。
+
+### Explicit trust transition
+
+```powershell
+tridentine-calendar-google-sync trust-baseline `
+  --candidate "<repository外のcandidate baseline path>" `
+  --output "<repository外のtrusted baseline path>" `
+  --confirmation "<candidate専用のexact confirmation phrase>"
+```
+
+Candidateはownership evidenceになりません。Hash検証済みcandidateと、表示されたexact confirmation phraseが一致した場合だけ、新しいtrusted baseline fileをno-overwriteで作成します。
+
+### Non-executable sync plan
+
+```powershell
+tridentine-calendar-google-sync plan-sync `
+  --source "<repository外のAccepted HTML ICS path>" `
+  --profile accepted-20260814 `
+  --google-snapshot "<repository外のsanitized snapshot path>" `
+  --trusted-baseline "<repository外のtrusted baseline path>" `
+  --output "<repository外のsync plan path>" `
+  --format json
+```
+
+Threshold defaultはadd/update/deleteすべて`0`です。Plan stateは`draft`、`review_required`、`blocked`のいずれかですが、全stateで`executable=false`です。Delete candidateは常にdestructiveかつseparate approval requiredとして表示されます。
+
 ### Google read-only commands
 
-`authorize-google-readonly`と`fetch-google-snapshot`はPhase 3Aの安全設計・mock test対象として追加されています。両commandは明示的な`--online`を要求しますが、**現時点では実行禁止**です。将来の別承認後にだけ利用します。準備要件とsecret配置方針は[Google read-only setup](docs/google-readonly-setup.md)を参照してください。
+`authorize-google-readonly`と`fetch-google-snapshot`はPhase 3Aで追加された明示的online commandです。両commandは`--online`を要求し、別途承認されたread-only workflowでだけ利用します。Phase 4Aのbaseline/plan commandから呼び出されることはありません。準備要件とsecret配置方針は[Google read-only setup](docs/google-readonly-setup.md)を参照してください。
 
 将来承認後のcommand syntaxは次の形です。以下はreferenceであり、Phase 3Aでは実行しません。
 
 ```powershell
-# DO NOT RUN IN PHASE 3A
+# REFERENCE ONLY — REQUIRES SEPARATE ONLINE APPROVAL
 tridentine-calendar-google-sync authorize-google-readonly `
   --online `
   --credentials-file "<repository外のDesktop OAuth client JSON path>" `
   --token-file "<repository外のread-only token JSON path>"
 
-# DO NOT RUN IN PHASE 3A
+# REFERENCE ONLY — REQUIRES SEPARATE ONLINE APPROVAL
 tridentine-calendar-google-sync fetch-google-snapshot `
   --online `
   --token-file "<repository外のread-only token JSON path>" `
@@ -146,6 +191,13 @@ uv run pytest tests/test_accepted_asset_integration.py `
 環境変数が未設定ならtestはskipされ、offline unit test suiteは成功します。環境変数の値はreportやtest failureへ表示しません。CIはこの環境変数を設定せず、Production assetをdownloadしません。
 
 Phase 2のopt-in integration testはAccepted sourceをmemory上のsynthetic Google eventへ変換してdiff engineを検証します。生成したsnapshotをfileへ保存せず、Google APIも呼び出しません。
+
+Phase 4AのProduction candidate integrationは次の2環境変数が明示された場合だけ実行されます。
+
+- `TRIDENTINE_ACCEPTED_HTML_ICS_PATH`
+- `TRIDENTINE_PRODUCTION_GOOGLE_SNAPSHOT_PATH`
+
+このtestはcandidateをmemory内で検証するだけで、trust transitionやbaseline/plan file writeを行いません。
 
 ## Exit code
 
@@ -173,6 +225,8 @@ Validation mismatchは通常の利用時にPython tracebackやfile本文を表�
 - runtime dataはrepository外に保存します。
 - OAuth client JSON、authorized-user token、target config、sanitized Production snapshotはすべてrepositoryとGit worktreeの外へ置きます。
 - Snapshotはsanitized後もevent本文とopaque IDを含むsensitive runtime dataです。公開artifactやCI artifactにしません。
+- Candidate/trusted baselineはraw Source UID inventoryを含むためprivate dataです。Repository、CI artifact、issue、Pull Requestへ載せません。
+- Sync plan reportはsafe referencesだけを使用し、raw UID、Google event ID、ETag、event本文、payload、method、endpointを含めません。
 
 詳細は[Security Policy](SECURITY.md)も参照してください。
 
@@ -190,10 +244,10 @@ Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれ�
 
 ## Roadmap
 
-Phase 3Aまでに、offline diffとmock検証済みread-only取得foundationを実装しました。以下は未実装または未承認であり、別のreviewと明示的な許可が必要です。
+Phase 4Aまでに、offline diff、read-only snapshot foundation、trusted baseline、non-executable planを実装しました。以下は未実装または未承認です。
 
-1. 実accountでの最小権限OAuth authorization
-2. 明示承認されたtest targetに対する初回read-only fetch
+1. Production baseline candidateの別承認によるtrusted化
+2. Plan reviewと将来のapply approvalを分離した外部workflow
 3. 専用test Calendarに限定したwrite検証
 4. Production apply、delete、syncToken、automation
 

@@ -145,6 +145,8 @@ def _ownership_evidence(
     managed_scope: ManagedScope,
 ) -> tuple[str, ...]:
     evidence: list[str] = []
+    if event.ical_uid is not None and event.ical_uid in managed_scope.trusted_baseline_uids:
+        evidence.append("trusted_baseline")
     if event.ical_uid is not None and event.ical_uid in managed_scope.trusted_source_uids:
         evidence.append("trusted_source_uid")
     if event.event_id in managed_scope.trusted_google_event_ids:

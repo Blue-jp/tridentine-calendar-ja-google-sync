@@ -48,6 +48,11 @@ class ManagedScope(StrictFrozenModel):
     """
 
     trusted_source_uids: frozenset[str] = Field(default=frozenset(), repr=False, exclude=True)
+    trusted_baseline_uids: frozenset[str] = Field(
+        default=frozenset(),
+        repr=False,
+        exclude=True,
+    )
     trusted_google_event_ids: frozenset[str] = Field(
         default=frozenset(),
         repr=False,

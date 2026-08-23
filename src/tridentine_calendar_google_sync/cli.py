@@ -9,6 +9,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
+from tridentine_calendar_google_sync.baseline_engine import (
+    BaselineConfirmationError,
+    BaselineError,
+    BaselineGuardError,
+    baseline_confirmation_phrase,
+    baseline_inspection_data,
+    build_baseline_candidate,
+    render_baseline_inspection_json,
+    render_baseline_text,
+    trust_baseline,
+)
+from tridentine_calendar_google_sync.baseline_io import load_baseline, write_baseline
 from tridentine_calendar_google_sync.diff_engine import diff_source_to_snapshot
 from tridentine_calendar_google_sync.diff_models import CalendarDiff, ManagedScope
 from tridentine_calendar_google_sync.diff_report import (
@@ -45,7 +57,17 @@ from tridentine_calendar_google_sync.google_target import (
     verify_target_fingerprint,
     verify_target_metadata,
 )
+from tridentine_calendar_google_sync.plan_engine import PlanError, build_sync_plan
+from tridentine_calendar_google_sync.plan_models import PlanState, PlanThresholds
+from tridentine_calendar_google_sync.plan_report import (
+    render_plan_json_report,
+    render_plan_text_report,
+)
 from tridentine_calendar_google_sync.profiles import ProfileError, load_profile
+from tridentine_calendar_google_sync.sensitive_paths import (
+    SensitivePathError,
+    atomic_write_private_text,
+)
 from tridentine_calendar_google_sync.snapshot_io import (
     SnapshotWriteError,
     validate_snapshot_output,
@@ -69,6 +91,16 @@ class SafeArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> Never:
         raise argparse.ArgumentError(None, message)
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a nonnegative integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("value must be a nonnegative integer")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -185,6 +217,102 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="absolute local snapshot output path outside every Git worktree",
     )
+    candidate_command = subparsers.add_parser(
+        "create-baseline-candidate",
+        help="create a private candidate baseline from an exact zero-difference audit",
+    )
+    candidate_command.add_argument("--source", required=True, help="local ICS path")
+    candidate_command.add_argument(
+        "--profile",
+        required=True,
+        help="Accepted source profile ID",
+    )
+    candidate_command.add_argument(
+        "--profiles-dir",
+        help="optional local directory containing source profiles",
+    )
+    candidate_command.add_argument(
+        "--google-snapshot",
+        required=True,
+        help="local sanitized Google snapshot JSON path",
+    )
+    candidate_command.add_argument(
+        "--output",
+        required=True,
+        help="absolute private candidate baseline output path",
+    )
+    inspect_baseline_command = subparsers.add_parser(
+        "inspect-baseline",
+        help="inspect a private baseline without exposing its raw UID inventory",
+    )
+    inspect_baseline_command.add_argument(
+        "--baseline",
+        required=True,
+        help="absolute private baseline path",
+    )
+    inspect_baseline_command.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_baseline_command.add_argument(
+        "--output",
+        help="optional local safe inspection report path",
+    )
+    trust_command = subparsers.add_parser(
+        "trust-baseline",
+        help="explicitly transition a verified candidate into a trusted baseline",
+    )
+    trust_command.add_argument(
+        "--candidate",
+        required=True,
+        help="absolute private candidate baseline path",
+    )
+    trust_command.add_argument(
+        "--output",
+        required=True,
+        help="absolute private trusted baseline output path",
+    )
+    trust_command.add_argument(
+        "--confirmation",
+        required=True,
+        help="exact candidate trust confirmation phrase",
+    )
+    plan_command = subparsers.add_parser(
+        "plan-sync",
+        help="build a private non-executable plan from a trusted baseline",
+    )
+    plan_command.add_argument("--source", required=True, help="local ICS path")
+    plan_command.add_argument("--profile", required=True, help="Accepted source profile ID")
+    plan_command.add_argument(
+        "--profiles-dir",
+        help="optional local directory containing source profiles",
+    )
+    plan_command.add_argument(
+        "--google-snapshot",
+        required=True,
+        help="local sanitized Google snapshot JSON path",
+    )
+    plan_command.add_argument(
+        "--trusted-baseline",
+        required=True,
+        help="absolute private trusted baseline path",
+    )
+    plan_command.add_argument(
+        "--output",
+        required=True,
+        help="absolute private non-executable plan output path",
+    )
+    plan_command.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    plan_command.add_argument("--max-add", type=_nonnegative_int, default=0)
+    plan_command.add_argument("--max-update", type=_nonnegative_int, default=0)
+    plan_command.add_argument("--max-delete", type=_nonnegative_int, default=0)
     return parser
 
 
@@ -316,6 +444,91 @@ def _fetch_google_command(args: argparse.Namespace) -> int:
     return EXIT_VALID
 
 
+def _baseline_status_line(label: str, baseline: object) -> str:
+    from tridentine_calendar_google_sync.baseline_models import TrustedBaseline
+
+    if not isinstance(baseline, TrustedBaseline):
+        raise TypeError("baseline is invalid")
+    data = baseline_inspection_data(baseline)
+    return (
+        f"{label}: state={data['state']}; target={data['target_reference']}; "
+        f"managed_uid_count={data['managed_uid_count']}; "
+        f"baseline_content_hash={data['baseline_content_hash']}.\n"
+    )
+
+
+def _create_baseline_candidate_command(args: argparse.Namespace) -> int:
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    snapshot = load_google_snapshot(args.google_snapshot)
+    diff = diff_source_to_snapshot(source, snapshot, ManagedScope())
+    candidate = build_baseline_candidate(profile, source, snapshot, diff)
+    write_baseline(candidate, args.output)
+    sys.stdout.write(_baseline_status_line("Baseline candidate stored", candidate))
+    return EXIT_VALID
+
+
+def _inspect_baseline_command(args: argparse.Namespace) -> int:
+    baseline = load_baseline(args.baseline)
+    rendered = (
+        render_baseline_inspection_json(baseline)
+        if args.report_format == "json"
+        else render_baseline_text(baseline)
+    )
+    if args.output:
+        _write_report(args.output, rendered)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
+
+
+def _trust_baseline_command(args: argparse.Namespace) -> int:
+    candidate = load_baseline(args.candidate)
+    baseline_confirmation_phrase(candidate)
+    trusted = trust_baseline(candidate, args.confirmation)
+    write_baseline(trusted, args.output)
+    sys.stdout.write(_baseline_status_line("Trusted baseline stored", trusted))
+    return EXIT_VALID
+
+
+def _plan_sync_command(args: argparse.Namespace) -> int:
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    snapshot = load_google_snapshot(args.google_snapshot)
+    baseline = load_baseline(args.trusted_baseline)
+    thresholds = PlanThresholds(
+        max_add=args.max_add,
+        max_update=args.max_update,
+        max_delete=args.max_delete,
+    )
+    plan = build_sync_plan(
+        profile,
+        source,
+        snapshot,
+        baseline,
+        thresholds=thresholds,
+    )
+    rendered = (
+        render_plan_json_report(plan)
+        if args.report_format == "json"
+        else render_plan_text_report(plan)
+    )
+    atomic_write_private_text(args.output, rendered, overwrite=False)
+    sys.stdout.write(
+        "Non-executable sync plan stored: "
+        f"state={plan.state.value}; executable=no; "
+        f"approval_required={'yes' if plan.approval_required else 'no'}; "
+        f"proposed_actions={len(plan.proposed_actions)}; "
+        f"safety_guards={len(plan.safety_guards)}; "
+        f"plan_content_hash={plan.plan_content_hash}.\n"
+    )
+    if plan.state is PlanState.DRAFT:
+        return EXIT_VALID
+    if plan.state is PlanState.REVIEW_REQUIRED:
+        return EXIT_DIFFERENCES
+    return EXIT_FATAL_GUARD
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the offline CLI and return a documented process exit code.
 
@@ -334,6 +547,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _authorize_google_command(args)
         if args.command == "fetch-google-snapshot":
             return _fetch_google_command(args)
+        if args.command == "create-baseline-candidate":
+            return _create_baseline_candidate_command(args)
+        if args.command == "inspect-baseline":
+            return _inspect_baseline_command(args)
+        if args.command == "trust-baseline":
+            return _trust_baseline_command(args)
+        if args.command == "plan-sync":
+            return _plan_sync_command(args)
         profile = load_profile(args.profile, args.profiles_dir)
         inspection = inspect_source(args.source, profile)
         if args.command == "diff-snapshot":
@@ -388,6 +609,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"error: {public_message}\n")
         return EXIT_GOOGLE_READ_ERROR
     except SnapshotWriteError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
+    except BaselineConfirmationError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_CLI_ERROR
+    except BaselineGuardError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_FATAL_GUARD
+    except BaselineError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
+    except PlanError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_FATAL_GUARD
+    except SensitivePathError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
     except Exception:
