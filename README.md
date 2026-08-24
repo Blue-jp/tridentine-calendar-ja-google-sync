@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 5A.1の範囲
+## Phase 5C.0の範囲
 
-Phase 5A.1は、専用Test Calendarの実write前にTest write tokenで`events.list`だけを呼ぶread-only prewrite inspection経路を追加します。Mutation adapterと分離し、Empty Calendarだけをwrite-readyと判定します。
+Phase 5C.0は、完全に空の専用Test Calendarに架空の終日event 1件を最初に追加するためのTest-only bootstrap planning基盤を追加します。通常Sync Planとは別model・schema・builderとし、global safety guardとProduction policyは変更しません。
 
-Phase 5A.1の開発・CIはmock・synthetic fixtureのみを使います。Live OAuth、browser authorization、token取得、Google API call、Test / Production Calendarへの接続・変更は行いません。
+Phase 5C.0の開発・CIはofflineのsynthetic fixtureとmock transportのみを使います。Live OAuth、browser authorization、token取得、Google API call、Test / Production Calendarへの接続・変更は行いません。
 
 ### Implemented
 
@@ -46,6 +46,10 @@ Phase 5A.1の開発・CIはmock・synthetic fixtureのみを使います。Live 
 - Empty Test Calendarのwrite-readiness検証
 - Sanitized Test prewrite snapshotとno-mutation Human / JSON report
 - Non-empty Calendarの自動delete / clearを行わないfatal guard
+- Empty Test Calendarとsynthetic one-event SourceだけのTest-only bootstrap add planning
+- 通常Sync Plan guardを変更しない専用Bootstrap Plan
+- 初回Test addだけbaseline不要の専用Bootstrap Run Spec
+- Production hard lock、add 1件固定、update / delete到達不可能policy
 
 ### Not implemented
 
@@ -220,6 +224,14 @@ Non-empty Calendarはsafe aggregate countだけを報告してfatal guardで停�
 
 Snapshot outputはprivate `test-calendar-prewrite-snapshot-v1`包装です。後続でcanonical Google snapshotを使う場合は、strict loaderで包装を検証した後の内部`snapshot`を使い、包装fileを通常の`google-snapshot-v1`として直接読み込みません。
 
+### Test-only bootstrap add planning
+
+`build-test-bootstrap-add-plan`は、strictに検証した空のTest prewrite snapshotと`.invalid` UID・Test markerを持つsynthetic Source 1件から、non-executableの専用Bootstrap Planをoffline生成します。通常planが報告する`zero_google_event_count`、`all_events_add`、`mass_change_guard`は抑制せず、許可されたoriginal guard codesとして専用planへ記録します。
+
+`inspect-test-bootstrap-add-plan`はraw UIDやevent本文を出さず、safe reference・aggregate count・hashだけを表示します。`build-test-bootstrap-add-run-spec`はそのplanからadd 1 / update 0 / delete 0の専用private Run Specを作ります。Trusted Baselineが不要なのは完全に空のTest Calendarへの初回addだけです。
+
+Bootstrap成功後はこの経路を再利用せず、Source 1 / Google 1の一致状態から通常のTest baselineを作る予定です。Phase 5C.0ではGoogle APIやTest Calendar writeを実行しません。
+
 ### Google read-only commands
 
 `authorize-google-readonly`と`fetch-google-snapshot`はPhase 3Aで追加された明示的online commandです。両commandは`--online`を要求し、別途承認されたread-only workflowでだけ利用します。Phase 4Aのbaseline/plan commandから呼び出されることはありません。準備要件とsecret配置方針は[Google read-only setup](docs/google-readonly-setup.md)を参照してください。
@@ -320,7 +332,7 @@ Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれ�
 
 ## Roadmap
 
-Phase 5A.1までに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport code foundation、Test Calendar read-only prewrite inspectionを実装しました。以下は未実施または未承認です。
+Phase 5C.0までに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport code foundation、Test Calendar read-only prewrite inspection、Test-only bootstrap add planningを実装しました。以下は未実施または未承認です。
 
 1. Production baseline candidateの別承認によるtrusted化
 2. 専用Test Calendarの別承認OAuth・API・1件add検証
