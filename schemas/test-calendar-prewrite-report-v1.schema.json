@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/test-calendar-prewrite-report-v1.schema.json",
+  "title": "Public-safe Test Calendar read-only prewrite inspection report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "inspection_type",
+    "read_only",
+    "prewrite_ready",
+    "target_safe_ref",
+    "scope_label",
+    "target_metadata_validation",
+    "snapshot_complete",
+    "event_count",
+    "cancelled_count",
+    "recurring_count",
+    "timed_count",
+    "non_default_event_type_count",
+    "color_id_count",
+    "event_label_id_count",
+    "page_count",
+    "api_call_count",
+    "retry_count",
+    "google_write_method_count",
+    "google_write_operation_count",
+    "event_changes",
+    "snapshot_hash",
+    "findings",
+    "result_binding_hash",
+    "report_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "inspection_type": { "const": "test-calendar-read-only-prewrite-v1" },
+    "read_only": { "const": true },
+    "prewrite_ready": { "type": "boolean" },
+    "target_safe_ref": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$",
+      "not": { "const": "T-e10f0095ab8f" }
+    },
+    "scope_label": { "const": "calendar.events.owned" },
+    "target_metadata_validation": { "const": "verified" },
+    "snapshot_complete": { "const": true },
+    "event_count": { "$ref": "#/$defs/count" },
+    "cancelled_count": { "$ref": "#/$defs/count" },
+    "recurring_count": { "$ref": "#/$defs/count" },
+    "timed_count": { "$ref": "#/$defs/count" },
+    "non_default_event_type_count": { "$ref": "#/$defs/count" },
+    "color_id_count": { "$ref": "#/$defs/count" },
+    "event_label_id_count": { "$ref": "#/$defs/count" },
+    "page_count": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "api_call_count": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "retry_count": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "google_write_method_count": { "const": 0 },
+    "google_write_operation_count": { "const": 0 },
+    "event_changes": { "const": 0 },
+    "snapshot_hash": { "$ref": "#/$defs/sha256" },
+    "findings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "result_binding_hash": { "$ref": "#/$defs/sha256" },
+    "report_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "prewrite_ready": { "const": true } } },
+      "then": {
+        "properties": {
+          "event_count": { "const": 0 },
+          "cancelled_count": { "const": 0 },
+          "recurring_count": { "const": 0 },
+          "timed_count": { "const": 0 },
+          "non_default_event_type_count": { "const": 0 },
+          "color_id_count": { "const": 0 },
+          "event_label_id_count": { "const": 0 },
+          "findings": { "maxItems": 0 }
+        }
+      },
+      "else": {
+        "properties": {
+          "event_count": { "minimum": 1 },
+          "findings": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "severity": { "const": "fatal" },
+                "code": { "const": "test_calendar_not_empty_manual_review_required" }
+              },
+              "required": ["severity", "code"]
+            },
+            "minContains": 1,
+            "maxContains": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "code", "message"],
+      "properties": {
+        "severity": { "const": "fatal" },
+        "code": { "const": "test_calendar_not_empty_manual_review_required" },
+        "message": {
+          "const": "Test Calendar is not empty; manual review is required."
+        }
+      }
+    }
+  }
+}

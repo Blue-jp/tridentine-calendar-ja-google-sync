@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/test-calendar-prewrite-snapshot-v1.schema.json",
+  "title": "Private complete Test Calendar prewrite snapshot wrapper",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "snapshot_type",
+    "test_only",
+    "production_locked",
+    "target_fingerprint",
+    "target_safe_ref",
+    "complete",
+    "page_count",
+    "api_call_count",
+    "retry_count",
+    "snapshot",
+    "snapshot_content_hash",
+    "wrapper_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "snapshot_type": { "const": "test-calendar-prewrite-snapshot-v1" },
+    "test_only": { "const": true },
+    "production_locked": { "const": true },
+    "target_fingerprint": { "$ref": "#/$defs/sha256" },
+    "target_safe_ref": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$",
+      "not": { "const": "T-e10f0095ab8f" }
+    },
+    "complete": { "const": true },
+    "page_count": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "api_call_count": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "retry_count": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "snapshot": { "$ref": "google-snapshot-v1.schema.json" },
+    "snapshot_content_hash": { "$ref": "#/$defs/sha256" },
+    "wrapper_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

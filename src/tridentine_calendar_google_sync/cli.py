@@ -91,6 +91,10 @@ from tridentine_calendar_google_sync.google_target import (
     verify_target_fingerprint,
     verify_target_metadata,
 )
+from tridentine_calendar_google_sync.google_test_prewrite_client import (
+    TestCalendarPrewriteClientError,
+    build_test_calendar_prewrite_list_client,
+)
 from tridentine_calendar_google_sync.google_test_write_auth import (
     TestWriteAuthConfigError,
     TestWriteAuthError,
@@ -126,6 +130,15 @@ from tridentine_calendar_google_sync.snapshot_io import (
 )
 from tridentine_calendar_google_sync.source_ics import SourceInputError, inspect_source
 from tridentine_calendar_google_sync.source_report import render_json_report, render_text_report
+from tridentine_calendar_google_sync.test_calendar_prewrite import (
+    TestCalendarPrewriteError,
+    inspect_test_calendar_prewrite,
+)
+from tridentine_calendar_google_sync.test_calendar_prewrite_io import (
+    TestCalendarPrewriteIOError,
+    validate_test_calendar_prewrite_output_paths,
+    write_test_calendar_prewrite_outputs,
+)
 from tridentine_calendar_google_sync.test_write_approval import (
     TestWriteApprovalError,
     approve_test_write_run_spec,
@@ -185,6 +198,16 @@ _TEST_WRITE_SAFETY_HELP = (
     "Add uses events.import and Update uses events.patch with an exact If-Match ETag.\n"
     "The Test write token is separate from the Production read-only token.\n"
     "No batch execution and no automatic mutation retry are implemented."
+)
+
+_TEST_PREWRITE_SAFETY_HELP = (
+    "Test Calendar read-only prewrite inspection using the separate Test write token.\n"
+    "Calls events.list only and never calls events.get, events.import, or events.patch.\n"
+    "Does not write to Google Calendar, delete events, clear a Calendar, or make an "
+    "existing Calendar empty.\n"
+    "Production and primary Calendars are refused before client construction.\n"
+    "An empty Calendar is write-ready; a nonempty Calendar requires manual review.\n"
+    "Stores only a sanitized snapshot and aggregate reports outside every repository."
 )
 
 
@@ -538,6 +561,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional local public inspection report path",
     )
 
+    inspect_test_prewrite = subparsers.add_parser(
+        "inspect-test-calendar-prewrite",
+        help="inspect one dedicated Test Calendar through events.list only",
+        description=_TEST_PREWRITE_SAFETY_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inspect_test_prewrite.add_argument(
+        "--online",
+        action="store_true",
+        help="explicitly allow the bounded Test Calendar read-only network inspection",
+    )
+    inspect_test_prewrite.add_argument(
+        "--target-config",
+        required=True,
+        help="absolute repository-external Test target TOML path",
+    )
+    inspect_test_prewrite.add_argument(
+        "--token-file",
+        required=True,
+        help="absolute repository-external Test write token path",
+    )
+    inspect_test_prewrite.add_argument(
+        "--production-read-token-file",
+        required=True,
+        help="protected Production read-token path used only for path-separation checks",
+    )
+    inspect_test_prewrite.add_argument(
+        "--snapshot-output",
+        required=True,
+        help="new repository-external sanitized Test prewrite snapshot path",
+    )
+    inspect_test_prewrite.add_argument(
+        "--human-report-output",
+        required=True,
+        help="new repository-external aggregate human report path",
+    )
+    inspect_test_prewrite.add_argument(
+        "--json-report-output",
+        required=True,
+        help="new repository-external aggregate JSON report path",
+    )
+
     authorize_test_write = subparsers.add_parser(
         "authorize-test-google-write",
         help="authorize the exact Test Calendar owned-events write scope",
@@ -833,6 +898,51 @@ def _authorize_test_google_write_command(args: argparse.Namespace) -> int:
         "scope=calendar.events.owned; token-separated=yes; token-content-displayed=no.\n"
     )
     return EXIT_VALID
+
+
+def _inspect_test_calendar_prewrite_command(args: argparse.Namespace) -> int:
+    """Run the dedicated list-only Test Calendar inspection path."""
+
+    _require_online(args)
+    target = load_test_write_target_config(args.target_config)
+    target_ref = test_write_target_reference(target)
+    validate_test_calendar_prewrite_output_paths(
+        args.snapshot_output,
+        args.human_report_output,
+        args.json_report_output,
+    )
+
+    # Target, Production, primary-Calendar, and output guards all run before
+    # credentials, the optional Google dependency, or an API-capable client.
+    bindings = load_google_optional_bindings()
+    credentials = load_test_write_credentials(
+        args.token_file,
+        args.production_read_token_file,
+        target,
+        bindings=bindings,
+    )
+    client = build_test_calendar_prewrite_list_client(
+        credentials,
+        target_config=target,
+        build_service=bindings.build_service,
+    )
+    result = inspect_test_calendar_prewrite(client, target)
+    write_test_calendar_prewrite_outputs(
+        result,
+        snapshot_output=args.snapshot_output,
+        human_report_output=args.human_report_output,
+        json_report_output=args.json_report_output,
+    )
+    report = result.report
+    sys.stdout.write(
+        "Test Calendar read-only prewrite inspection stored: "
+        f"target={target_ref}; method=events.list; complete=yes; "
+        f"ready={'yes' if report.prewrite_ready else 'no'}; "
+        f"events={report.event_count}; pages={report.page_count}; "
+        f"API-calls={report.api_call_count}; retries={report.retry_count}; "
+        "Google-writes=0; event-changes=0.\n"
+    )
+    return EXIT_VALID if report.prewrite_ready else EXIT_FATAL_GUARD
 
 
 def _build_test_write_run_spec_command(args: argparse.Namespace) -> int:
@@ -1259,6 +1369,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.print_help(sys.stdout)
             return EXIT_CLI_ERROR
         args = parser.parse_args(effective_argv)
+        if args.command == "inspect-test-calendar-prewrite":
+            return _inspect_test_calendar_prewrite_command(args)
         if args.command == "authorize-test-google-write":
             return _authorize_test_google_write_command(args)
         if args.command == "build-test-write-run-spec":
@@ -1373,6 +1485,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (TestWriteRunSpecIOError, TestWriteJournalError) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
+    except TestCalendarPrewriteIOError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
     except ApplyError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
@@ -1380,6 +1495,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except (TestWriteTargetError, TestWriteRunSpecError, TestWriteTransportError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_FATAL_GUARD
+    except (TestCalendarPrewriteClientError, TestCalendarPrewriteError) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except TestWriteClientError as exc:
