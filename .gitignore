@@ -39,6 +39,8 @@ test-write-run-specs/
 test-write-journals/
 test-write-reports/
 test-write-receipts/
+test-calendar-prewrite-snapshots/
+test-calendar-prewrite-reports/
 snapshots/
 cache/
 reports/internal/
@@ -53,6 +55,9 @@ reports/internal/
 *.test-write-report.json
 *.test-write-receipt.json
 test-write-target*.toml
+*.test-calendar-prewrite-snapshot.json
+*.test-calendar-prewrite-report.json
+*.test-calendar-prewrite-report.txt
 local-data/
 input/
 .DS_Store
