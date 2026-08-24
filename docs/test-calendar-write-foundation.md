@@ -35,6 +35,16 @@ The saved snapshot is a private `test-calendar-prewrite-snapshot-v1` wrapper tha
 
 Production identity, Production environment or label, `primary`, and every target-policy mismatch are rejected before credentials or a Google client are constructed. Development and CI exercise only mock pages and never load operational credentials, token, target, or snapshot files.
 
+## Test-only bootstrap add planning
+
+The normal Sync Plan and Test Bootstrap Add Plan are different artifact types with separate models, schemas, builders, and commands. Bootstrap planning does not alter or suppress the normal `zero_google_event_count`, `all_events_add`, or `mass_change_guard` behavior. Those codes are retained as explicit provenance and are accepted only by the dedicated bootstrap eligibility policy.
+
+Bootstrap eligibility requires a complete, empty, non-Production Test prewrite snapshot and exactly one valid synthetic all-day Source event. The UID must use the reserved `.invalid` domain, the summary and profile must clearly identify a Test purpose, and every update, delete, unmanaged, ambiguous, duplicate, invalid, nonempty, recurring, timed, or Production shape is rejected.
+
+Trusted Baseline is unnecessary only for this first add to an empty Test Calendar. The Bootstrap Plan is non-executable and produces a distinct add-only private Run Spec after independent integrity checks. It cannot contain update or delete operations and cannot reach `events.patch`.
+
+After the first add is separately approved and verified in a later stage, the bootstrap path is no longer eligible because the Test Calendar is nonempty. The next step is to build and explicitly trust a normal Test baseline from the matching Source 1 / Google 1 state. Production targets never enter bootstrap planning, and Phase 5C.0 performs no Google API call.
+
 ## Narrow Google adapter
 
 The adapter surface is limited to `events.list`, `events.get`, `events.import`, and `events.patch`. A generic Google service is not exposed to application code. There is no insert, full update, delete, move, watch, clear, ACL, CalendarList, Calendars, or batch method.

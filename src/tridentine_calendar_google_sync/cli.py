@@ -130,18 +130,48 @@ from tridentine_calendar_google_sync.snapshot_io import (
 )
 from tridentine_calendar_google_sync.source_ics import SourceInputError, inspect_source
 from tridentine_calendar_google_sync.source_report import render_json_report, render_text_report
+from tridentine_calendar_google_sync.test_bootstrap_plan import (
+    TestBootstrapPlanError,
+    build_test_bootstrap_add_plan,
+)
+from tridentine_calendar_google_sync.test_bootstrap_plan_io import (
+    TestBootstrapPlanIOError,
+    load_test_bootstrap_add_plan,
+    write_test_bootstrap_add_plan,
+)
+from tridentine_calendar_google_sync.test_bootstrap_plan_models import TestBootstrapAddPlan
+from tridentine_calendar_google_sync.test_bootstrap_plan_report import (
+    build_test_bootstrap_add_plan_inspection,
+    render_test_bootstrap_add_plan_inspection_json,
+    render_test_bootstrap_add_plan_inspection_text,
+)
+from tridentine_calendar_google_sync.test_bootstrap_run_spec import (
+    TestBootstrapRunSpecError,
+    build_test_bootstrap_add_run_spec,
+)
+from tridentine_calendar_google_sync.test_bootstrap_run_spec_io import (
+    TestBootstrapRunSpecIOError,
+    write_test_bootstrap_add_run_spec,
+)
+from tridentine_calendar_google_sync.test_bootstrap_run_spec_models import (
+    TestBootstrapAddRunSpec,
+)
 from tridentine_calendar_google_sync.test_calendar_prewrite import (
     TestCalendarPrewriteError,
     inspect_test_calendar_prewrite,
 )
 from tridentine_calendar_google_sync.test_calendar_prewrite_io import (
     TestCalendarPrewriteIOError,
+    load_test_calendar_prewrite_snapshot,
     validate_test_calendar_prewrite_output_paths,
     write_test_calendar_prewrite_outputs,
 )
 from tridentine_calendar_google_sync.test_write_approval import (
     TestWriteApprovalError,
-    approve_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_approval_dispatch import (
+    any_test_write_approval_challenge,
+    approve_any_test_write_run_spec,
 )
 from tridentine_calendar_google_sync.test_write_journal import (
     TestWriteJournalError,
@@ -160,6 +190,10 @@ from tridentine_calendar_google_sync.test_write_run_spec_io import (
     TestWriteRunSpecIOError,
     load_test_write_run_spec,
     write_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_spec_dispatch import (
+    TestWriteSpecDispatchError,
+    load_any_test_write_run_spec,
 )
 from tridentine_calendar_google_sync.test_write_target import (
     TestWriteTargetConfigError,
@@ -208,6 +242,20 @@ _TEST_PREWRITE_SAFETY_HELP = (
     "Production and primary Calendars are refused before client construction.\n"
     "An empty Calendar is write-ready; a nonempty Calendar requires manual review.\n"
     "Stores only a sanitized snapshot and aggregate reports outside every repository."
+)
+
+_TEST_BOOTSTRAP_PLAN_HELP = (
+    "Offline Test Calendar bootstrap planning only.\n"
+    "Accepts exactly one synthetic all-day Add into a verified empty Test Calendar.\n"
+    "Produces a non-executable plan and does not change normal Sync Plan guards.\n"
+    "Production targets are refused; Update, Delete, Google API use, and writes are unavailable."
+)
+
+_TEST_BOOTSTRAP_RUN_SPEC_HELP = (
+    "Offline Test-only initial Add Run Spec from one eligible Bootstrap Plan.\n"
+    "Trusted Baseline is omitted only for this first empty-Calendar Add.\n"
+    "Exactly one Add is allowed; Update and Delete are structurally unavailable.\n"
+    "Production is refused and an exact approval phrase is required before any later write."
 )
 
 
@@ -703,6 +751,102 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional repository-external safe inspection report path",
     )
 
+    build_bootstrap_plan = subparsers.add_parser(
+        "build-test-bootstrap-add-plan",
+        help="build one offline Test-only initial Add plan",
+        description=_TEST_BOOTSTRAP_PLAN_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    build_bootstrap_plan.add_argument("--source", required=True, help="synthetic local ICS path")
+    build_bootstrap_plan.add_argument("--profile", required=True, help="synthetic profile ID")
+    build_bootstrap_plan.add_argument(
+        "--profiles-dir",
+        required=True,
+        help="repository-external directory containing the synthetic profile",
+    )
+    build_bootstrap_plan.add_argument(
+        "--prewrite-snapshot",
+        required=True,
+        help="repository-external verified empty Test prewrite snapshot wrapper",
+    )
+    build_bootstrap_plan.add_argument(
+        "--target-config",
+        required=True,
+        help="repository-external strict Test target TOML path",
+    )
+    build_bootstrap_plan.add_argument(
+        "--output",
+        required=True,
+        help="new repository-external private Bootstrap Plan path",
+    )
+
+    inspect_bootstrap_plan = subparsers.add_parser(
+        "inspect-test-bootstrap-add-plan",
+        help="inspect safe metadata from one non-executable Bootstrap Plan",
+        description=(
+            "Safe metadata only; raw UID and event content are never displayed.\n"
+            "The Bootstrap Plan is non-executable and Test-only."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inspect_bootstrap_plan.add_argument(
+        "--plan",
+        required=True,
+        help="repository-external private Bootstrap Plan path",
+    )
+    inspect_bootstrap_plan.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_bootstrap_plan.add_argument(
+        "--output",
+        help="optional safe inspection report output path",
+    )
+
+    build_bootstrap_run_spec = subparsers.add_parser(
+        "build-test-bootstrap-add-run-spec",
+        help="build one offline Add-only Run Spec from an eligible Bootstrap Plan",
+        description=_TEST_BOOTSTRAP_RUN_SPEC_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    build_bootstrap_run_spec.add_argument(
+        "--source",
+        required=True,
+        help="synthetic local ICS path",
+    )
+    build_bootstrap_run_spec.add_argument(
+        "--profile",
+        required=True,
+        help="synthetic profile ID",
+    )
+    build_bootstrap_run_spec.add_argument(
+        "--profiles-dir",
+        required=True,
+        help="repository-external directory containing the synthetic profile",
+    )
+    build_bootstrap_run_spec.add_argument(
+        "--prewrite-snapshot",
+        required=True,
+        help="repository-external verified empty Test prewrite snapshot wrapper",
+    )
+    build_bootstrap_run_spec.add_argument(
+        "--bootstrap-plan",
+        required=True,
+        help="repository-external eligible Bootstrap Add Plan path",
+    )
+    build_bootstrap_run_spec.add_argument(
+        "--target-config",
+        required=True,
+        help="repository-external strict Test target TOML path",
+    )
+    build_bootstrap_run_spec.add_argument(
+        "--output",
+        required=True,
+        help="new repository-external private Bootstrap Run Spec path",
+    )
+
     run_test_write = subparsers.add_parser(
         "run-test-calendar-write",
         help="run one explicitly approved Test Calendar Add or Update",
@@ -725,7 +869,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_test_write.add_argument(
         "--plan",
         required=True,
-        help="absolute repository-external canonical current Sync Plan path",
+        help="normal Sync Plan or Bootstrap Add Plan matching the Run Spec discriminator",
     )
     run_test_write.add_argument(
         "--target-config",
@@ -952,6 +1096,78 @@ def _inspect_test_calendar_prewrite_command(args: argparse.Namespace) -> int:
     return EXIT_VALID if report.prewrite_ready else EXIT_FATAL_GUARD
 
 
+def _build_test_bootstrap_add_plan_command(args: argparse.Namespace) -> int:
+    """Build the separate non-executable initial-Test-Add plan offline."""
+
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    prewrite_snapshot = load_test_calendar_prewrite_snapshot(args.prewrite_snapshot)
+    target = load_test_write_target_config(args.target_config)
+    plan = build_test_bootstrap_add_plan(
+        profile,
+        source,
+        prewrite_snapshot,
+        target,
+    )
+    write_test_bootstrap_add_plan(plan, args.output)
+    report = build_test_bootstrap_add_plan_inspection(plan)
+    sys.stdout.write(
+        "Non-executable Test bootstrap Add Plan stored: "
+        f"target={report['target_safe_ref']}; plan={str(report['plan_content_hash'])[:12]}; "
+        f"operations={report['operation_count']}; add={report['add_count']}; "
+        f"update={report['update_count']}; delete={report['delete_count']}; "
+        "eligible=yes; Production-locked=yes.\n"
+    )
+    return EXIT_DIFFERENCES
+
+
+def _inspect_test_bootstrap_add_plan_command(args: argparse.Namespace) -> int:
+    plan = load_test_bootstrap_add_plan(args.plan)
+    rendered = (
+        render_test_bootstrap_add_plan_inspection_json(plan)
+        if args.report_format == "json"
+        else render_test_bootstrap_add_plan_inspection_text(plan)
+    )
+    if args.output:
+        _write_report(args.output, rendered)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
+
+
+def _build_test_bootstrap_add_run_spec_command(args: argparse.Namespace) -> int:
+    """Build one private Add-only bootstrap Run Spec and safe approval phrase."""
+
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    prewrite_snapshot = load_test_calendar_prewrite_snapshot(args.prewrite_snapshot)
+    plan = load_test_bootstrap_add_plan(args.bootstrap_plan)
+    target = load_test_write_target_config(args.target_config)
+    run_spec = build_test_bootstrap_add_run_spec(
+        profile,
+        source,
+        prewrite_snapshot,
+        plan,
+        target,
+    )
+    write_test_bootstrap_add_run_spec(run_spec, args.output)
+    challenge = any_test_write_approval_challenge(
+        run_spec,
+        current_snapshot_hash=run_spec.current_snapshot_hash,
+        current_plan_hash=plan.plan_content_hash,
+        current_baseline_hash=None,
+        bootstrap_plan=plan,
+    )
+    sys.stdout.write(
+        "Private Test bootstrap Add Run Spec stored: "
+        f"target={run_spec.target_safe_ref}; run=R-{run_spec.run_spec_content_hash[:12]}; "
+        "planning-mode=test_bootstrap_add; operations=1; add=1; update=0; delete=0; "
+        "baseline=none; approval-required=yes.\n"
+        f"Approval challenge: {challenge}\n"
+    )
+    return EXIT_DIFFERENCES
+
+
 def _build_test_write_run_spec_command(args: argparse.Namespace) -> int:
     profile = load_profile(args.profile, args.profiles_dir)
     source = inspect_source(args.source, profile)
@@ -1009,9 +1225,21 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
     _require_online(args)
     journal_path, report_path = _test_write_output_paths(args)
     target = load_test_write_target_config(args.target_config)
-    run_spec = load_test_write_run_spec(args.run_spec)
-    plan = load_sync_plan_report(args.plan)
-    baseline = load_baseline(args.trusted_baseline) if args.trusted_baseline else None
+    run_spec = load_any_test_write_run_spec(args.run_spec)
+    bootstrap_plan: TestBootstrapAddPlan | None = None
+    if isinstance(run_spec, TestBootstrapAddRunSpec):
+        if args.trusted_baseline:
+            raise TestWriteSpecDispatchError(
+                "test_bootstrap_baseline_forbidden",
+                "Bootstrap Add Run Spec cannot use a trusted baseline",
+            )
+        bootstrap_plan = load_test_bootstrap_add_plan(args.plan)
+        plan_hash = bootstrap_plan.plan_content_hash
+        baseline = None
+    else:
+        normal_plan = load_sync_plan_report(args.plan)
+        plan_hash = normal_plan.plan_content_hash
+        baseline = load_baseline(args.trusted_baseline) if args.trusted_baseline else None
     baseline_hash = baseline.baseline_content_hash if baseline is not None else None
 
     # All local Production, integrity, provenance, and approval guards execute
@@ -1025,12 +1253,13 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
             "production_or_mismatched_test_write_target",
             "Production or mismatched Calendar write access is forbidden",
         )
-    approve_test_write_run_spec(
+    approve_any_test_write_run_spec(
         run_spec,
         args.confirmation,
         current_snapshot_hash=run_spec.current_snapshot_hash,
-        current_plan_hash=plan.plan_content_hash,
+        current_plan_hash=plan_hash,
         current_baseline_hash=baseline_hash,
+        bootstrap_plan=bootstrap_plan,
     )
 
     bindings = load_google_optional_bindings()
@@ -1051,8 +1280,9 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
         client,
         args.confirmation,
         current_snapshot_hash=run_spec.current_snapshot_hash,
-        current_plan_hash=plan.plan_content_hash,
+        current_plan_hash=plan_hash,
         current_baseline_hash=baseline_hash,
+        bootstrap_plan=bootstrap_plan,
     )
     rendered = (
         render_test_write_json_report(result)
@@ -1376,6 +1606,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.print_help(sys.stdout)
             return EXIT_CLI_ERROR
         args = parser.parse_args(effective_argv)
+        if args.command == "build-test-bootstrap-add-plan":
+            return _build_test_bootstrap_add_plan_command(args)
+        if args.command == "inspect-test-bootstrap-add-plan":
+            return _inspect_test_bootstrap_add_plan_command(args)
+        if args.command == "build-test-bootstrap-add-run-spec":
+            return _build_test_bootstrap_add_run_spec_command(args)
         if args.command == "inspect-test-calendar-prewrite":
             return _inspect_test_calendar_prewrite_command(args)
         if args.command == "authorize-test-google-write":
@@ -1495,6 +1731,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except TestCalendarPrewriteIOError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
+    except (TestBootstrapPlanIOError, TestBootstrapRunSpecIOError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_INVALID_SNAPSHOT
     except ApplyError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
@@ -1505,6 +1744,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except (TestCalendarPrewriteClientError, TestCalendarPrewriteError) as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_FATAL_GUARD
+    except (TestBootstrapPlanError, TestBootstrapRunSpecError, TestWriteSpecDispatchError) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except TestWriteClientError as exc:

@@ -19,11 +19,12 @@ from tridentine_calendar_google_sync.sensitive_paths import (
     atomic_write_private_text,
     read_sensitive_bytes,
 )
-from tridentine_calendar_google_sync.test_write_models import (
-    TestWriteOperationKind,
-    TestWriteRunSpec,
+from tridentine_calendar_google_sync.test_bootstrap_plan_models import TestBootstrapAddPlan
+from tridentine_calendar_google_sync.test_write_models import TestWriteOperationKind
+from tridentine_calendar_google_sync.test_write_spec_dispatch import (
+    AnyTestWriteRunSpec,
+    verify_any_test_write_run_spec,
 )
-from tridentine_calendar_google_sync.test_write_run_spec import verify_test_write_run_spec
 
 TEST_WRITE_JOURNAL_GENESIS_HASH = "0" * 64
 MAX_TEST_WRITE_JOURNAL_BYTES = 64 * 1024 * 1024
@@ -404,10 +405,14 @@ def calculate_test_write_journal_hash(journal: TestWriteJournal) -> str:
     return _hash(_JOURNAL_HASH_DOMAIN, _journal_data(journal))
 
 
-def initialize_test_write_journal(run_spec: TestWriteRunSpec) -> TestWriteJournal:
+def initialize_test_write_journal(
+    run_spec: AnyTestWriteRunSpec,
+    *,
+    bootstrap_plan: TestBootstrapAddPlan | None = None,
+) -> TestWriteJournal:
     """Verify one Test-only Run Spec and create its empty safe journal."""
 
-    verify_test_write_run_spec(run_spec)
+    verify_any_test_write_run_spec(run_spec, bootstrap_plan=bootstrap_plan)
     if run_spec.target_safe_ref == PRODUCTION_TARGET_REFERENCE:
         raise TestWriteJournalError(
             "production_test_write_forbidden",

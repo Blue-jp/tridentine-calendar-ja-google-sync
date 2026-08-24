@@ -26,7 +26,10 @@ from tridentine_calendar_google_sync.google_models import CanonicalGoogleEvent, 
 from tridentine_calendar_google_sync.google_sanitize import sanitize_fetched_pages
 from tridentine_calendar_google_sync.google_test_write_client import TestCalendarWriteClient
 from tridentine_calendar_google_sync.models import StrictFrozenModel
-from tridentine_calendar_google_sync.test_write_approval import approve_test_write_run_spec
+from tridentine_calendar_google_sync.test_bootstrap_plan_models import TestBootstrapAddPlan
+from tridentine_calendar_google_sync.test_write_approval_dispatch import (
+    approve_any_test_write_run_spec,
+)
 from tridentine_calendar_google_sync.test_write_journal import (
     TEST_WRITE_SAFE_ERROR_CODES,
     TestWriteJournal,
@@ -42,7 +45,10 @@ from tridentine_calendar_google_sync.test_write_models import (
     TestWriteOperationKind,
     TestWriteRunSpec,
 )
-from tridentine_calendar_google_sync.test_write_run_spec import verify_test_write_run_spec
+from tridentine_calendar_google_sync.test_write_spec_dispatch import (
+    AnyTestWriteRunSpec,
+    verify_any_test_write_run_spec,
+)
 from tridentine_calendar_google_sync.test_write_target import (
     TestWriteTargetConfig,
     TestWriteTargetObservation,
@@ -625,7 +631,7 @@ def _append(
 
 
 def _final_result(
-    run_spec: TestWriteRunSpec,
+    run_spec: AnyTestWriteRunSpec,
     journal: TestWriteJournal,
     *,
     state: TestWriteExecutionState,
@@ -659,7 +665,7 @@ def _final_result(
 
 
 def _failed_result(
-    run_spec: TestWriteRunSpec,
+    run_spec: AnyTestWriteRunSpec,
     journal: TestWriteJournal,
     counters: _Counters,
     error: BaseException,
@@ -695,7 +701,7 @@ def _failed_result(
 
 
 def _preflight(
-    run_spec: TestWriteRunSpec,
+    run_spec: AnyTestWriteRunSpec,
     target: TestWriteTargetConfig,
     client: TestCalendarWriteClient,
     counters: _Counters,
@@ -753,7 +759,7 @@ def _preflight(
 
 
 def run_test_calendar_write(
-    run_spec: TestWriteRunSpec,
+    run_spec: AnyTestWriteRunSpec,
     target: TestWriteTargetConfig,
     client: TestCalendarWriteClient,
     confirmation: str,
@@ -761,6 +767,7 @@ def run_test_calendar_write(
     current_snapshot_hash: str,
     current_plan_hash: str,
     current_baseline_hash: str | None = None,
+    bootstrap_plan: TestBootstrapAddPlan | None = None,
     read_policy: RetryPolicy | None = None,
     sleep: Callable[[float], None] = time.sleep,
     jitter: Callable[[float], float] = _default_jitter,
@@ -768,7 +775,7 @@ def run_test_calendar_write(
     """Run exactly one Test add or update with no blind mutation retry."""
 
     # Every Production and artifact-integrity guard runs before the client is touched.
-    verify_test_write_run_spec(run_spec)
+    verify_any_test_write_run_spec(run_spec, bootstrap_plan=bootstrap_plan)
     validate_test_write_target_config(target)
     target_ref = test_write_target_reference(target)
     if (
@@ -784,17 +791,18 @@ def run_test_calendar_write(
             "production_or_mismatched_test_write_target",
             "Production or mismatched Calendar write access is forbidden",
         )
-    approve_test_write_run_spec(
+    approve_any_test_write_run_spec(
         run_spec,
         confirmation,
         current_snapshot_hash=current_snapshot_hash,
         current_plan_hash=current_plan_hash,
         current_baseline_hash=current_baseline_hash,
+        bootstrap_plan=bootstrap_plan,
     )
 
     policy = read_policy or RetryPolicy()
     counters = _Counters()
-    journal = initialize_test_write_journal(run_spec)
+    journal = initialize_test_write_journal(run_spec, bootstrap_plan=bootstrap_plan)
     try:
         _snapshot, matched_event = _preflight(
             run_spec,
@@ -807,6 +815,11 @@ def run_test_calendar_write(
         )
         operation = run_spec.operation
         if operation.operation is TestWriteOperationKind.UPDATE:
+            if not isinstance(run_spec, TestWriteRunSpec):
+                raise TestWriteTransportError(
+                    "test_bootstrap_update_forbidden",
+                    "Bootstrap Run Spec cannot reach the Update transport",
+                )
             assert matched_event is not None
             assert operation.google_event_id is not None
             assert operation.expected_etag is not None
@@ -859,6 +872,8 @@ def run_test_calendar_write(
                 body=_import_body(desired),
             )
         else:
+            # The Bootstrap operation type is Literal[ADD], so this branch is
+            # statically narrowed to the existing normal Run Spec.
             event_id = run_spec.operation.google_event_id
             etag = run_spec.operation.expected_etag
             if event_id is None or etag is None:
