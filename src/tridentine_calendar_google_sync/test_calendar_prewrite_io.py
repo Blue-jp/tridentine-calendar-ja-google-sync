@@ -21,8 +21,8 @@ from tridentine_calendar_google_sync.snapshot_io import MAX_SNAPSHOT_OUTPUT_BYTE
 from tridentine_calendar_google_sync.test_calendar_prewrite import (
     TestCalendarPrewriteError,
     TestCalendarPrewriteResult,
-    calculate_test_calendar_prewrite_snapshot_hash,
     verify_test_calendar_prewrite_result,
+    verify_test_calendar_prewrite_snapshot,
 )
 from tridentine_calendar_google_sync.test_calendar_prewrite_models import (
     TestCalendarPrewriteSnapshot,
@@ -74,19 +74,13 @@ def _reject_json_constant(_value: str) -> None:
 
 
 def _verify_snapshot(snapshot: TestCalendarPrewriteSnapshot) -> None:
-    if (
-        snapshot.target_safe_ref != f"T-{snapshot.target_fingerprint[:12]}"
-        or snapshot.snapshot.target_fingerprint != snapshot.target_fingerprint
-        or snapshot.snapshot.complete is not True
-        or snapshot.snapshot.page_count != snapshot.page_count
-        or snapshot.snapshot.content_hash != snapshot.snapshot_content_hash
-        or snapshot.api_call_count != snapshot.page_count + snapshot.retry_count
-        or calculate_test_calendar_prewrite_snapshot_hash(snapshot) != snapshot.wrapper_content_hash
-    ):
+    try:
+        verify_test_calendar_prewrite_snapshot(snapshot)
+    except TestCalendarPrewriteError as exc:
         raise TestCalendarPrewriteIOError(
             "test_prewrite_snapshot_integrity_mismatch",
             "Test prewrite snapshot integrity verification failed",
-        )
+        ) from exc
 
 
 def test_calendar_prewrite_snapshot_data(

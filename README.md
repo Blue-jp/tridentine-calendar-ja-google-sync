@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 5Aの範囲
+## Phase 5A.1の範囲
 
-Phase 5Aは将来の専用Test Calendar受入検証に向け、Test限定write transportのcode foundationを追加します。Production hard lock、1回1operation、exact approval、ETag / `If-Match`、read-back、uncertain-outcome read checkを必須とします。
+Phase 5A.1は、専用Test Calendarの実write前にTest write tokenで`events.list`だけを呼ぶread-only prewrite inspection経路を追加します。Mutation adapterと分離し、Empty Calendarだけをwrite-readyと判定します。
 
-Phase 5Aの開発・CIはmock・synthetic fixtureのみを使います。Live OAuth、browser authorization、token取得、Google API call、Test / Production Calendarへの接続・変更は行いません。
+Phase 5A.1の開発・CIはmock・synthetic fixtureのみを使います。Live OAuth、browser authorization、token取得、Google API call、Test / Production Calendarへの接続・変更は行いません。
 
 ### Implemented
 
@@ -42,10 +42,15 @@ Phase 5Aの開発・CIはmock・synthetic fixtureのみを使います。Live OA
 - post-write read-back、uncertain outcomeのread-after-check、mutation blind retry禁止
 - raw identity・ETag・本文を除外したTest write journal / report
 - Productionへ到達不可能なmock-only Test write safety test
+- Test write tokenを使い`events.list`だけを公開する専用prewrite inspection境界
+- Empty Test Calendarのwrite-readiness検証
+- Sanitized Test prewrite snapshotとno-mutation Human / JSON report
+- Non-empty Calendarの自動delete / clearを行わないfatal guard
 
 ### Not implemented
 
 - Test write OAuthの実行、browser authorization、token取得
+- Test Calendar live prewrite readの実行
 - Test Calendar APIの実接続とadd/update実行
 - Production Calendar write
 - Delete operation model・payload・transport method
@@ -195,6 +200,26 @@ Run specはaddまたはupdateを1件だけ含みます。AddはSource UIDを`iCa
 
 Phase 5Aではこれらのlive commandを実行していません。将来のTest Calendar利用には、別の明示的なOAuth / API / event-change承認が必要です。詳細は[Test Calendar write transport foundation](docs/test-calendar-write-foundation.md)を参照してください。
 
+### Test Calendar read-only prewrite inspection
+
+`inspect-test-calendar-prewrite`はrepository外のTest target configと分離されたTest write tokenを使い、`events.list`だけでmetadata・event countを取得します。Sanitized snapshot、Human report、JSON reportの3出力をrepository外へno-overwriteで保存し、event count 0の場合だけwrite-readyとします。
+
+```powershell
+# REFERENCE ONLY — REQUIRES SEPARATE ONLINE APPROVAL
+tridentine-calendar-google-sync inspect-test-calendar-prewrite `
+  --online `
+  --target-config "<repository外のTest target TOML path>" `
+  --token-file "<repository外のTest write token path>" `
+  --production-read-token-file "<repository外のProduction read token path>" `
+  --snapshot-output "<repository外のprewrite snapshot path>" `
+  --human-report-output "<repository外のHuman report path>" `
+  --json-report-output "<repository外のJSON report path>"
+```
+
+Non-empty Calendarはsafe aggregate countだけを報告してfatal guardで停止し、event本文をconsoleへ出さず、delete・clear・import・patchは行いません。このcommandはmutation approvalやRun Specを要求しませんが、network境界として`--online`は必須です。Phase 5A.1開発中にlive commandは実行していません。
+
+Snapshot outputはprivate `test-calendar-prewrite-snapshot-v1`包装です。後続でcanonical Google snapshotを使う場合は、strict loaderで包装を検証した後の内部`snapshot`を使い、包装fileを通常の`google-snapshot-v1`として直接読み込みません。
+
 ### Google read-only commands
 
 `authorize-google-readonly`と`fetch-google-snapshot`はPhase 3Aで追加された明示的online commandです。両commandは`--online`を要求し、別途承認されたread-only workflowでだけ利用します。Phase 4Aのbaseline/plan commandから呼び出されることはありません。準備要件とsecret配置方針は[Google read-only setup](docs/google-readonly-setup.md)を参照してください。
@@ -295,7 +320,7 @@ Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれ�
 
 ## Roadmap
 
-Phase 5Aまでに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport code foundationを実装しました。以下は未実施または未承認です。
+Phase 5A.1までに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport code foundation、Test Calendar read-only prewrite inspectionを実装しました。以下は未実施または未承認です。
 
 1. Production baseline candidateの別承認によるtrusted化
 2. 専用Test Calendarの別承認OAuth・API・1件add検証

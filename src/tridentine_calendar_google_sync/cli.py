@@ -914,7 +914,14 @@ def _inspect_test_calendar_prewrite_command(args: argparse.Namespace) -> int:
 
     # Target, Production, primary-Calendar, and output guards all run before
     # credentials, the optional Google dependency, or an API-capable client.
-    bindings = load_google_optional_bindings()
+    try:
+        bindings = load_google_optional_bindings()
+    except GoogleOptionalDependencyError as exc:
+        raise argparse.ArgumentError(
+            None,
+            "Test Calendar prewrite support is unavailable; "
+            "install the declared google-test-write extra",
+        ) from exc
     credentials = load_test_write_credentials(
         args.token_file,
         args.production_read_token_file,

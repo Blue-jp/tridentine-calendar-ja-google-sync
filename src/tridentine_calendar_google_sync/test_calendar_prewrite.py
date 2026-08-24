@@ -15,6 +15,7 @@ from typing import Self
 
 from pydantic import Field, model_validator
 
+from tridentine_calendar_google_sync.apply_policy import PRODUCTION_TARGET_REFERENCE
 from tridentine_calendar_google_sync.google_errors import (
     SafeGoogleError,
     safe_google_error_from_exception,
@@ -26,7 +27,6 @@ from tridentine_calendar_google_sync.google_test_prewrite_client import (
 )
 from tridentine_calendar_google_sync.models import StrictFrozenModel
 from tridentine_calendar_google_sync.test_calendar_prewrite_models import (
-    TEST_CALENDAR_NOT_EMPTY_FINDING,
     TestCalendarPrewriteFinding,
     TestCalendarPrewriteReport,
     TestCalendarPrewriteSnapshot,
@@ -274,18 +274,84 @@ def calculate_test_calendar_prewrite_report_hash(report: TestCalendarPrewriteRep
     return _hash(_REPORT_HASH_DOMAIN, _report_hash_data(report))
 
 
-def verify_test_calendar_prewrite_result(result: TestCalendarPrewriteResult) -> None:
-    """Verify private wrapper, public report, and cross-artifact binding."""
+def verify_test_calendar_prewrite_snapshot(snapshot: TestCalendarPrewriteSnapshot) -> None:
+    """Verify fixed Test-only policy, nested snapshot binding, and wrapper hash."""
 
-    wrapper = result.snapshot
-    report = result.report
+    if (
+        snapshot.schema_version != "1.0"
+        or snapshot.snapshot_type != "test-calendar-prewrite-snapshot-v1"
+        or snapshot.test_only is not True
+        or snapshot.production_locked is not True
+        or snapshot.complete is not True
+        or snapshot.target_safe_ref == PRODUCTION_TARGET_REFERENCE
+        or snapshot.target_safe_ref != f"T-{snapshot.target_fingerprint[:12]}"
+        or snapshot.snapshot.target_fingerprint != snapshot.target_fingerprint
+        or snapshot.snapshot.complete is not True
+        or snapshot.snapshot.page_count != snapshot.page_count
+        or snapshot.snapshot.content_hash != snapshot.snapshot_content_hash
+        or snapshot.api_call_count != snapshot.page_count + snapshot.retry_count
+        or not 1 <= snapshot.page_count <= MAX_TEST_PREWRITE_API_CALLS
+        or not 1 <= snapshot.api_call_count <= MAX_TEST_PREWRITE_API_CALLS
+        or not 0 <= snapshot.retry_count <= MAX_TEST_PREWRITE_API_CALLS - 1
+    ):
+        raise TestCalendarPrewriteError(
+            "test_prewrite_snapshot_binding_mismatch",
+            "Test prewrite snapshot binding verification failed",
+        )
     if not hmac.compare_digest(
-        calculate_test_calendar_prewrite_snapshot_hash(wrapper),
-        wrapper.wrapper_content_hash,
+        calculate_test_calendar_prewrite_snapshot_hash(snapshot),
+        snapshot.wrapper_content_hash,
     ):
         raise TestCalendarPrewriteError(
             "test_prewrite_snapshot_hash_mismatch",
             "Test prewrite snapshot integrity verification failed",
+        )
+
+
+def verify_test_calendar_prewrite_report(report: TestCalendarPrewriteReport) -> None:
+    """Verify fixed read-only policy, readiness, aggregates, and report hash."""
+
+    aggregate_counts = (
+        report.cancelled_count,
+        report.recurring_count,
+        report.timed_count,
+        report.non_default_event_type_count,
+        report.color_id_count,
+        report.event_label_id_count,
+    )
+    finding_codes = tuple(finding.code for finding in report.findings)
+    fixed_policy_valid = (
+        report.schema_version == "1.0"
+        and report.inspection_type == "test-calendar-read-only-prewrite-v1"
+        and report.read_only is True
+        and report.target_safe_ref != PRODUCTION_TARGET_REFERENCE
+        and report.scope_label == "calendar.events.owned"
+        and report.target_metadata_validation == "verified"
+        and report.snapshot_complete is True
+        and report.google_write_method_count == 0
+        and report.google_write_operation_count == 0
+        and report.event_changes == 0
+        and report.api_call_count == report.page_count + report.retry_count
+        and 1 <= report.page_count <= MAX_TEST_PREWRITE_API_CALLS
+        and 1 <= report.api_call_count <= MAX_TEST_PREWRITE_API_CALLS
+        and 0 <= report.retry_count <= MAX_TEST_PREWRITE_API_CALLS - 1
+        and all(0 <= count <= report.event_count for count in aggregate_counts)
+        and finding_codes == tuple(sorted(set(finding_codes)))
+    )
+    if report.prewrite_ready:
+        readiness_valid = (
+            report.event_count == 0 and not any(aggregate_counts) and not report.findings
+        )
+    else:
+        readiness_valid = (
+            report.event_count >= 1
+            and len(report.findings) == 1
+            and report.findings[0] == TestCalendarPrewriteFinding()
+        )
+    if not fixed_policy_valid or not readiness_valid:
+        raise TestCalendarPrewriteError(
+            "test_prewrite_report_semantics_mismatch",
+            "Test prewrite report semantic verification failed",
         )
     if not hmac.compare_digest(
         calculate_test_calendar_prewrite_report_hash(report),
@@ -295,6 +361,15 @@ def verify_test_calendar_prewrite_result(result: TestCalendarPrewriteResult) -> 
             "test_prewrite_report_hash_mismatch",
             "Test prewrite report integrity verification failed",
         )
+
+
+def verify_test_calendar_prewrite_result(result: TestCalendarPrewriteResult) -> None:
+    """Verify private wrapper, public report, and cross-artifact binding."""
+
+    wrapper = result.snapshot
+    report = result.report
+    verify_test_calendar_prewrite_snapshot(wrapper)
+    verify_test_calendar_prewrite_report(report)
     if (
         report.result_binding_hash != wrapper.wrapper_content_hash
         or report.snapshot_hash != wrapper.snapshot_content_hash
@@ -355,17 +430,7 @@ def _build_result(
     )
     counts = _aggregate_counts(wrapper)
     ready = counts["event_count"] == 0
-    findings = (
-        ()
-        if ready
-        else (
-            TestCalendarPrewriteFinding(
-                severity="fatal",
-                code=TEST_CALENDAR_NOT_EMPTY_FINDING,
-                message="Test Calendar is not empty; manual review is required.",
-            ),
-        )
-    )
+    findings = () if ready else (TestCalendarPrewriteFinding(),)
     report_provisional = TestCalendarPrewriteReport(
         prewrite_ready=ready,
         target_safe_ref=target_safe_ref,
@@ -482,5 +547,7 @@ __all__ = [
     "calculate_test_calendar_prewrite_report_hash",
     "calculate_test_calendar_prewrite_snapshot_hash",
     "inspect_test_calendar_prewrite",
+    "verify_test_calendar_prewrite_report",
     "verify_test_calendar_prewrite_result",
+    "verify_test_calendar_prewrite_snapshot",
 ]

@@ -25,6 +25,16 @@ A private `TestWriteRunSpec` binds one verified source, current sanitized Test s
 
 Zero operations, multiple operations, mixed add/update, delete candidates, unmanaged or ambiguous events, duplicates, and fatal findings are rejected. The exact approval phrase binds the Test target safe reference, run-spec hash, and add/update counts. It grants authority for only that single run spec.
 
+## Read-only prewrite inspection
+
+Phase 5B operations must begin with `inspect-test-calendar-prewrite`, not by weakening or deliberately failing `run-test-calendar-write`. The prewrite command uses the separated Test write token but passes a dedicated list-only Protocol to the application layer. That Protocol can call `events.list` and cannot reach get, import, patch, delete, clear, batch, or a generic Google service.
+
+The prewrite command requires explicit `--online`, but it does not require a mutation approval phrase or Run Spec. It saves a sanitized snapshot and public-safe Human / JSON reports outside the repository. Empty Calendar is the only write-ready result. A non-empty Calendar is preserved unchanged, reported through aggregate counts, and requires manual review; the tool never deletes or clears it automatically.
+
+The saved snapshot is a private `test-calendar-prewrite-snapshot-v1` wrapper that binds the canonical sanitized snapshot to the Test target, page count, total API-call budget, retry count, and hashes. A later consumer must load and verify the wrapper first, then use its nested `snapshot`; it must not pass the wrapper file directly to the ordinary Google snapshot loader.
+
+Production identity, Production environment or label, `primary`, and every target-policy mismatch are rejected before credentials or a Google client are constructed. Development and CI exercise only mock pages and never load operational credentials, token, target, or snapshot files.
+
 ## Narrow Google adapter
 
 The adapter surface is limited to `events.list`, `events.get`, `events.import`, and `events.patch`. A generic Google service is not exposed to application code. There is no insert, full update, delete, move, watch, clear, ACL, CalendarList, Calendars, or batch method.
