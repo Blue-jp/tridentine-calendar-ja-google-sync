@@ -17,6 +17,7 @@ from typing import Literal, Self
 from pydantic import Field, model_validator
 
 from tridentine_calendar_google_sync.apply_policy import PRODUCTION_TARGET_REFERENCE
+from tridentine_calendar_google_sync.baseline_models import TrustedBaseline
 from tridentine_calendar_google_sync.google_errors import (
     SafeGoogleError,
     safe_google_error_from_exception,
@@ -27,6 +28,13 @@ from tridentine_calendar_google_sync.google_sanitize import sanitize_fetched_pag
 from tridentine_calendar_google_sync.google_test_write_client import TestCalendarWriteClient
 from tridentine_calendar_google_sync.models import StrictFrozenModel
 from tridentine_calendar_google_sync.test_bootstrap_plan_models import TestBootstrapAddPlan
+from tridentine_calendar_google_sync.test_single_update_plan_models import (
+    SINGLE_UPDATE_CHANGED_FIELDS,
+    TestSingleUpdatePlan,
+)
+from tridentine_calendar_google_sync.test_single_update_run_spec_models import (
+    TestSingleUpdateRunSpec,
+)
 from tridentine_calendar_google_sync.test_write_approval_dispatch import (
     approve_any_test_write_run_spec,
 )
@@ -513,7 +521,9 @@ def _import_body(state: TestWriteManagedState) -> dict[str, object]:
     }
 
 
-def _patch_body(run_spec: TestWriteRunSpec) -> dict[str, object]:
+def _patch_body(
+    run_spec: TestWriteRunSpec | TestSingleUpdateRunSpec,
+) -> dict[str, object]:
     operation = run_spec.operation
     desired = operation.desired_state
     body: dict[str, object] = {}
@@ -768,6 +778,8 @@ def run_test_calendar_write(
     current_plan_hash: str,
     current_baseline_hash: str | None = None,
     bootstrap_plan: TestBootstrapAddPlan | None = None,
+    single_update_plan: TestSingleUpdatePlan | None = None,
+    trusted_baseline: TrustedBaseline | None = None,
     read_policy: RetryPolicy | None = None,
     sleep: Callable[[float], None] = time.sleep,
     jitter: Callable[[float], float] = _default_jitter,
@@ -775,7 +787,12 @@ def run_test_calendar_write(
     """Run exactly one Test add or update with no blind mutation retry."""
 
     # Every Production and artifact-integrity guard runs before the client is touched.
-    verify_any_test_write_run_spec(run_spec, bootstrap_plan=bootstrap_plan)
+    verify_any_test_write_run_spec(
+        run_spec,
+        bootstrap_plan=bootstrap_plan,
+        single_update_plan=single_update_plan,
+        trusted_baseline=trusted_baseline,
+    )
     validate_test_write_target_config(target)
     target_ref = test_write_target_reference(target)
     if (
@@ -798,11 +815,18 @@ def run_test_calendar_write(
         current_plan_hash=current_plan_hash,
         current_baseline_hash=current_baseline_hash,
         bootstrap_plan=bootstrap_plan,
+        single_update_plan=single_update_plan,
+        trusted_baseline=trusted_baseline,
     )
 
     policy = read_policy or RetryPolicy()
     counters = _Counters()
-    journal = initialize_test_write_journal(run_spec, bootstrap_plan=bootstrap_plan)
+    journal = initialize_test_write_journal(
+        run_spec,
+        bootstrap_plan=bootstrap_plan,
+        single_update_plan=single_update_plan,
+        trusted_baseline=trusted_baseline,
+    )
     try:
         _snapshot, matched_event = _preflight(
             run_spec,
@@ -815,10 +839,19 @@ def run_test_calendar_write(
         )
         operation = run_spec.operation
         if operation.operation is TestWriteOperationKind.UPDATE:
-            if not isinstance(run_spec, TestWriteRunSpec):
+            if not isinstance(run_spec, (TestWriteRunSpec, TestSingleUpdateRunSpec)):
                 raise TestWriteTransportError(
                     "test_bootstrap_update_forbidden",
                     "Bootstrap Run Spec cannot reach the Update transport",
+                )
+            if isinstance(run_spec, TestSingleUpdateRunSpec) and (
+                operation.changed_fields != SINGLE_UPDATE_CHANGED_FIELDS
+                or single_update_plan is None
+                or trusted_baseline is None
+            ):
+                raise TestWriteTransportError(
+                    "test_single_update_transport_policy_mismatch",
+                    "Single Update transport requires exact dedicated artifacts",
                 )
             assert matched_event is not None
             assert operation.google_event_id is not None

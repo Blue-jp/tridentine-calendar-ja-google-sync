@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 5C.0の範囲
+## Phase 5D.0の範囲
 
-Phase 5C.0は、完全に空の専用Test Calendarに架空の終日event 1件を最初に追加するためのTest-only bootstrap planning基盤を追加します。通常Sync Planとは別model・schema・builderとし、global safety guardとProduction policyは変更しません。
+Phase 5D.0は、Trusted Test Baselineが管理する架空の終日event 1件について、DESCRIPTIONだけのsingle updateを計画するTest-only基盤を追加します。通常Sync Planとは別model・schema・builderとし、`all_events_update`、`mass_change_guard`、Production policyは変更しません。
 
-Phase 5C.0の開発・CIはofflineのsynthetic fixtureとmock transportのみを使います。Live OAuth、browser authorization、token取得、Google API call、Test / Production Calendarへの接続・変更は行いません。
+Phase 5D.0の開発・CIはofflineのsynthetic fixtureとmock transportのみを使います。Live OAuth、browser authorization、token取得、Google API call、Test / Production Calendarへの接続・変更は行いません。
 
 ### Implemented
 
@@ -50,12 +50,18 @@ Phase 5C.0の開発・CIはofflineのsynthetic fixtureとmock transportのみを
 - 通常Sync Plan guardを変更しない専用Bootstrap Plan
 - 初回Test addだけbaseline不要の専用Bootstrap Run Spec
 - Production hard lock、add 1件固定、update / delete到達不可能policy
+- Trusted Test Baselineを必須とするTest-only single-update planning
+- 管理済みsynthetic event 1件・DESCRIPTION-only update 1件に固定した専用Plan
+- 通常global guardを変更せずoriginal guard evidenceを保持するpolicy
+- Current Test snapshot由来のevent ID / ETagにbindする専用single-update Run Spec
+- Add / Deleteへ到達できないProduction-locked update境界
 
 ### Not implemented
 
 - Test write OAuthの実行、browser authorization、token取得
 - Test Calendar live prewrite readの実行
 - Test Calendar APIの実接続とadd/update実行
+- Test Calendar single updateの実行
 - Production Calendar write
 - Delete operation model・payload・transport method
 - `syncToken`、incremental state、automation
@@ -231,6 +237,14 @@ Snapshot outputはprivate `test-calendar-prewrite-snapshot-v1`包装です。後
 `inspect-test-bootstrap-add-plan`はraw UIDやevent本文を出さず、safe reference・aggregate count・hashだけを表示します。`build-test-bootstrap-add-run-spec`はそのplanからadd 1 / update 0 / delete 0の専用private Run Specを作ります。Trusted Baselineが不要なのは完全に空のTest Calendarへの初回addだけです。
 
 Bootstrap成功後はこの経路を再利用せず、Source 1 / Google 1の一致状態から通常のTest baselineを作る予定です。Phase 5C.0ではGoogle APIやTest Calendar writeを実行しません。
+
+### Test-only single-update planning
+
+`build-test-single-update-plan`は、strictに検証したnon-Production Test snapshot、Trusted Test Baseline、synthetic Source 1件から、DESCRIPTIONだけのupdate 1件を表すnon-executable Planをoffline生成します。通常`plan-sync`は同じ1 / 1 diffを引き続き`all_events_update`と`mass_change_guard`でblockし、専用Planはその2件を消去せずoriginal guard evidenceとして保持します。
+
+`inspect-test-single-update-plan`はsafe reference、固定count、changed field、guard evidence、hashだけを表示します。Planはraw UID、本文、Calendar ID、Google event ID、ETag、request payloadを持ちません。
+
+`build-test-single-update-run-spec`は、Trusted Test Baselineとcurrent snapshotに再bindしたprivate Run Specを作ります。Run Specはplanning mode、DESCRIPTION-only、add 0 / update 1 / delete 0に固定され、event IDとexact ETagはcurrent snapshotからだけ取得します。Add、Delete、Productionは到達不能です。実際のpatchには別Stageのexact approvalが必要で、Phase 5D.0ではGoogle APIを呼び出しません。
 
 ### Google read-only commands
 

@@ -12,6 +12,7 @@ from typing import Any, Literal, Self
 from pydantic import Field, ValidationError, model_validator
 
 from tridentine_calendar_google_sync.apply_policy import PRODUCTION_TARGET_REFERENCE
+from tridentine_calendar_google_sync.baseline_models import TrustedBaseline
 from tridentine_calendar_google_sync.google_errors import ALLOWED_GOOGLE_REASONS
 from tridentine_calendar_google_sync.models import StrictFrozenModel
 from tridentine_calendar_google_sync.sensitive_paths import (
@@ -20,6 +21,9 @@ from tridentine_calendar_google_sync.sensitive_paths import (
     read_sensitive_bytes,
 )
 from tridentine_calendar_google_sync.test_bootstrap_plan_models import TestBootstrapAddPlan
+from tridentine_calendar_google_sync.test_single_update_plan_models import (
+    TestSingleUpdatePlan,
+)
 from tridentine_calendar_google_sync.test_write_models import TestWriteOperationKind
 from tridentine_calendar_google_sync.test_write_spec_dispatch import (
     AnyTestWriteRunSpec,
@@ -409,10 +413,17 @@ def initialize_test_write_journal(
     run_spec: AnyTestWriteRunSpec,
     *,
     bootstrap_plan: TestBootstrapAddPlan | None = None,
+    single_update_plan: TestSingleUpdatePlan | None = None,
+    trusted_baseline: TrustedBaseline | None = None,
 ) -> TestWriteJournal:
     """Verify one Test-only Run Spec and create its empty safe journal."""
 
-    verify_any_test_write_run_spec(run_spec, bootstrap_plan=bootstrap_plan)
+    verify_any_test_write_run_spec(
+        run_spec,
+        bootstrap_plan=bootstrap_plan,
+        single_update_plan=single_update_plan,
+        trusted_baseline=trusted_baseline,
+    )
     if run_spec.target_safe_ref == PRODUCTION_TARGET_REFERENCE:
         raise TestWriteJournalError(
             "production_test_write_forbidden",

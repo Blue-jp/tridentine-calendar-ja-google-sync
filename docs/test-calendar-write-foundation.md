@@ -45,6 +45,16 @@ Trusted Baseline is unnecessary only for this first add to an empty Test Calenda
 
 After the first add is separately approved and verified in a later stage, the bootstrap path is no longer eligible because the Test Calendar is nonempty. The next step is to build and explicitly trust a normal Test baseline from the matching Source 1 / Google 1 state. Production targets never enter bootstrap planning, and Phase 5C.0 performs no Google API call.
 
+## Test-only single-update planning
+
+The normal Sync Plan and Test Single Update Plan are separate artifacts. A one-event Test Calendar with one update remains blocked by the normal `all_events_update` and `mass_change_guard` policies. Phase 5D.0 does not weaken, suppress, or override those guards. Its dedicated non-executable Plan independently verifies the canonical diff and retains exactly those two codes as original guard evidence.
+
+Eligibility is deliberately narrow: one non-Production Test target, one complete current snapshot event, one valid synthetic Source event, and one trusted baseline that owns the same UID. The sole changed source-managed field must be `description`. Zero or multiple events, summary or date changes, add, delete, unmanaged or ambiguous identities, recurrence, timed events, missing event ID or ETag, unknown guards, and every Production shape are rejected.
+
+The baseline remains ownership evidence and never stores Google event ID or ETag. The dedicated private Run Spec resolves both values from the current verified snapshot and binds the target, source, snapshot, trusted baseline, and single-update Plan hashes. It is fixed to add 0 / update 1 / delete 0 and can reach only the existing `events.patch` path. The public Plan and inspection output contain no raw UID, event text, Calendar ID, event ID, ETag, payload, endpoint, or local path.
+
+The Plan is not executable. A later patch still requires the exact Test-only approval phrase, a fresh `events.get`, an exact non-wildcard `If-Match`, `sendUpdates="none"`, at most one mutation attempt, zero mutation retries, and post-patch read-back. Phase 5D.0 uses only synthetic inputs and mock transport and performs no OAuth flow or Google Calendar API call.
+
 ## Narrow Google adapter
 
 The adapter surface is limited to `events.list`, `events.get`, `events.import`, and `events.patch`. A generic Google service is not exposed to application code. There is no insert, full update, delete, move, watch, clear, ACL, CalendarList, Calendars, or batch method.
