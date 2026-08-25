@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/test-single-update-run-spec-v1.schema.json",
+  "title": "Private Test Calendar single-update Run Spec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_type", "planning_mode", "single_update", "test_only",
+    "production_locked", "tool_version", "target_fingerprint", "target_safe_ref",
+    "target_environment", "baseline_state", "trusted_baseline_hash",
+    "baseline_snapshot_hash", "source_profile",
+    "source_sha256", "source_event_count", "current_snapshot_hash",
+    "single_update_plan_hash", "operation_count", "add_count", "update_count",
+    "delete_count", "changed_fields", "operation", "approval_required",
+    "run_spec_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "run_type": { "const": "test-single-update-run-spec-v1" },
+    "planning_mode": { "const": "test_single_update" },
+    "single_update": { "const": true },
+    "test_only": { "const": true },
+    "production_locked": { "const": true },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "target_fingerprint": { "$ref": "#/$defs/sha256" },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "target_environment": { "const": "test" },
+    "baseline_state": { "const": "trusted" },
+    "trusted_baseline_hash": { "$ref": "#/$defs/sha256" },
+    "baseline_snapshot_hash": { "$ref": "#/$defs/sha256" },
+    "source_profile": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "source_sha256": { "$ref": "#/$defs/sha256" },
+    "source_event_count": { "const": 1 },
+    "current_snapshot_hash": { "$ref": "#/$defs/sha256" },
+    "single_update_plan_hash": { "$ref": "#/$defs/sha256" },
+    "operation_count": { "const": 1 },
+    "add_count": { "const": 0 },
+    "update_count": { "const": 1 },
+    "delete_count": { "const": 0 },
+    "changed_fields": {
+      "type": "array", "prefixItems": [{ "const": "description" }], "items": false,
+      "minItems": 1, "maxItems": 1
+    },
+    "operation": { "$ref": "#/$defs/operation" },
+    "approval_required": { "const": true },
+    "run_spec_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "targetReference": {
+      "type": "string", "pattern": "^T-[0-9a-f]{12}$",
+      "not": { "const": "T-e10f0095ab8f" }
+    },
+    "sourceReference": { "type": "string", "pattern": "^U-[0-9a-f]{12}$" },
+    "googleReference": { "type": "string", "pattern": "^G-[0-9a-f]{12}$" },
+    "managedState": {
+      "type": "object", "additionalProperties": false,
+      "required": ["iCalUID", "summary", "description", "start_date", "end_date", "all_day", "event_type"],
+      "properties": {
+        "iCalUID": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" },
+        "description": { "type": "string" },
+        "start_date": { "type": "string", "format": "date" },
+        "end_date": { "type": "string", "format": "date" },
+        "all_day": { "const": true },
+        "event_type": { "const": "default" }
+      }
+    },
+    "operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operation", "source_ref", "google_ref", "changed_fields", "current_state", "desired_state", "google_event_id", "expected_etag", "operation_content_hash"],
+      "properties": {
+        "operation": { "const": "update" },
+        "source_ref": { "$ref": "#/$defs/sourceReference" },
+        "google_ref": { "$ref": "#/$defs/googleReference" },
+        "changed_fields": {
+          "type": "array", "prefixItems": [{ "const": "description" }], "items": false,
+          "minItems": 1, "maxItems": 1
+        },
+        "current_state": { "$ref": "#/$defs/managedState" },
+        "desired_state": { "$ref": "#/$defs/managedState" },
+        "google_event_id": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "expected_etag": {
+          "type": "string", "minLength": 1, "maxLength": 4096,
+          "pattern": "^[^\\r\\n]+$", "not": { "const": "*" }
+        },
+        "operation_content_hash": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

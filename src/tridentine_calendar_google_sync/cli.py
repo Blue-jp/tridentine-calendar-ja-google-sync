@@ -51,6 +51,7 @@ from tridentine_calendar_google_sync.baseline_engine import (
     trust_baseline,
 )
 from tridentine_calendar_google_sync.baseline_io import load_baseline, write_baseline
+from tridentine_calendar_google_sync.baseline_models import TrustedBaseline
 from tridentine_calendar_google_sync.diff_engine import diff_source_to_snapshot
 from tridentine_calendar_google_sync.diff_models import CalendarDiff, ManagedScope
 from tridentine_calendar_google_sync.diff_report import (
@@ -166,6 +167,34 @@ from tridentine_calendar_google_sync.test_calendar_prewrite_io import (
     validate_test_calendar_prewrite_output_paths,
     write_test_calendar_prewrite_outputs,
 )
+from tridentine_calendar_google_sync.test_single_update_plan import (
+    TestSingleUpdatePlanError,
+    build_test_single_update_plan,
+)
+from tridentine_calendar_google_sync.test_single_update_plan_io import (
+    TestSingleUpdatePlanIOError,
+    load_test_single_update_plan,
+    write_test_single_update_plan,
+)
+from tridentine_calendar_google_sync.test_single_update_plan_models import (
+    TestSingleUpdatePlan,
+)
+from tridentine_calendar_google_sync.test_single_update_plan_report import (
+    build_test_single_update_plan_inspection,
+    render_test_single_update_plan_inspection_json,
+    render_test_single_update_plan_inspection_text,
+)
+from tridentine_calendar_google_sync.test_single_update_run_spec import (
+    TestSingleUpdateRunSpecError,
+    build_test_single_update_run_spec,
+)
+from tridentine_calendar_google_sync.test_single_update_run_spec_io import (
+    TestSingleUpdateRunSpecIOError,
+    write_test_single_update_run_spec,
+)
+from tridentine_calendar_google_sync.test_single_update_run_spec_models import (
+    TestSingleUpdateRunSpec,
+)
 from tridentine_calendar_google_sync.test_write_approval import (
     TestWriteApprovalError,
 )
@@ -256,6 +285,30 @@ _TEST_BOOTSTRAP_RUN_SPEC_HELP = (
     "Trusted Baseline is omitted only for this first empty-Calendar Add.\n"
     "Exactly one Add is allowed; Update and Delete are structurally unavailable.\n"
     "Production is refused and an exact approval phrase is required before any later write."
+)
+
+_TEST_SINGLE_UPDATE_PLAN_HELP = (
+    "Offline Test Calendar single-update planning only.\n"
+    "Requires one trusted Test Baseline. Exactly one managed event is permitted and it "
+    "must be synthetic.\n"
+    "Allows exactly one Description-only Update; Add and Delete are unavailable.\n"
+    "Normal Sync Plan guards remain unchanged and Production targets are refused.\n"
+    "No Google token, OAuth, Google API, or Calendar write is used."
+)
+
+_TEST_SINGLE_UPDATE_INSPECTION_HELP = (
+    "Safe metadata only from one non-executable Test Single Update Plan.\n"
+    "Raw UID, event content, Google event ID, ETag, full target fingerprint, "
+    "and local paths are never displayed. Production is refused."
+)
+
+_TEST_SINGLE_UPDATE_RUN_SPEC_HELP = (
+    "Offline Test-only single Update Run Spec generation.\n"
+    "Requires an exact trusted Baseline for the Test target and a Description-only "
+    "dedicated Plan.\n"
+    "Google event ID and ETag are taken only from the current private snapshot.\n"
+    "An exact approval phrase is required before any later patch.\n"
+    "Add, Delete, Production targets, OAuth, and Google API use are unavailable."
 )
 
 
@@ -847,6 +900,117 @@ def build_parser() -> argparse.ArgumentParser:
         help="new repository-external private Bootstrap Run Spec path",
     )
 
+    build_single_update_plan = subparsers.add_parser(
+        "build-test-single-update-plan",
+        help="build one offline Test-only Description update plan",
+        description=_TEST_SINGLE_UPDATE_PLAN_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    build_single_update_plan.add_argument(
+        "--source",
+        required=True,
+        help="synthetic updated local ICS path",
+    )
+    build_single_update_plan.add_argument(
+        "--profile",
+        required=True,
+        help="synthetic updated profile ID",
+    )
+    build_single_update_plan.add_argument(
+        "--profiles-dir",
+        required=True,
+        help="repository-external directory containing the synthetic profile",
+    )
+    build_single_update_plan.add_argument(
+        "--prewrite-snapshot",
+        required=True,
+        help="repository-external verified current Test snapshot wrapper",
+    )
+    build_single_update_plan.add_argument(
+        "--trusted-baseline",
+        required=True,
+        help="repository-external trusted Test Baseline path",
+    )
+    build_single_update_plan.add_argument(
+        "--target-config",
+        required=True,
+        help="repository-external strict Test target TOML path",
+    )
+    build_single_update_plan.add_argument(
+        "--output",
+        required=True,
+        help="new repository-external private Single Update Plan path",
+    )
+
+    inspect_single_update_plan = subparsers.add_parser(
+        "inspect-test-single-update-plan",
+        help="inspect safe metadata from one Test Single Update Plan",
+        description=_TEST_SINGLE_UPDATE_INSPECTION_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inspect_single_update_plan.add_argument(
+        "--plan",
+        required=True,
+        help="repository-external private Single Update Plan path",
+    )
+    inspect_single_update_plan.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_single_update_plan.add_argument(
+        "--output",
+        help="optional repository-external safe inspection report path",
+    )
+
+    build_single_update_run_spec = subparsers.add_parser(
+        "build-test-single-update-run-spec",
+        help="build one offline Test-only Description Update Run Spec",
+        description=_TEST_SINGLE_UPDATE_RUN_SPEC_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    build_single_update_run_spec.add_argument(
+        "--source",
+        required=True,
+        help="synthetic updated local ICS path",
+    )
+    build_single_update_run_spec.add_argument(
+        "--profile",
+        required=True,
+        help="synthetic updated profile ID",
+    )
+    build_single_update_run_spec.add_argument(
+        "--profiles-dir",
+        required=True,
+        help="repository-external directory containing the synthetic profile",
+    )
+    build_single_update_run_spec.add_argument(
+        "--prewrite-snapshot",
+        required=True,
+        help="repository-external verified current Test snapshot wrapper",
+    )
+    build_single_update_run_spec.add_argument(
+        "--single-update-plan",
+        required=True,
+        help="repository-external eligible Test Single Update Plan path",
+    )
+    build_single_update_run_spec.add_argument(
+        "--trusted-baseline",
+        required=True,
+        help="repository-external trusted Test Baseline path",
+    )
+    build_single_update_run_spec.add_argument(
+        "--target-config",
+        required=True,
+        help="repository-external strict Test target TOML path",
+    )
+    build_single_update_run_spec.add_argument(
+        "--output",
+        required=True,
+        help="new repository-external private Single Update Run Spec path",
+    )
+
     run_test_write = subparsers.add_parser(
         "run-test-calendar-write",
         help="run one explicitly approved Test Calendar Add or Update",
@@ -1168,6 +1332,85 @@ def _build_test_bootstrap_add_run_spec_command(args: argparse.Namespace) -> int:
     return EXIT_DIFFERENCES
 
 
+def _build_test_single_update_plan_command(args: argparse.Namespace) -> int:
+    """Build one dedicated non-executable Description-only Test plan."""
+
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    snapshot = load_test_calendar_prewrite_snapshot(args.prewrite_snapshot)
+    baseline = load_baseline(args.trusted_baseline)
+    target = load_test_write_target_config(args.target_config)
+    plan = build_test_single_update_plan(
+        profile,
+        source,
+        snapshot,
+        baseline,
+        target,
+    )
+    write_test_single_update_plan(plan, args.output)
+    report = build_test_single_update_plan_inspection(plan)
+    sys.stdout.write(
+        "Non-executable Test Single Update Plan stored: "
+        f"target={report['target_safe_ref']}; "
+        f"plan={str(report['plan_content_hash'])[:12]}; "
+        f"operations={report['operation_count']}; add={report['add_count']}; "
+        f"update={report['update_count']}; delete={report['delete_count']}; "
+        "changed-fields=description; eligible=yes; Production-locked=yes.\n"
+    )
+    return EXIT_DIFFERENCES
+
+
+def _inspect_test_single_update_plan_command(args: argparse.Namespace) -> int:
+    plan = load_test_single_update_plan(args.plan)
+    rendered = (
+        render_test_single_update_plan_inspection_json(plan)
+        if args.report_format == "json"
+        else render_test_single_update_plan_inspection_text(plan)
+    )
+    if args.output:
+        _write_report(args.output, rendered)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
+
+
+def _build_test_single_update_run_spec_command(args: argparse.Namespace) -> int:
+    """Build one private dedicated Update Run Spec and formal challenge."""
+
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    snapshot = load_test_calendar_prewrite_snapshot(args.prewrite_snapshot)
+    plan = load_test_single_update_plan(args.single_update_plan)
+    baseline = load_baseline(args.trusted_baseline)
+    target = load_test_write_target_config(args.target_config)
+    run_spec = build_test_single_update_run_spec(
+        profile,
+        source,
+        snapshot,
+        plan,
+        baseline,
+        target,
+    )
+    write_test_single_update_run_spec(run_spec, args.output)
+    challenge = any_test_write_approval_challenge(
+        run_spec,
+        current_snapshot_hash=run_spec.current_snapshot_hash,
+        current_plan_hash=plan.plan_content_hash,
+        current_baseline_hash=baseline.baseline_content_hash,
+        single_update_plan=plan,
+        trusted_baseline=baseline,
+    )
+    sys.stdout.write(
+        "Private Test Single Update Run Spec stored: "
+        f"target={run_spec.target_safe_ref}; "
+        f"run=R-{run_spec.run_spec_content_hash[:12]}; "
+        "planning-mode=test_single_update; operations=1; add=0; update=1; delete=0; "
+        "changed-fields=description; baseline=trusted; approval-required=yes.\n"
+        f"Approval challenge: {challenge}\n"
+    )
+    return EXIT_DIFFERENCES
+
+
 def _build_test_write_run_spec_command(args: argparse.Namespace) -> int:
     profile = load_profile(args.profile, args.profiles_dir)
     source = inspect_source(args.source, profile)
@@ -1227,6 +1470,8 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
     target = load_test_write_target_config(args.target_config)
     run_spec = load_any_test_write_run_spec(args.run_spec)
     bootstrap_plan: TestBootstrapAddPlan | None = None
+    single_update_plan: TestSingleUpdatePlan | None = None
+    single_update_baseline: TrustedBaseline | None = None
     if isinstance(run_spec, TestBootstrapAddRunSpec):
         if args.trusted_baseline:
             raise TestWriteSpecDispatchError(
@@ -1236,6 +1481,16 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
         bootstrap_plan = load_test_bootstrap_add_plan(args.plan)
         plan_hash = bootstrap_plan.plan_content_hash
         baseline = None
+    elif isinstance(run_spec, TestSingleUpdateRunSpec):
+        if not args.trusted_baseline:
+            raise TestWriteSpecDispatchError(
+                "test_single_update_baseline_required",
+                "Single Update Run Spec requires its trusted Test baseline",
+            )
+        single_update_plan = load_test_single_update_plan(args.plan)
+        baseline = load_baseline(args.trusted_baseline)
+        single_update_baseline = baseline
+        plan_hash = single_update_plan.plan_content_hash
     else:
         normal_plan = load_sync_plan_report(args.plan)
         plan_hash = normal_plan.plan_content_hash
@@ -1260,6 +1515,8 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
         current_plan_hash=plan_hash,
         current_baseline_hash=baseline_hash,
         bootstrap_plan=bootstrap_plan,
+        single_update_plan=single_update_plan,
+        trusted_baseline=single_update_baseline,
     )
 
     bindings = load_google_optional_bindings()
@@ -1283,6 +1540,8 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
         current_plan_hash=plan_hash,
         current_baseline_hash=baseline_hash,
         bootstrap_plan=bootstrap_plan,
+        single_update_plan=single_update_plan,
+        trusted_baseline=single_update_baseline,
     )
     rendered = (
         render_test_write_json_report(result)
@@ -1606,6 +1865,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.print_help(sys.stdout)
             return EXIT_CLI_ERROR
         args = parser.parse_args(effective_argv)
+        if args.command == "build-test-single-update-plan":
+            return _build_test_single_update_plan_command(args)
+        if args.command == "inspect-test-single-update-plan":
+            return _inspect_test_single_update_plan_command(args)
+        if args.command == "build-test-single-update-run-spec":
+            return _build_test_single_update_run_spec_command(args)
         if args.command == "build-test-bootstrap-add-plan":
             return _build_test_bootstrap_add_plan_command(args)
         if args.command == "inspect-test-bootstrap-add-plan":
@@ -1731,7 +1996,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except TestCalendarPrewriteIOError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
-    except (TestBootstrapPlanIOError, TestBootstrapRunSpecIOError) as exc:
+    except (
+        TestBootstrapPlanIOError,
+        TestBootstrapRunSpecIOError,
+        TestSingleUpdatePlanIOError,
+        TestSingleUpdateRunSpecIOError,
+    ) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
     except ApplyError as exc:
@@ -1746,7 +2016,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (TestCalendarPrewriteClientError, TestCalendarPrewriteError) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
-    except (TestBootstrapPlanError, TestBootstrapRunSpecError, TestWriteSpecDispatchError) as exc:
+    except (
+        TestBootstrapPlanError,
+        TestBootstrapRunSpecError,
+        TestSingleUpdatePlanError,
+        TestSingleUpdateRunSpecError,
+        TestWriteSpecDispatchError,
+    ) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except TestWriteClientError as exc:

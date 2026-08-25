@@ -1,4 +1,4 @@
-"""Exact-discriminator dispatch for normal and Bootstrap Test write Run Specs."""
+"""Exact-discriminator dispatch for every supported Test write Run Spec."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from tridentine_calendar_google_sync.baseline_models import TrustedBaseline
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     read_sensitive_bytes,
@@ -23,6 +24,21 @@ from tridentine_calendar_google_sync.test_bootstrap_run_spec_io import (
 from tridentine_calendar_google_sync.test_bootstrap_run_spec_models import (
     TestBootstrapAddRunSpec,
 )
+from tridentine_calendar_google_sync.test_single_update_plan_models import (
+    TestSingleUpdatePlan,
+)
+from tridentine_calendar_google_sync.test_single_update_run_spec import (
+    TestSingleUpdateRunSpecError,
+    verify_test_single_update_run_spec_bindings,
+)
+from tridentine_calendar_google_sync.test_single_update_run_spec_io import (
+    MAX_TEST_SINGLE_UPDATE_RUN_SPEC_BYTES,
+    TestSingleUpdateRunSpecIOError,
+    parse_test_single_update_run_spec_bytes,
+)
+from tridentine_calendar_google_sync.test_single_update_run_spec_models import (
+    TestSingleUpdateRunSpec,
+)
 from tridentine_calendar_google_sync.test_write_models import TestWriteRunSpec
 from tridentine_calendar_google_sync.test_write_run_spec import (
     TestWriteRunSpecError,
@@ -33,10 +49,11 @@ from tridentine_calendar_google_sync.test_write_run_spec_io import (
     parse_test_write_run_spec_bytes,
 )
 
-type AnyTestWriteRunSpec = TestWriteRunSpec | TestBootstrapAddRunSpec
+type AnyTestWriteRunSpec = TestWriteRunSpec | TestBootstrapAddRunSpec | TestSingleUpdateRunSpec
 MAX_ANY_TEST_WRITE_RUN_SPEC_BYTES = max(
     MAX_TEST_WRITE_RUN_SPEC_BYTES,
     MAX_TEST_BOOTSTRAP_RUN_SPEC_BYTES,
+    MAX_TEST_SINGLE_UPDATE_RUN_SPEC_BYTES,
 )
 
 
@@ -66,19 +83,37 @@ def verify_any_test_write_run_spec(
     run_spec: AnyTestWriteRunSpec,
     *,
     bootstrap_plan: TestBootstrapAddPlan | None = None,
+    single_update_plan: TestSingleUpdatePlan | None = None,
+    trusted_baseline: TrustedBaseline | None = None,
 ) -> None:
     """Dispatch integrity/policy checks without any heuristic fallback."""
 
     if isinstance(run_spec, TestBootstrapAddRunSpec):
-        if bootstrap_plan is None:
+        if bootstrap_plan is None or single_update_plan is not None or trusted_baseline is not None:
             raise TestWriteSpecDispatchError(
                 "test_bootstrap_plan_required",
                 "Bootstrap Add Run Spec requires its exact Bootstrap Plan",
             )
         verify_test_bootstrap_add_run_spec_plan(run_spec, bootstrap_plan)
         return
+    if isinstance(run_spec, TestSingleUpdateRunSpec):
+        if single_update_plan is None or trusted_baseline is None or bootstrap_plan is not None:
+            raise TestWriteSpecDispatchError(
+                "test_single_update_artifacts_required",
+                "Single Update Run Spec requires its exact Plan and trusted baseline",
+            )
+        verify_test_single_update_run_spec_bindings(
+            run_spec,
+            single_update_plan,
+            trusted_baseline,
+        )
+        return
     if isinstance(run_spec, TestWriteRunSpec):
-        if bootstrap_plan is not None:
+        if (
+            bootstrap_plan is not None
+            or single_update_plan is not None
+            or trusted_baseline is not None
+        ):
             raise TestWriteSpecDispatchError(
                 "normal_run_spec_bootstrap_plan_forbidden",
                 "Normal Test write Run Spec cannot use a Bootstrap Plan",
@@ -112,6 +147,8 @@ def parse_any_test_write_run_spec_bytes(raw_bytes: bytes) -> AnyTestWriteRunSpec
             return parse_test_write_run_spec_bytes(raw_bytes)
         if run_type == "test-bootstrap-add-run-spec-v1":
             return parse_test_bootstrap_add_run_spec_bytes(raw_bytes)
+        if run_type == "test-single-update-run-spec-v1":
+            return parse_test_single_update_run_spec_bytes(raw_bytes)
         raise TestWriteSpecDispatchError(
             "unknown_test_write_run_spec_discriminator",
             "Test write Run Spec discriminator is unsupported",
@@ -121,6 +158,8 @@ def parse_any_test_write_run_spec_bytes(raw_bytes: bytes) -> AnyTestWriteRunSpec
     except (
         TestBootstrapRunSpecError,
         TestBootstrapRunSpecIOError,
+        TestSingleUpdateRunSpecError,
+        TestSingleUpdateRunSpecIOError,
         TestWriteRunSpecError,
     ) as exc:
         raise TestWriteSpecDispatchError(
@@ -141,7 +180,7 @@ def parse_any_test_write_run_spec_bytes(raw_bytes: bytes) -> AnyTestWriteRunSpec
 
 
 def load_any_test_write_run_spec(path: str | Path) -> AnyTestWriteRunSpec:
-    """Load one repository-external normal or Bootstrap Run Spec."""
+    """Load one repository-external exact-discriminator Run Spec."""
 
     try:
         return parse_any_test_write_run_spec_bytes(
