@@ -43,6 +43,8 @@ test-calendar-prewrite-snapshots/
 test-calendar-prewrite-reports/
 test-bootstrap-add-plans/
 test-bootstrap-add-run-specs/
+test-single-update-plans/
+test-single-update-run-specs/
 snapshots/
 cache/
 reports/internal/
@@ -64,6 +66,10 @@ test-write-target*.toml
 *.test-bootstrap-add-run-spec.json
 *.test-bootstrap-add-plan-report.json
 *.test-bootstrap-add-plan-report.txt
+*.test-single-update-plan.json
+*.test-single-update-run-spec.json
+*.test-single-update-plan-report.json
+*.test-single-update-plan-report.txt
 local-data/
 input/
 .DS_Store
