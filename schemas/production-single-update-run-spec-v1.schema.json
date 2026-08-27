@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/production-single-update-run-spec-v1.schema.json",
+  "title": "Non-executable Production Calendar Single Update Run Spec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "run_type", "planning_mode", "production", "production_only",
+    "synthetic", "single_update", "update_only", "executable", "tool_version",
+    "issued_at", "expires_at", "target_fingerprint", "target_safe_ref",
+    "target_config_hash", "target_environment", "baseline_state",
+    "trusted_baseline_hash", "baseline_snapshot_hash", "manifest_hash",
+    "source_profile", "accepted_tag", "accepted_commit", "source_sha256",
+    "source_content_hash", "source_event_count", "current_snapshot_hash",
+    "snapshot_event_count", "diff_hash", "production_plan_hash", "unchanged_count",
+    "operation_count", "add_count", "update_count", "delete_count", "changed_fields",
+    "operation", "approval_required", "approval_material_hash", "run_spec_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "run_type": { "const": "production-single-update-run-spec-v1" },
+    "planning_mode": { "const": "production_single_update" },
+    "production": { "const": true },
+    "production_only": { "const": true },
+    "synthetic": { "const": false },
+    "single_update": { "const": true },
+    "update_only": { "const": true },
+    "executable": { "const": false },
+    "tool_version": { "type": "string", "minLength": 1 },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "target_fingerprint": { "$ref": "#/$defs/sha256" },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "target_config_hash": { "$ref": "#/$defs/sha256" },
+    "target_environment": { "const": "production" },
+    "baseline_state": { "const": "trusted" },
+    "trusted_baseline_hash": { "$ref": "#/$defs/sha256" },
+    "baseline_snapshot_hash": { "$ref": "#/$defs/sha256" },
+    "manifest_hash": { "$ref": "#/$defs/sha256" },
+    "source_profile": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "accepted_tag": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$" },
+    "accepted_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "source_sha256": { "$ref": "#/$defs/sha256" },
+    "source_content_hash": { "$ref": "#/$defs/sha256" },
+    "source_event_count": { "type": "integer", "minimum": 2 },
+    "current_snapshot_hash": { "$ref": "#/$defs/sha256" },
+    "snapshot_event_count": { "type": "integer", "minimum": 2 },
+    "diff_hash": { "$ref": "#/$defs/sha256" },
+    "production_plan_hash": { "$ref": "#/$defs/sha256" },
+    "unchanged_count": { "type": "integer", "minimum": 1 },
+    "operation_count": { "const": 1 },
+    "add_count": { "const": 0 },
+    "update_count": { "const": 1 },
+    "delete_count": { "const": 0 },
+    "changed_fields": {
+      "type": "array", "prefixItems": [{ "const": "description" }], "items": false,
+      "minItems": 1, "maxItems": 1
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation", "safe_uid_ref", "google_ref", "changed_fields",
+        "pre_image_hash", "patch_hash", "operation_content_hash"
+      ],
+      "properties": {
+        "operation": { "const": "update" },
+        "safe_uid_ref": { "$ref": "#/$defs/sourceReference" },
+        "google_ref": { "$ref": "#/$defs/googleReference" },
+        "changed_fields": {
+          "type": "array", "prefixItems": [{ "const": "description" }], "items": false,
+          "minItems": 1, "maxItems": 1
+        },
+        "pre_image_hash": { "$ref": "#/$defs/sha256" },
+        "patch_hash": { "$ref": "#/$defs/sha256" },
+        "operation_content_hash": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "approval_required": { "const": true },
+    "approval_material_hash": { "$ref": "#/$defs/sha256" },
+    "run_spec_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "targetReference": { "type": "string", "pattern": "^T-[0-9a-f]{12}$" },
+    "sourceReference": { "type": "string", "pattern": "^U-[0-9a-f]{12}$" },
+    "googleReference": { "type": "string", "pattern": "^G-[0-9a-f]{12}$" }
+  }
+}
