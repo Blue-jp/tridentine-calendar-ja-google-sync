@@ -42,7 +42,7 @@ def test_cli_inventory_keeps_prewrite_and_bootstrap_commands_without_generic_ali
     parser = build_parser()
     action = next(item for item in parser._actions if isinstance(item, argparse._SubParsersAction))
 
-    assert len(action.choices) == 24
+    assert len(action.choices) == 29
     assert "inspect-test-calendar-prewrite" in action.choices
     assert {
         "build-test-bootstrap-add-plan",

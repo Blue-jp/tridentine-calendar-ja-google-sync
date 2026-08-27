@@ -12,6 +12,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
+from tridentine_calendar_google_sync.accepted_production_source_manifest import (
+    AcceptedProductionSourceManifestError,
+)
+from tridentine_calendar_google_sync.accepted_production_source_manifest_io import (
+    AcceptedProductionSourceManifestIOError,
+    load_accepted_production_source_manifest,
+)
+from tridentine_calendar_google_sync.accepted_production_source_manifest_report import (
+    render_accepted_production_source_manifest_inspection_json,
+    render_accepted_production_source_manifest_inspection_text,
+)
 from tridentine_calendar_google_sync.apply_approval import approve_apply_bundle
 from tridentine_calendar_google_sync.apply_bundle import build_apply_bundle
 from tridentine_calendar_google_sync.apply_bundle_io import (
@@ -117,6 +128,39 @@ from tridentine_calendar_google_sync.plan_models import PlanState, PlanThreshold
 from tridentine_calendar_google_sync.plan_report import (
     render_plan_json_report,
     render_plan_text_report,
+)
+from tridentine_calendar_google_sync.production_single_update_plan import (
+    ProductionSingleUpdatePlanError,
+    build_production_single_update_plan,
+)
+from tridentine_calendar_google_sync.production_single_update_plan_io import (
+    ProductionSingleUpdatePlanIOError,
+    load_production_single_update_plan,
+    write_production_single_update_plan,
+)
+from tridentine_calendar_google_sync.production_single_update_plan_report import (
+    build_production_single_update_plan_inspection,
+    render_production_single_update_plan_inspection_json,
+    render_production_single_update_plan_inspection_text,
+)
+from tridentine_calendar_google_sync.production_single_update_run_spec import (
+    ProductionSingleUpdateRunSpecError,
+    build_production_single_update_run_spec,
+)
+from tridentine_calendar_google_sync.production_single_update_run_spec_io import (
+    ProductionSingleUpdateRunSpecIOError,
+    load_production_single_update_run_spec,
+    write_production_single_update_run_spec,
+)
+from tridentine_calendar_google_sync.production_single_update_run_spec_report import (
+    build_production_single_update_run_spec_inspection,
+    render_production_single_update_run_spec_inspection_json,
+    render_production_single_update_run_spec_inspection_text,
+)
+from tridentine_calendar_google_sync.production_write_target import (
+    ProductionWriteTargetConfigError,
+    ProductionWriteTargetError,
+    load_production_write_target_config,
 )
 from tridentine_calendar_google_sync.profiles import ProfileError, load_profile
 from tridentine_calendar_google_sync.sensitive_paths import (
@@ -309,6 +353,43 @@ _TEST_SINGLE_UPDATE_RUN_SPEC_HELP = (
     "Google event ID and ETag are taken only from the current private snapshot.\n"
     "An exact approval phrase is required before any later patch.\n"
     "Add, Delete, Production targets, OAuth, and Google API use are unavailable."
+)
+
+_PRODUCTION_MANIFEST_INSPECTION_HELP = (
+    "Offline safe inspection of one explicit Accepted Production Source Manifest.\n"
+    "No current Production pin is built in or resolved from a network.\n"
+    "Raw event identity, content, Calendar identity, credentials, tokens, and paths "
+    "are never displayed."
+)
+
+_PRODUCTION_SINGLE_UPDATE_PLAN_HELP = (
+    "Offline Production planning only; no Production executor exists.\n"
+    "Requires an explicit Accepted Production Source Manifest, trusted Production "
+    "Baseline, exact complete full snapshot, and Production target config.\n"
+    "Produces one non-executable Description-only Update Plan; Add and Delete are "
+    "structurally unavailable.\n"
+    "No OAuth, Google dependency, Google client, or Calendar API call is used."
+)
+
+_PRODUCTION_SINGLE_UPDATE_PLAN_INSPECTION_HELP = (
+    "Safe metadata only from a non-executable Production Single Update Plan.\n"
+    "Raw UID, event content, Calendar identity, Google event identity, ETag, token, "
+    "credentials, and local paths are never displayed."
+)
+
+_PRODUCTION_SINGLE_UPDATE_RUN_SPEC_HELP = (
+    "Offline static Production Run Spec material only; no ARM, EXECUTE, kill switch, "
+    "or executor exists.\n"
+    "The closed Run Spec is non-executable, expires within 24 hours, and binds one "
+    "Description-only Update without raw UID, event body, Google event identity, or ETag.\n"
+    "No OAuth, Google dependency, Google client, or Calendar API call is used."
+)
+
+_PRODUCTION_SINGLE_UPDATE_RUN_SPEC_INSPECTION_HELP = (
+    "Safe integrity and lifetime metadata from one Production Run Spec.\n"
+    "Expired artifacts can be inspected but cannot be used for approval preparation.\n"
+    "Raw UID, event content, Calendar identity, Google event identity, ETag, token, "
+    "credentials, and local paths are never displayed."
 )
 
 
@@ -1011,6 +1092,89 @@ def build_parser() -> argparse.ArgumentParser:
         help="new repository-external private Single Update Run Spec path",
     )
 
+    inspect_production_manifest = subparsers.add_parser(
+        "inspect-accepted-production-source-manifest",
+        help="inspect one Accepted Production Source Manifest safely",
+        description=_PRODUCTION_MANIFEST_INSPECTION_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inspect_production_manifest.add_argument(
+        "--manifest",
+        required=True,
+        help="explicit repository-external Accepted Production manifest JSON",
+    )
+    inspect_production_manifest.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_production_manifest.add_argument(
+        "--output",
+        help="optional repository-external safe inspection report",
+    )
+
+    build_production_plan = subparsers.add_parser(
+        "build-production-single-update-plan",
+        help="build one offline non-executable Production Update Plan",
+        description=_PRODUCTION_SINGLE_UPDATE_PLAN_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    build_production_plan.add_argument("--manifest", required=True)
+    build_production_plan.add_argument("--source", required=True)
+    build_production_plan.add_argument("--profile", required=True)
+    build_production_plan.add_argument("--profiles-dir", required=True)
+    build_production_plan.add_argument("--google-snapshot", required=True)
+    build_production_plan.add_argument("--trusted-baseline", required=True)
+    build_production_plan.add_argument("--target-config", required=True)
+    build_production_plan.add_argument("--output", required=True)
+
+    inspect_production_plan = subparsers.add_parser(
+        "inspect-production-single-update-plan",
+        help="inspect safe metadata from a Production Single Update Plan",
+        description=_PRODUCTION_SINGLE_UPDATE_PLAN_INSPECTION_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inspect_production_plan.add_argument("--plan", required=True)
+    inspect_production_plan.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_production_plan.add_argument("--output")
+
+    build_production_run_spec = subparsers.add_parser(
+        "build-production-single-update-run-spec",
+        help="build one offline non-executable Production Update Run Spec",
+        description=_PRODUCTION_SINGLE_UPDATE_RUN_SPEC_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    build_production_run_spec.add_argument("--manifest", required=True)
+    build_production_run_spec.add_argument("--source", required=True)
+    build_production_run_spec.add_argument("--profile", required=True)
+    build_production_run_spec.add_argument("--profiles-dir", required=True)
+    build_production_run_spec.add_argument("--google-snapshot", required=True)
+    build_production_run_spec.add_argument("--production-plan", required=True)
+    build_production_run_spec.add_argument("--trusted-baseline", required=True)
+    build_production_run_spec.add_argument("--target-config", required=True)
+    build_production_run_spec.add_argument("--output", required=True)
+
+    inspect_production_run_spec = subparsers.add_parser(
+        "inspect-production-single-update-run-spec",
+        help="inspect safe metadata and lifetime from a Production Run Spec",
+        description=_PRODUCTION_SINGLE_UPDATE_RUN_SPEC_INSPECTION_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    inspect_production_run_spec.add_argument("--run-spec", required=True)
+    inspect_production_run_spec.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        dest="report_format",
+    )
+    inspect_production_run_spec.add_argument("--output")
+
     run_test_write = subparsers.add_parser(
         "run-test-calendar-write",
         help="run one explicitly approved Test Calendar Add or Update",
@@ -1330,6 +1494,123 @@ def _build_test_bootstrap_add_run_spec_command(args: argparse.Namespace) -> int:
         f"Approval challenge: {challenge}\n"
     )
     return EXIT_DIFFERENCES
+
+
+def _inspect_accepted_production_source_manifest_command(args: argparse.Namespace) -> int:
+    manifest = load_accepted_production_source_manifest(args.manifest)
+    rendered = (
+        render_accepted_production_source_manifest_inspection_json(manifest)
+        if args.report_format == "json"
+        else render_accepted_production_source_manifest_inspection_text(manifest)
+    )
+    if args.output:
+        atomic_write_private_text(args.output, rendered, overwrite=False)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
+
+
+def _build_production_single_update_plan_command(args: argparse.Namespace) -> int:
+    """Build one offline, non-executable Production planning artifact."""
+
+    manifest = load_accepted_production_source_manifest(args.manifest)
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    snapshot = load_google_snapshot(args.google_snapshot)
+    baseline = load_baseline(args.trusted_baseline)
+    target = load_production_write_target_config(args.target_config)
+    plan = build_production_single_update_plan(
+        manifest,
+        profile,
+        source,
+        snapshot,
+        baseline,
+        target,
+    )
+    write_production_single_update_plan(plan, args.output)
+    report = build_production_single_update_plan_inspection(plan)
+    sys.stdout.write(
+        "Non-executable Production Single Update Plan stored: "
+        f"target={report['target_safe_ref']}; "
+        f"plan={str(report['plan_content_hash'])[:12]}; "
+        f"operations={report['operation_count']}; add={report['add_count']}; "
+        f"update={report['update_count']}; delete={report['delete_count']}; "
+        "changed-fields=description; full-snapshot-bound=yes; executor=no.\n"
+    )
+    return EXIT_DIFFERENCES
+
+
+def _inspect_production_single_update_plan_command(args: argparse.Namespace) -> int:
+    plan = load_production_single_update_plan(args.plan)
+    rendered = (
+        render_production_single_update_plan_inspection_json(plan)
+        if args.report_format == "json"
+        else render_production_single_update_plan_inspection_text(plan)
+    )
+    if args.output:
+        atomic_write_private_text(args.output, rendered, overwrite=False)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
+
+
+def _build_production_single_update_run_spec_command(args: argparse.Namespace) -> int:
+    """Build one short-lived static Run Spec with no approval or executor."""
+
+    manifest = load_accepted_production_source_manifest(args.manifest)
+    profile = load_profile(args.profile, args.profiles_dir)
+    source = inspect_source(args.source, profile)
+    snapshot = load_google_snapshot(args.google_snapshot)
+    plan = load_production_single_update_plan(args.production_plan)
+    baseline = load_baseline(args.trusted_baseline)
+    target = load_production_write_target_config(args.target_config)
+    issued_at = datetime.now(UTC)
+    run_spec = build_production_single_update_run_spec(
+        manifest,
+        profile,
+        source,
+        snapshot,
+        plan,
+        baseline,
+        target,
+        issued_at=issued_at,
+    )
+    write_production_single_update_run_spec(
+        run_spec,
+        args.output,
+        now=issued_at,
+    )
+    report = build_production_single_update_run_spec_inspection(
+        run_spec,
+        now=issued_at,
+    )
+    sys.stdout.write(
+        "Non-executable Production Single Update Run Spec stored: "
+        f"target={report['target_safe_ref']}; "
+        f"run={str(report['run_spec_content_hash'])[:12]}; "
+        "planning-mode=production_single_update; operations=1; add=0; update=1; "
+        "delete=0; changed-fields=description; approval-material=static; executor=no.\n"
+    )
+    return EXIT_DIFFERENCES
+
+
+def _inspect_production_single_update_run_spec_command(args: argparse.Namespace) -> int:
+    now = datetime.now(UTC)
+    run_spec = load_production_single_update_run_spec(
+        args.run_spec,
+        now=now,
+        require_current=False,
+    )
+    rendered = (
+        render_production_single_update_run_spec_inspection_json(run_spec, now=now)
+        if args.report_format == "json"
+        else render_production_single_update_run_spec_inspection_text(run_spec, now=now)
+    )
+    if args.output:
+        atomic_write_private_text(args.output, rendered, overwrite=False)
+    else:
+        sys.stdout.write(rendered)
+    return EXIT_VALID
 
 
 def _build_test_single_update_plan_command(args: argparse.Namespace) -> int:
@@ -1865,6 +2146,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.print_help(sys.stdout)
             return EXIT_CLI_ERROR
         args = parser.parse_args(effective_argv)
+        if args.command == "inspect-accepted-production-source-manifest":
+            return _inspect_accepted_production_source_manifest_command(args)
+        if args.command == "build-production-single-update-plan":
+            return _build_production_single_update_plan_command(args)
+        if args.command == "inspect-production-single-update-plan":
+            return _inspect_production_single_update_plan_command(args)
+        if args.command == "build-production-single-update-run-spec":
+            return _build_production_single_update_run_spec_command(args)
+        if args.command == "inspect-production-single-update-run-spec":
+            return _inspect_production_single_update_run_spec_command(args)
         if args.command == "build-test-single-update-plan":
             return _build_test_single_update_plan_command(args)
         if args.command == "inspect-test-single-update-plan":
@@ -1947,7 +2238,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except GoogleSnapshotError as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
-    except (GoogleAuthConfigError, TargetConfigError) as exc:
+    except (
+        GoogleAuthConfigError,
+        TargetConfigError,
+        ProductionWriteTargetConfigError,
+    ) as exc:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_CLI_ERROR
     except (TestWriteAuthConfigError, TestWriteTargetConfigError) as exc:
@@ -1997,6 +2292,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_INVALID_SNAPSHOT
     except (
+        AcceptedProductionSourceManifestIOError,
+        ProductionSingleUpdatePlanIOError,
+        ProductionSingleUpdateRunSpecIOError,
         TestBootstrapPlanIOError,
         TestBootstrapRunSpecIOError,
         TestSingleUpdatePlanIOError,
@@ -2017,6 +2315,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except (
+        AcceptedProductionSourceManifestError,
+        ProductionSingleUpdatePlanError,
+        ProductionSingleUpdateRunSpecError,
+        ProductionWriteTargetError,
         TestBootstrapPlanError,
         TestBootstrapRunSpecError,
         TestSingleUpdatePlanError,

@@ -53,5 +53,5 @@ def test_cli_inventory_adds_three_commands_without_generic_aliases() -> None:
         "inspect-test-single-update-plan",
         "build-test-single-update-run-spec",
     } <= set(action.choices)
-    assert len(action.choices) == 24
+    assert len(action.choices) == 29
     assert not {"apply", "sync", "execute"} & set(action.choices)

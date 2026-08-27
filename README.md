@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 5D.0の範囲
+## Phase 6Bの範囲
 
-Phase 5D.0は、Trusted Test Baselineが管理する架空の終日event 1件について、DESCRIPTIONだけのsingle updateを計画するTest-only基盤を追加します。通常Sync Planとは別model・schema・builderとし、`all_events_update`、`mass_change_guard`、Production policyは変更しません。
+Phase 6Bは、Accepted Production Source Manifest、Trusted Production Baseline、完全なsanitized snapshotから、Production Calendar上のDESCRIPTION 1件だけを更新候補として固定するoffline planning基盤を追加します。Production Single Update Planと短時間だけ有効なRun Specは、通常Sync Plan、Test-only Plan、write transportとは別model・schema・builderです。
 
-Phase 5D.0の開発・CIはofflineのsynthetic fixtureとmock transportのみを使います。Live OAuth、browser authorization、token取得、Google API call、Test / Production Calendarへの接続・変更は行いません。
+Phase 6Bの開発・CIはofflineのproduction-like synthetic fixtureだけを使います。Live OAuth、browser authorization、token取得、Google API call、Production Calendarへの接続・変更は行いません。PlanもRun Specもnon-executableであり、Production write hard lockは維持されます。詳細は[Production single-update planning foundation](docs/production-single-update-planning-foundation.md)を参照してください。
 
 ### Implemented
 
@@ -55,6 +55,12 @@ Phase 5D.0の開発・CIはofflineのsynthetic fixtureとmock transportのみを
 - 通常global guardを変更せずoriginal guard evidenceを保持するpolicy
 - Current Test snapshot由来のevent ID / ETagにbindする専用single-update Run Spec
 - Add / Deleteへ到達できないProduction-locked update境界
+- Accepted Production Source Manifestによるrepository/tag/commit/ICS/source aggregateのexact pin
+- Full Production source・Trusted Baseline・full sanitized snapshotからのDESCRIPTION-only update 1件planning
+- Unrelated eventを最低1件unchangedとして要求し、add/delete/update 0件・2件以上を拒否するProduction Plan
+- raw UID・SUMMARY・DESCRIPTION・Calendar ID・Google event ID・ETagを持たないProduction Run Spec
+- UTC-aware `issued_at`から最大24時間だけ有効なRun Specと、承認対象bit全体をbindするapproval material hash
+- Production planning artifactのclosed schema、domain-separated hash、repository-external atomic/no-overwrite I/O、redacted inspection report
 
 ### Not implemented
 
@@ -63,6 +69,7 @@ Phase 5D.0の開発・CIはofflineのsynthetic fixtureとmock transportのみを
 - Test Calendar APIの実接続とadd/update実行
 - Test Calendar single updateの実行
 - Production Calendar write
+- Production write credential、approval receipt、mutation transport、journal、post-write verification
 - Delete operation model・payload・transport method
 - `syncToken`、incremental state、automation
 
@@ -246,6 +253,53 @@ Bootstrap成功後はこの経路を再利用せず、Source 1 / Google 1の一�
 
 `build-test-single-update-run-spec`は、Trusted Test Baselineとcurrent snapshotに再bindしたprivate Run Specを作ります。Run Specはplanning mode、DESCRIPTION-only、add 0 / update 1 / delete 0に固定され、event IDとexact ETagはcurrent snapshotからだけ取得します。Add、Delete、Productionは到達不能です。実際のpatchには別Stageのexact approvalが必要で、Phase 5D.0ではGoogle APIを呼び出しません。
 
+### Production single-update planning foundation
+
+`inspect-accepted-production-source-manifest`は、別途作成されたAccepted Production Source Manifestをstrictに検証し、repository/tag/commit/ICS/profile/source hashをsafe referenceへ変換して表示します。Manifestは`production=true`、`acceptance_state=accepted`、`synthetic=false`で、cleanなAccepted sourceのexact provenanceとaggregateだけを認めます。
+
+`build-production-single-update-plan`はmanifest、Accepted source/profile、Trusted Production Baseline、同baseline snapshot hashに一致するfull sanitized snapshot、明示的Production target configをofflineで再検証します。全件のうちexactly 1件だけがDESCRIPTION update、少なくとも1件がunrelated unchanged、add/delete/duplicate/ambiguous/unmanaged/fatal/warningがすべて0の場合だけ、non-executable Planを作ります。
+
+`build-production-single-update-run-spec`は同じ入力とPlanを再bindし、UTC-aware `issued_at <= now < expires_at`かつ最大24時間の短命Run Specを作ります。Run Specはsafe UID reference、canonical pre-image hash、Description patch hashを保持しますが、raw UID、SUMMARY、DESCRIPTION、current/desired body、Calendar ID、Google event ID、ETag、payload、endpoint、HTTP methodを保持しません。実際のidentity/content解決とETag取得は、将来の別Phaseがfresh inputをmemory上で再検証した後にだけ行います。
+
+Inspection commandは次の5つです。すべてofflineで、build outputと任意のinspection outputはrepository外へatomic/no-overwriteで保存します。
+
+```powershell
+tridentine-calendar-google-sync inspect-accepted-production-source-manifest `
+  --manifest "<repository外のAccepted Production manifest path>" `
+  --format json
+
+tridentine-calendar-google-sync build-production-single-update-plan `
+  --manifest "<repository外のmanifest path>" `
+  --source "<repository外のAccepted ICS path>" `
+  --profile "<accepted profile id>" `
+  --profiles-dir "<repository外のprofile directory>" `
+  --google-snapshot "<repository外のfull sanitized snapshot path>" `
+  --trusted-baseline "<repository外のtrusted baseline path>" `
+  --target-config "<repository外のProduction target TOML path>" `
+  --output "<repository外のProduction Plan path>"
+
+tridentine-calendar-google-sync inspect-production-single-update-plan `
+  --plan "<repository外のProduction Plan path>" `
+  --format text
+
+tridentine-calendar-google-sync build-production-single-update-run-spec `
+  --manifest "<repository外のmanifest path>" `
+  --source "<repository外のAccepted ICS path>" `
+  --profile "<accepted profile id>" `
+  --profiles-dir "<repository外のprofile directory>" `
+  --google-snapshot "<repository外のfull sanitized snapshot path>" `
+  --production-plan "<repository外のProduction Plan path>" `
+  --trusted-baseline "<repository外のtrusted baseline path>" `
+  --target-config "<repository外のProduction target TOML path>" `
+  --output "<repository外のProduction Run Spec path>"
+
+tridentine-calendar-google-sync inspect-production-single-update-run-spec `
+  --run-spec "<repository外のProduction Run Spec path>" `
+  --format json
+```
+
+これらのcommandに`--online`、token、credential、approval phrase、apply/execute optionはありません。Phase 6BはGoogle clientをconstructせず、既存`run-test-calendar-write`へProduction Run Specをdispatchしません。
+
 ### Google read-only commands
 
 `authorize-google-readonly`と`fetch-google-snapshot`はPhase 3Aで追加された明示的online commandです。両commandは`--online`を要求し、別途承認されたread-only workflowでだけ利用します。Phase 4Aのbaseline/plan commandから呼び出されることはありません。準備要件とsecret配置方針は[Google read-only setup](docs/google-readonly-setup.md)を参照してください。
@@ -329,6 +383,8 @@ Validation mismatchは通常の利用時にPython tracebackやfile本文を表�
 - Public apply reportとoperation journalはsafe references・hash・allowlisted outcome codeだけを使用します。
 - Test write tokenはProduction read-only tokenと別fileに保存し、scope追加・上書き・再利用を拒否します。
 - Test Write Run Specはprivate artifactです。Public report / journalはraw UID、Google event ID、ETag、SUMMARY、DESCRIPTION、payloadを含みません。
+- Accepted Production manifest、Production target config、source、snapshot、baseline、Plan、Run Specはrepository外のprivate runtime artifactです。Production Plan/Run Spec inspectionはsafe reference・aggregate・hash・lifetimeだけを表示します。
+- Production Run Specにはraw UID、SUMMARY、DESCRIPTION、Calendar ID、Google event ID、ETag、current/desired bodyを保存しません。
 
 詳細は[Security Policy](SECURITY.md)も参照してください。
 
@@ -346,12 +402,13 @@ Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれ�
 
 ## Roadmap
 
-Phase 5C.0までに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport code foundation、Test Calendar read-only prewrite inspection、Test-only bootstrap add planningを実装しました。以下は未実施または未承認です。
+Phase 6Bまでに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport code foundation、Test-only planning、Accepted Production manifest、Production single-update Plan/Run Spec foundationを実装しました。以下は未実施または未承認です。
 
 1. Production baseline candidateの別承認によるtrusted化
 2. 専用Test Calendarの別承認OAuth・API・1件add検証
 3. 専用Test Calendarの別承認1件update検証
-4. Production apply、delete、syncToken、automation
+4. Production approval receipt、fresh online preflight、single mutation、post-write verification
+5. Production apply、delete、syncToken、automation
 
 ## Provenanceとlicense
 

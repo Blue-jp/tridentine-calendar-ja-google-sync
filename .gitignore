@@ -45,6 +45,9 @@ test-bootstrap-add-plans/
 test-bootstrap-add-run-specs/
 test-single-update-plans/
 test-single-update-run-specs/
+accepted-production-source-manifests/
+production-single-update-plans/
+production-single-update-run-specs/
 snapshots/
 cache/
 reports/internal/
@@ -70,6 +73,16 @@ test-write-target*.toml
 *.test-single-update-run-spec.json
 *.test-single-update-plan-report.json
 *.test-single-update-plan-report.txt
+*.accepted-production-source-manifest.json
+*.accepted-production-source-manifest-report.json
+*.accepted-production-source-manifest-report.txt
+*.production-single-update-plan.json
+*.production-single-update-plan-report.json
+*.production-single-update-plan-report.txt
+*.production-single-update-run-spec.json
+*.production-single-update-run-spec-report.json
+*.production-single-update-run-spec-report.txt
+production-write-target*.toml
 local-data/
 input/
 .DS_Store

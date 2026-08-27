@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/accepted-production-source-manifest-v1.schema.json",
+  "title": "Accepted Production source manifest",
+  "description": "A private content-addressed binding to one clean Accepted Production ICS source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_type",
+    "production",
+    "acceptance_state",
+    "synthetic",
+    "repository_identity",
+    "repository_tag",
+    "repository_commit",
+    "ics_sha256",
+    "profile_id",
+    "event_count",
+    "first_date",
+    "last_date",
+    "all_day_count",
+    "timed_count",
+    "recurring_event_count",
+    "source_content_hash",
+    "manifest_content_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "manifest_type": {
+      "const": "accepted_production_source"
+    },
+    "production": {
+      "const": true
+    },
+    "acceptance_state": {
+      "const": "accepted"
+    },
+    "synthetic": {
+      "const": false
+    },
+    "repository_identity": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "repository_tag": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"
+    },
+    "repository_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "ics_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "profile_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "event_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "first_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "last_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "all_day_count": {
+      "$ref": "#/$defs/count"
+    },
+    "timed_count": {
+      "$ref": "#/$defs/count"
+    },
+    "recurring_event_count": {
+      "$ref": "#/$defs/count"
+    },
+    "source_content_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "manifest_content_hash": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
