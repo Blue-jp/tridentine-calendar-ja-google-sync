@@ -12,6 +12,7 @@ import hmac
 import json
 import os
 import stat
+import sys
 from contextlib import suppress
 from datetime import datetime
 from enum import StrEnum
@@ -886,34 +887,36 @@ def create_production_execution_journal_file(
         ) from exc
 
 
-def _lock_descriptor(descriptor: int, *, exclusive: bool) -> None:
-    """Acquire one OS-owned journal lock that vanishes on close or process exit."""
+if sys.platform == "win32":
+    import msvcrt
 
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    if os.name == "nt":
-        import msvcrt
+    def _lock_descriptor(descriptor: int, *, exclusive: bool) -> None:
+        """Acquire one Windows journal lock owned by the open descriptor."""
 
+        os.lseek(descriptor, 0, os.SEEK_SET)
         mode = msvcrt.LK_LOCK if exclusive else msvcrt.LK_RLCK
         msvcrt.locking(descriptor, mode, 1)
-    else:
-        import fcntl
 
-        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH  # type: ignore[attr-defined]
-        fcntl.flock(descriptor, mode)  # type: ignore[attr-defined]
+    def _unlock_descriptor(descriptor: int) -> None:
+        """Release the matching Windows descriptor lock."""
 
-
-def _unlock_descriptor(descriptor: int) -> None:
-    """Release the matching OS-owned lock before closing the descriptor."""
-
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    if os.name == "nt":
-        import msvcrt
-
+        os.lseek(descriptor, 0, os.SEEK_SET)
         msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
+else:
+    import fcntl
 
-        fcntl.flock(descriptor, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+    def _lock_descriptor(descriptor: int, *, exclusive: bool) -> None:
+        """Acquire one POSIX journal lock owned by the open descriptor."""
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(descriptor, mode)
+
+    def _unlock_descriptor(descriptor: int) -> None:
+        """Release the matching POSIX descriptor lock."""
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 def _open_locked_journal(path: Path, *, exclusive: bool) -> int:
