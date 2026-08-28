@@ -52,17 +52,19 @@ def test_lockfile_records_google_test_write_as_optional_only() -> None:
     assert google_test_write == EXPECTED_GOOGLE_DISTRIBUTIONS
 
 
-def test_ci_has_exact_linux_windows_base_read_and_test_write_layers() -> None:
+def test_ci_has_exact_linux_windows_base_and_three_google_layers() -> None:
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
 
     assert workflow.count("layer: base") == 2
     assert workflow.count("layer: google-read") == 2
     assert workflow.count("layer: google-test-write") == 2
-    assert workflow.count("os: ubuntu-latest") == 3
-    assert workflow.count("os: windows-latest") == 3
+    assert workflow.count("layer: google-production-write") == 2
+    assert workflow.count("os: ubuntu-latest") == 4
+    assert workflow.count("os: windows-latest") == 4
     assert "--extra dev --extra google-test-write" in workflow
     assert "pytest_args: -m google_test_write" in workflow
-    assert "not google_read and not google_test_write" in workflow
+    assert "pytest_args: -m google_production_write" in workflow
+    assert "not google_read and not google_test_write and not google_production_write" in workflow
     assert "contents: read" in workflow
     for forbidden in (
         "workflow_dispatch",

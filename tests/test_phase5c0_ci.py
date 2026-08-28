@@ -7,15 +7,18 @@ from conftest import REPOSITORY_ROOT
 from tridentine_calendar_google_sync.cli import build_parser
 
 
-def test_ci_matrix_remains_exactly_six_jobs_and_offline_bootstrap_runs_in_base() -> None:
+def test_ci_matrix_has_eight_jobs_and_offline_bootstrap_runs_in_base() -> None:
     workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
 
-    assert workflow.count("os: ubuntu-latest") == 3
-    assert workflow.count("os: windows-latest") == 3
+    assert workflow.count("os: ubuntu-latest") == 4
+    assert workflow.count("os: windows-latest") == 4
     assert workflow.count("layer: base") == 2
     assert workflow.count("layer: google-read") == 2
     assert workflow.count("layer: google-test-write") == 2
-    assert '-m "not google_read and not google_test_write"' in workflow
+    assert workflow.count("layer: google-production-write") == 2
+    assert (
+        '-m "not google_read and not google_test_write and not google_production_write"' in workflow
+    )
     assert "contents: read" in workflow
     for forbidden in (
         "workflow_dispatch",
@@ -53,5 +56,5 @@ def test_cli_inventory_adds_three_commands_without_generic_aliases() -> None:
         "inspect-test-single-update-plan",
         "build-test-single-update-run-spec",
     } <= set(action.choices)
-    assert len(action.choices) == 29
+    assert len(action.choices) == 31
     assert not {"apply", "sync", "execute"} & set(action.choices)

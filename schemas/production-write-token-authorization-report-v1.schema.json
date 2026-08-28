@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/production-write-token-authorization-report-v1.schema.json",
+  "title": "Production Write Token Mock Authorization Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "report_type", "mock_only", "live_oauth",
+    "target_safe_ref", "token_role", "scope_count", "scope_exact",
+    "generation", "browser_launch_count", "oauth_attempt_count",
+    "calendar_api_call_count", "token_written", "generation_state_written",
+    "result_state", "report_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "report_type": { "const": "production-write-token-authorization-report-v1" },
+    "mock_only": { "const": true },
+    "live_oauth": { "const": false },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "token_role": { "const": "production_write" },
+    "scope_count": { "const": 1 },
+    "scope_exact": { "const": true },
+    "generation": { "type": "integer", "minimum": 1 },
+    "browser_launch_count": { "const": 1 },
+    "oauth_attempt_count": { "const": 1 },
+    "calendar_api_call_count": { "const": 0 },
+    "token_written": { "const": true },
+    "generation_state_written": { "const": true },
+    "result_state": { "const": "mock_authorized" },
+    "report_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "targetReference": { "type": "string", "pattern": "^T-[0-9a-f]{12}$" }
+  }
+}

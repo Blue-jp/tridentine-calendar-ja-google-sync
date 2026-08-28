@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 6Cの範囲
+## Phase 6D.0の範囲
 
-Phase 6Cは、Phase 6Bのnon-executable Production Plan / Run Specの上に、Production single-updateのapproval-stateとlist/get/patch transport semanticsをmock-onlyで追加します。Full snapshot drift、fresh pre-image / ETag、exact `If-Match`、Description-only patch、post-write full verification、one-time permit consumptionをsynthetic fixtureとfake transportだけで検証します。
+Phase 6D.0はPhase 6Cのmock-only transportをlive patchへ接続せず、専用Production write-token authorizationと、そのtokenを使うread-only rehearsalのcode foundationだけを追加します。Token role、exact `calendar.events.owned` scope、repository外storage、opaque generation、full snapshotとTrusted Baselineのcross-binding、Accepted Sourceとのzero diff、決定的なfresh getをmock OAuth・fake service・synthetic dataだけで検証します。
 
-Phase 6CにはGoogle credential / token loader、Google SDK client builder、real Production transport、live ARM / EXECUTE commandはありません。Default Production kill switchはoff、live executionはhard-offで、既存Production write hard lockも維持されます。Phase 6Bのartifact境界は[Production single-update planning foundation](docs/production-single-update-planning-foundation.md)、Phase 6Cの実行semanticsは[Production single-update transport foundation](docs/production-single-update-transport-foundation.md)を参照してください。
+AuthorizationとrehearsalのCLI surfaceはPhase 6D.0ではlive hard-offです。実OAuth、token作成、browser authorization、Calendar API、Production Calendar access、ARM / EXECUTE運用、patchは実行できません。既存Production write hard lock、default-off kill switch、Add / Delete unavailableも維持されます。Phase 6Bのartifact境界は[Production single-update planning foundation](docs/production-single-update-planning-foundation.md)、Phase 6Cのmock execution semanticsは[Production single-update transport foundation](docs/production-single-update-transport-foundation.md)、Phase 6D.0の境界は[Production write-token read-only rehearsal foundation](docs/production-write-token-readonly-rehearsal-foundation.md)を参照してください。Repository-wide Deep security scanはmerge後かつProduction OAuth前に必須です。Repository-wide Deep security scan required after merge and before Production OAuth.
 
 ### Implemented
 
@@ -68,6 +68,11 @@ Phase 6CにはGoogle credential / token loader、Google SDK client builder、rea
 - repository外のatomic permit consumption、replay prevention、default-off kill-switch、switch/token generation binding
 - patch前fsyncを必須とするappend-only hash-chain journalとredacted public execution report
 - raw API call hard max 10、no rollback、Production Add / Delete到達不可、live Production execution hard-off
+- `google-production-write`へ隔離した専用Production write-token authorization foundation
+- `production_read` / `test_write` / `production_write`の3-role分離、exact owned-events scope、opaque token-generation state
+- repository外no-overwrite token storageと、scope / role / generationを再検証するbounded refresh foundation
+- Production write-token rehearsalのlist/get-only capability、full snapshot / Baseline cross-binding、Source zero-diff、one deterministic fresh get
+- Event ID / ETag memory-only、redacted rehearsal report、raw Calendar API call hard max 5、live patch hard-off
 
 ### Not implemented
 
@@ -76,8 +81,9 @@ Phase 6CにはGoogle credential / token loader、Google SDK client builder、rea
 - Test Calendar APIの実接続とadd/update実行
 - Test Calendar single updateの実行
 - Production Calendar write
-- Production OAuth、Production write token、real Production credential / client builder
-- live Production ARM / EXECUTE operational flow、real list/get/patch、real network behavior
+- Production OAuthの実行、Production write token作成、browser authorization
+- Production Calendar read-only rehearsalの実行、live ARM / EXECUTE operational flow
+- live Production patch、real Production execution adapter
 - automatic rollback、Production Add、Production Delete
 - Delete operation model・payload・transport method
 - `syncToken`、incremental state、automation
@@ -91,7 +97,7 @@ Production ICS、Production snapshot、runtime stateをrepositoryへcommitしな
 - Python `>=3.12,<3.13`
 - 対応platform：WindowsおよびLinux
 
-Base runtime dependencyは`icalendar`と`pydantic`だけです。Google公式Python packageはoptional `google-read`と`google-test-write` extraに隔離され、base installには入りません。
+Base runtime dependencyは`icalendar`と`pydantic`だけです。Google公式Python packageはoptional `google-read`、`google-test-write`、`google-production-write` extraに隔離され、base installには入りません。3つのGoogle extraは同じ既存dependency setを再利用し、installだけでOAuthやAPI callを開始しません。
 
 ## セットアップ
 
@@ -131,6 +137,15 @@ Test write mock layerを検証する場合だけ、分離されたoptional extra
 ```powershell
 uv sync --extra dev --extra google-test-write --frozen
 uv run pytest -m google_test_write
+```
+
+Production write-token authorization / read-only rehearsal foundationをmockだけで検証する場合は、専用extraを使います。Phase 6D.0のCLI handlerはlive hard-offで、installやtestによるOAuth・browser・Calendar API利用はありません。
+
+```powershell
+uv sync --extra dev --extra google-production-write --frozen
+uv run pytest -m google_production_write
+uv run tridentine-calendar-google-sync authorize-production-write-token --help
+uv run tridentine-calendar-google-sync rehearse-production-write-token-readonly --help
 ```
 
 ## CLI
@@ -407,7 +422,7 @@ uv run pytest
 uv run python -m build
 ```
 
-Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれぞれでbase、optional `google-read`、optional `google-test-write` mock layerを分離し、credentialsやProduction dataを使用しません。
+Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれぞれでbase、optional `google-read`、optional `google-test-write`、optional `google-production-write` mock layerを分離し、credentialsやProduction dataを使用しません。
 
 ## Roadmap
 

@@ -53,6 +53,9 @@ production-execute-permits/
 production-kill-switches/
 production-execution-journals/
 production-execution-reports/
+production-write-tokens/
+production-write-token-generations/
+production-write-token-rehearsals/
 snapshots/
 cache/
 reports/internal/
@@ -93,6 +96,16 @@ test-write-target*.toml
 *.production-execution-journal.ndjson
 *.production-execution-report.json
 *.production-execution-report.txt
+*.production-write-token.json
+*.production-write-token-generation.json
+*.production-write-token-rehearsal-snapshot.json
+*.production-write-token-rehearsal-report.json
+*.production-write-token-rehearsal-report.txt
+production-write-authorized-user-token.json
+production-write-token-generation-state.json
+production-write-token-readonly-rehearsal-snapshot.json
+production-write-token-readonly-rehearsal-report.json
+production-write-token-readonly-rehearsal-report.txt
 production-write-target*.toml
 local-data/
 input/

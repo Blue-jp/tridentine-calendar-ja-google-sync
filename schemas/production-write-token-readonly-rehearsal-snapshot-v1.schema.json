@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blue-jp.example/schemas/production-write-token-readonly-rehearsal-snapshot-v1.schema.json",
+  "title": "Production write-token read-only rehearsal snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "snapshot_type",
+    "target_safe_ref",
+    "complete",
+    "page_count",
+    "event_count",
+    "snapshot_content_hash",
+    "baseline_cross_binding",
+    "source_zero_diff",
+    "managed_event_count",
+    "unchanged_count",
+    "cancelled_count",
+    "recurring_count",
+    "timed_count",
+    "non_default_event_type_count",
+    "color_id_count",
+    "event_label_id_count",
+    "duplicate_identity_count",
+    "ambiguous_count",
+    "unmanaged_count",
+    "events",
+    "raw_uid_count",
+    "event_id_count",
+    "etag_count",
+    "snapshot_evidence_hash"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "snapshot_type": {"const": "production-write-token-rehearsal-snapshot-v1"},
+    "target_safe_ref": {"type": "string", "pattern": "^T-[0-9a-f]{12}$"},
+    "complete": {"const": true},
+    "page_count": {"type": "integer", "minimum": 1, "maximum": 5},
+    "event_count": {"type": "integer", "minimum": 0},
+    "snapshot_content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "baseline_cross_binding": {"const": true},
+    "source_zero_diff": {"const": true},
+    "managed_event_count": {"type": "integer", "minimum": 0},
+    "unchanged_count": {"type": "integer", "minimum": 0},
+    "cancelled_count": {"const": 0},
+    "recurring_count": {"const": 0},
+    "timed_count": {"const": 0},
+    "non_default_event_type_count": {"const": 0},
+    "color_id_count": {"const": 0},
+    "event_label_id_count": {"const": 0},
+    "duplicate_identity_count": {"const": 0},
+    "ambiguous_count": {"const": 0},
+    "unmanaged_count": {"const": 0},
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["safe_event_ref", "safe_uid_ref", "managed_content_hash"],
+        "properties": {
+          "safe_event_ref": {"type": "string", "pattern": "^G-[0-9a-f]{12}$"},
+          "safe_uid_ref": {"type": "string", "pattern": "^U-[0-9a-f]{12}$"},
+          "managed_content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "raw_uid_count": {"const": 0},
+    "event_id_count": {"const": 0},
+    "etag_count": {"const": 0},
+    "snapshot_evidence_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

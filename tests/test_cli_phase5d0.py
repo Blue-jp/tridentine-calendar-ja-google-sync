@@ -117,7 +117,7 @@ def test_cli_inventory_adds_only_three_explicit_commands() -> None:
     subparsers = next(
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
-    assert len(subparsers.choices) == 29
+    assert len(subparsers.choices) == 31
     assert set(COMMANDS) <= set(subparsers.choices)
     for alias in ("apply", "sync", "execute"):
         assert alias not in subparsers.choices

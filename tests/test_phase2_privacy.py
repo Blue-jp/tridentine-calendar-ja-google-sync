@@ -87,6 +87,7 @@ def test_only_synthetic_snapshot_json_is_present_in_candidate_tracked_files() ->
 
     assert set(snapshot_paths) == {
         "schemas/google-snapshot-v1.schema.json",
+        "schemas/production-write-token-readonly-rehearsal-snapshot-v1.schema.json",
         "schemas/test-calendar-prewrite-snapshot-v1.schema.json",
         *{
             f"tests/fixtures/google_snapshots/{name}"

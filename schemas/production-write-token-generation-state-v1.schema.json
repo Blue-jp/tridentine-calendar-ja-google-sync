@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/production-write-token-generation-state-v1.schema.json",
+  "title": "Production Write Token Generation State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "state_type", "role", "target_safe_ref",
+    "target_config_hash", "generation", "issued_at",
+    "predecessor_state_hash", "content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "state_type": { "const": "production-write-token-generation-state-v1" },
+    "role": { "const": "production_write" },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "target_config_hash": { "$ref": "#/$defs/sha256" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "predecessor_state_hash": {
+      "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+    },
+    "content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "generation": { "const": 1 } }, "required": ["generation"] },
+      "then": { "properties": { "predecessor_state_hash": { "type": "null" } } }
+    },
+    {
+      "if": { "properties": { "generation": { "minimum": 2 } }, "required": ["generation"] },
+      "then": { "properties": { "predecessor_state_hash": { "$ref": "#/$defs/sha256" } } }
+    }
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "targetReference": { "type": "string", "pattern": "^T-[0-9a-f]{12}$" }
+  }
+}

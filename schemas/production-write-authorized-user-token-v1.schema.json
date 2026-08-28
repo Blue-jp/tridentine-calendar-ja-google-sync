@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/production-write-authorized-user-token-v1.schema.json",
+  "title": "Private Production Write Authorized User Token",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "token_type", "role", "target_safe_ref",
+    "target_config_hash", "generation", "access_token", "refresh_token",
+    "client_id", "client_secret", "token_uri", "scopes", "granted_scopes",
+    "expiry"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "token_type": { "const": "production-write-authorized-user-token-v1" },
+    "role": { "const": "production_write" },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "target_config_hash": { "$ref": "#/$defs/sha256" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "access_token": { "type": "string", "minLength": 1 },
+    "refresh_token": { "type": "string", "minLength": 1 },
+    "client_id": { "type": "string", "minLength": 1 },
+    "client_secret": { "type": "string", "minLength": 1 },
+    "token_uri": { "const": "https://oauth2.googleapis.com/token" },
+    "scopes": { "$ref": "#/$defs/exactScopes" },
+    "granted_scopes": { "$ref": "#/$defs/exactScopes" },
+    "expiry": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "targetReference": { "type": "string", "pattern": "^T-[0-9a-f]{12}$" },
+    "exactScopes": {
+      "type": "array",
+      "prefixItems": [
+        { "const": "https://www.googleapis.com/auth/calendar.events.owned" }
+      ],
+      "items": false,
+      "minItems": 1,
+      "maxItems": 1
+    }
+  }
+}
