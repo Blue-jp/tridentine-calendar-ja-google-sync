@@ -4,11 +4,11 @@
 
 Accepted Japanese Roman liturgical calendarを、将来Google Calendarと安全に差分同期するための専用tool repositoryです。
 
-## Phase 6Bの範囲
+## Phase 6Cの範囲
 
-Phase 6Bは、Accepted Production Source Manifest、Trusted Production Baseline、完全なsanitized snapshotから、Production Calendar上のDESCRIPTION 1件だけを更新候補として固定するoffline planning基盤を追加します。Production Single Update Planと短時間だけ有効なRun Specは、通常Sync Plan、Test-only Plan、write transportとは別model・schema・builderです。
+Phase 6Cは、Phase 6Bのnon-executable Production Plan / Run Specの上に、Production single-updateのapproval-stateとlist/get/patch transport semanticsをmock-onlyで追加します。Full snapshot drift、fresh pre-image / ETag、exact `If-Match`、Description-only patch、post-write full verification、one-time permit consumptionをsynthetic fixtureとfake transportだけで検証します。
 
-Phase 6Bの開発・CIはofflineのproduction-like synthetic fixtureだけを使います。Live OAuth、browser authorization、token取得、Google API call、Production Calendarへの接続・変更は行いません。PlanもRun Specもnon-executableであり、Production write hard lockは維持されます。詳細は[Production single-update planning foundation](docs/production-single-update-planning-foundation.md)を参照してください。
+Phase 6CにはGoogle credential / token loader、Google SDK client builder、real Production transport、live ARM / EXECUTE commandはありません。Default Production kill switchはoff、live executionはhard-offで、既存Production write hard lockも維持されます。Phase 6Bのartifact境界は[Production single-update planning foundation](docs/production-single-update-planning-foundation.md)、Phase 6Cの実行semanticsは[Production single-update transport foundation](docs/production-single-update-transport-foundation.md)を参照してください。
 
 ### Implemented
 
@@ -61,6 +61,13 @@ Phase 6Bの開発・CIはofflineのproduction-like synthetic fixtureだけを使
 - raw UID・SUMMARY・DESCRIPTION・Calendar ID・Google event ID・ETagを持たないProduction Run Spec
 - UTC-aware `issued_at`から最大24時間だけ有効なRun Specと、承認対象bit全体をbindするapproval material hash
 - Production planning artifactのclosed schema、domain-separated hash、repository-external atomic/no-overwrite I/O、redacted inspection report
+- Production full-snapshot reader / fresh-event reader / Description-only mutatorの分離capabilityとdeterministic fake transport
+- Full pre-snapshot drift STOP、fresh get / ETag / exact non-wildcard `If-Match`、mutation 1 attempt / retry 0
+- Immediate read-back、post-write full snapshot、Accepted Sourceとのcanonical zero-diff verification
+- 最大10分のARM receiptからone-time EXECUTE permitへ進むclosed approval-state model
+- repository外のatomic permit consumption、replay prevention、default-off kill-switch、switch/token generation binding
+- patch前fsyncを必須とするappend-only hash-chain journalとredacted public execution report
+- raw API call hard max 10、no rollback、Production Add / Delete到達不可、live Production execution hard-off
 
 ### Not implemented
 
@@ -69,7 +76,9 @@ Phase 6Bの開発・CIはofflineのproduction-like synthetic fixtureだけを使
 - Test Calendar APIの実接続とadd/update実行
 - Test Calendar single updateの実行
 - Production Calendar write
-- Production write credential、approval receipt、mutation transport、journal、post-write verification
+- Production OAuth、Production write token、real Production credential / client builder
+- live Production ARM / EXECUTE operational flow、real list/get/patch、real network behavior
+- automatic rollback、Production Add、Production Delete
 - Delete operation model・payload・transport method
 - `syncToken`、incremental state、automation
 
@@ -402,13 +411,13 @@ Test実行時もnetwork socketを無効化します。CIはLinux/Windowsそれ�
 
 ## Roadmap
 
-Phase 6Bまでに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport code foundation、Test-only planning、Accepted Production manifest、Production single-update Plan/Run Spec foundationを実装しました。以下は未実施または未承認です。
+Phase 6Cまでに、offline diff、trusted baseline、non-executable plan、fake-only apply safety simulation、Test Calendar write transport、Test-only planning、Accepted Production manifest、Production single-update Plan/Run Spec、mock-only approval state・list/get/patch transport・write-ahead journal / report foundationを実装しました。以下は未実施または未承認です。
 
-1. Production baseline candidateの別承認によるtrusted化
-2. 専用Test Calendarの別承認OAuth・API・1件add検証
-3. 専用Test Calendarの別承認1件update検証
-4. Production approval receipt、fresh online preflight、single mutation、post-write verification
-5. Production apply、delete、syncToken、automation
+1. 分離されたProduction write OAuth / token作成とread-only rehearsal
+2. real Production target / scope / token identity検証とGoogle client adapter
+3. 自然に発生した正当なDescription-only変更1件の明示承認live update
+4. Production Addの別Phase設計・security review・acceptance
+5. Production Delete、rollback、syncToken、batch、automationの独立review
 
 ## Provenanceとlicense
 

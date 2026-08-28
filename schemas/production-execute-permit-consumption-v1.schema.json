@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/production-execute-permit-consumption-v1.schema.json",
+  "title": "Production EXECUTE Permit Consumption State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "state_type", "state", "permit_hash", "approval_store_hash",
+    "target_safe_ref", "consumed_at", "content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "state_type": { "const": "production-execute-permit-consumption-v1" },
+    "state": { "const": "consumed" },
+    "permit_hash": { "$ref": "#/$defs/sha256" },
+    "approval_store_hash": { "$ref": "#/$defs/sha256" },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "consumed_at": { "type": "string", "format": "date-time" },
+    "content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "targetReference": { "type": "string", "pattern": "^T-[0-9a-f]{12}$" }
+  }
+}

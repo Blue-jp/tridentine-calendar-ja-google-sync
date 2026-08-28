@@ -48,6 +48,11 @@ test-single-update-run-specs/
 accepted-production-source-manifests/
 production-single-update-plans/
 production-single-update-run-specs/
+production-arm-receipts/
+production-execute-permits/
+production-kill-switches/
+production-execution-journals/
+production-execution-reports/
 snapshots/
 cache/
 reports/internal/
@@ -82,6 +87,12 @@ test-write-target*.toml
 *.production-single-update-run-spec.json
 *.production-single-update-run-spec-report.json
 *.production-single-update-run-spec-report.txt
+*.production-arm-receipt.json
+*.production-execute-permit.json
+*.production-kill-switch.json
+*.production-execution-journal.ndjson
+*.production-execution-report.json
+*.production-execution-report.txt
 production-write-target*.toml
 local-data/
 input/

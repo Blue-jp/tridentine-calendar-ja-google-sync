@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/production-execute-permit-v1.schema.json",
+  "title": "Production Single Update EXECUTE Permit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "permit_type", "production", "arm_receipt_hash",
+    "run_spec_hash", "target_safe_ref", "operation_count", "add_count",
+    "update_count", "delete_count", "changed_fields", "patch_hash", "approval_store_hash",
+    "arm_nonce", "execute_nonce", "kill_switch_generation",
+    "write_token_generation", "issued_at", "expires_at", "one_time",
+    "consumed", "content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "permit_type": { "const": "production-single-update-execute-permit-v1" },
+    "production": { "const": true },
+    "arm_receipt_hash": { "$ref": "#/$defs/sha256" },
+    "run_spec_hash": { "$ref": "#/$defs/sha256" },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "operation_count": { "const": 1 },
+    "add_count": { "const": 0 },
+    "update_count": { "const": 1 },
+    "delete_count": { "const": 0 },
+    "changed_fields": {
+      "type": "array", "prefixItems": [{ "const": "description" }],
+      "items": false, "minItems": 1, "maxItems": 1
+    },
+    "patch_hash": { "$ref": "#/$defs/sha256" },
+    "approval_store_hash": { "$ref": "#/$defs/sha256" },
+    "arm_nonce": { "$ref": "#/$defs/nonce" },
+    "execute_nonce": { "$ref": "#/$defs/nonce" },
+    "kill_switch_generation": { "type": "integer", "minimum": 0 },
+    "write_token_generation": { "type": "integer", "minimum": 1 },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "one_time": { "const": true },
+    "consumed": { "const": false },
+    "content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nonce": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "targetReference": { "type": "string", "pattern": "^T-[0-9a-f]{12}$" }
+  }
+}

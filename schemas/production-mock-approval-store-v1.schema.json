@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/production-mock-approval-store-v1.schema.json",
+  "title": "Phase 6C Mock-only Approval Store Attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "store_type", "mock_only", "live_capable",
+    "private_dacl_assured", "phase6d_private_dacl_review_required",
+    "directory_identity_hash", "store_safe_ref", "content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "store_type": { "const": "phase6c-mock-approval-store-v1" },
+    "mock_only": { "const": true },
+    "live_capable": { "const": false },
+    "private_dacl_assured": { "const": false },
+    "phase6d_private_dacl_review_required": { "const": true },
+    "directory_identity_hash": { "$ref": "#/$defs/sha256" },
+    "store_safe_ref": { "type": "string", "pattern": "^S-[0-9a-f]{12}$" },
+    "content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
