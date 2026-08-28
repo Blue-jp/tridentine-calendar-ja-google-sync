@@ -76,7 +76,7 @@ def test_cli_inventory_adds_only_five_explicit_offline_commands() -> None:
     subparsers = next(
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     )
-    assert len(subparsers.choices) == 29
+    assert len(subparsers.choices) == 31
     assert set(subparsers.choices) >= PHASE6B_COMMANDS
     assert not {
         "apply-production",

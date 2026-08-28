@@ -392,6 +392,26 @@ _PRODUCTION_SINGLE_UPDATE_RUN_SPEC_INSPECTION_HELP = (
     "credentials, and local paths are never displayed."
 )
 
+_PRODUCTION_WRITE_TOKEN_AUTHORIZATION_HELP = (
+    "Phase 6D.0 command shape only; live Production OAuth is hard-off.\n"
+    "A future operational invocation requires an exact case- and whitespace-sensitive "
+    "challenge: AUTHORIZE PRODUCTION WRITE TOKEN ONLY T-<12>.\n"
+    "The target reference must come from the Production target config; no target is "
+    "hard-coded.\n"
+    "This phase never reads the supplied credentials, opens a browser, obtains a token, "
+    "writes generation state, constructs Calendar, or calls any Calendar API."
+)
+
+_PRODUCTION_WRITE_TOKEN_REHEARSAL_HELP = (
+    "Phase 6D.0 command shape only; live Production rehearsal is hard-off.\n"
+    "A future operational invocation requires an exact case- and whitespace-sensitive "
+    "challenge: READ PRODUCTION CALENDAR USING DEDICATED WRITE TOKEN T-<12>.\n"
+    "The reviewed capability is list/get only; patch, Add, Delete, generic service "
+    "exposure, and Calendar mutation remain unavailable.\n"
+    "This phase never reads operational inputs, refreshes a token, constructs Calendar, "
+    "or calls any Calendar API."
+)
+
 
 class SafeArgumentParser(argparse.ArgumentParser):
     """Argument parser that raises a safe exception instead of exiting early."""
@@ -1175,6 +1195,61 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inspect_production_run_spec.add_argument("--output")
 
+    authorize_production_write_token = subparsers.add_parser(
+        "authorize-production-write-token",
+        help="review the live-disabled Production write-token authorization boundary",
+        description=_PRODUCTION_WRITE_TOKEN_AUTHORIZATION_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    authorize_production_write_token.add_argument("--credentials-file", required=True)
+    authorize_production_write_token.add_argument("--token-file", required=True)
+    authorize_production_write_token.add_argument(
+        "--production-read-token-file",
+        required=True,
+        help="explicit path used only for three-role path-separation validation",
+    )
+    authorize_production_write_token.add_argument(
+        "--test-write-token-file",
+        required=True,
+        help="explicit path used only for three-role path-separation validation",
+    )
+    authorize_production_write_token.add_argument(
+        "--token-generation-state",
+        required=True,
+    )
+    authorize_production_write_token.add_argument("--target-config", required=True)
+    authorize_production_write_token.add_argument("--confirmation", required=True)
+
+    rehearse_production_write_token = subparsers.add_parser(
+        "rehearse-production-write-token-readonly",
+        help="review the live-disabled list/get-only Production rehearsal boundary",
+        description=_PRODUCTION_WRITE_TOKEN_REHEARSAL_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    rehearse_production_write_token.add_argument("--target-config", required=True)
+    rehearse_production_write_token.add_argument("--token-file", required=True)
+    rehearse_production_write_token.add_argument(
+        "--production-read-token-file",
+        required=True,
+        help="explicit path used only for three-role path-separation validation",
+    )
+    rehearse_production_write_token.add_argument(
+        "--test-write-token-file",
+        required=True,
+        help="explicit path used only for three-role path-separation validation",
+    )
+    rehearse_production_write_token.add_argument(
+        "--token-generation-state",
+        required=True,
+    )
+    rehearse_production_write_token.add_argument("--manifest", required=True)
+    rehearse_production_write_token.add_argument("--source", required=True)
+    rehearse_production_write_token.add_argument("--profile", required=True)
+    rehearse_production_write_token.add_argument("--profiles-dir", required=True)
+    rehearse_production_write_token.add_argument("--trusted-baseline", required=True)
+    rehearse_production_write_token.add_argument("--output-directory", required=True)
+    rehearse_production_write_token.add_argument("--confirmation", required=True)
+
     run_test_write = subparsers.add_parser(
         "run-test-calendar-write",
         help="run one explicitly approved Test Calendar Add or Update",
@@ -1611,6 +1686,18 @@ def _inspect_production_single_update_run_spec_command(args: argparse.Namespace)
     else:
         sys.stdout.write(rendered)
     return EXIT_VALID
+
+
+def _authorize_production_write_token_command(args: argparse.Namespace) -> int:
+    del args
+    sys.stderr.write("error: production_live_oauth_not_available_in_phase_6d0\n")
+    return EXIT_FATAL_GUARD
+
+
+def _rehearse_production_write_token_readonly_command(args: argparse.Namespace) -> int:
+    del args
+    sys.stderr.write("error: production_live_rehearsal_not_available_in_phase_6d0\n")
+    return EXIT_FATAL_GUARD
 
 
 def _build_test_single_update_plan_command(args: argparse.Namespace) -> int:
@@ -2156,6 +2243,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _build_production_single_update_run_spec_command(args)
         if args.command == "inspect-production-single-update-run-spec":
             return _inspect_production_single_update_run_spec_command(args)
+        if args.command == "authorize-production-write-token":
+            return _authorize_production_write_token_command(args)
+        if args.command == "rehearse-production-write-token-readonly":
+            return _rehearse_production_write_token_readonly_command(args)
         if args.command == "build-test-single-update-plan":
             return _build_test_single_update_plan_command(args)
         if args.command == "inspect-test-single-update-plan":
