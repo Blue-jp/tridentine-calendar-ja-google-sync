@@ -14,6 +14,8 @@ from tridentine_calendar_google_sync.production_write_target import (
 from tridentine_calendar_google_sync.production_write_token_models import (
     PRODUCTION_WRITE_SCOPES,
     ProductionWriteAuthorizedUserToken,
+    ProductionWriteGrantedScopeEvidence,
+    ProductionWriteGrantEvidenceOrigin,
     ProductionWriteOAuthClientMaterial,
     ProductionWriteOAuthCredentials,
     ProductionWriteTokenGenerationState,
@@ -65,9 +67,21 @@ def oauth_credentials(
     expiry: datetime = ISSUED_AT + timedelta(hours=1),
     scopes: tuple[str, ...] = PRODUCTION_WRITE_SCOPES,
     granted_scopes: tuple[str, ...] = PRODUCTION_WRITE_SCOPES,
+    evidence_origin: ProductionWriteGrantEvidenceOrigin = (
+        ProductionWriteGrantEvidenceOrigin.TEST_FIXTURE_AUTHORIZATION_RESPONSE
+    ),
+    evidence_observed_at: datetime = ISSUED_AT,
+    scope_field_present: bool = True,
     access_token: str = FAKE_ACCESS_TOKEN,
     refresh_token: str = FAKE_REFRESH_TOKEN,
 ) -> ProductionWriteOAuthCredentials:
+    grant_evidence = ProductionWriteGrantedScopeEvidence.model_construct(
+        origin=evidence_origin,
+        response_scope_field_present=scope_field_present,
+        raw_scope_tokens=granted_scopes,
+        granted_scopes=granted_scopes,
+        observed_at=evidence_observed_at,
+    )
     return ProductionWriteOAuthCredentials.model_construct(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -75,7 +89,7 @@ def oauth_credentials(
         client_secret=FAKE_CLIENT_SECRET,
         token_uri="https://oauth2.googleapis.com/token",
         scopes=scopes,
-        granted_scopes=granted_scopes,
+        grant_evidence=grant_evidence,
         expiry=expiry,
     )
 
@@ -86,7 +100,14 @@ def production_token(
     expiry: datetime = ISSUED_AT + timedelta(hours=1),
     access_token: str = FAKE_ACCESS_TOKEN,
     refresh_token: str = FAKE_REFRESH_TOKEN,
+    grant_evidence: ProductionWriteGrantedScopeEvidence | None = None,
 ) -> ProductionWriteAuthorizedUserToken:
+    evidence = grant_evidence or ProductionWriteGrantedScopeEvidence(
+        origin=ProductionWriteGrantEvidenceOrigin.TEST_FIXTURE_AUTHORIZATION_RESPONSE,
+        raw_scope_tokens=PRODUCTION_WRITE_SCOPES,
+        granted_scopes=PRODUCTION_WRITE_SCOPES,
+        observed_at=ISSUED_AT,
+    )
     return ProductionWriteAuthorizedUserToken(
         target_safe_ref=state.target_safe_ref,
         target_config_hash=state.target_config_hash,
@@ -97,7 +118,7 @@ def production_token(
         client_secret=FAKE_CLIENT_SECRET,
         token_uri="https://oauth2.googleapis.com/token",
         scopes=PRODUCTION_WRITE_SCOPES,
-        granted_scopes=PRODUCTION_WRITE_SCOPES,
+        grant_evidence=evidence,
         expiry=expiry,
     )
 
