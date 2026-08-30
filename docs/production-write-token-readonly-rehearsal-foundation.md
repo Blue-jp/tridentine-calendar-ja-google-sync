@@ -24,6 +24,10 @@ https://www.googleapis.com/auth/calendar.events.owned
 
 Broader Calendar scopes, the read-only scope, profile, email, OpenID, Drive scopes, multiple scopes, and incremental scope expansion are rejected. Although this Google scope can authorize mutations, the rehearsal capability exposes only list and get. The authorization layer does not import or construct a Calendar API service.
 
+Requested scopes are policy input, not proof of the provider grant. A versioned `ProductionWriteGrantedScopeEvidence` record carries the explicitly present scope tokens, authorization-versus-refresh origin, and observation time. Missing, empty, duplicate, malformed, broader, read-only, unrelated, stale, or context-mismatched evidence fails closed. `credentials.scopes`, requested constants, and previously persisted `granted_scopes` are never fallback grant evidence.
+
+The operational authorization entry point accepts no caller-injected authorizer and remains live-disabled. The explicit mock entry point accepts only test-origin evidence, and tokens produced by it are rejected by the operational provider-evidence verifier. Provider-origin evidence can only be consumed by the future internally constructed live adapter; Phase 6D.1D does not add that adapter.
+
 ## Repository-external token and credential handling
 
 The credential input, token output, and nonsecret token-generation state are explicit, distinct, absolute repository-external paths. Relative or URL-like paths, repository or repository-parent paths, symlinks, overwrite, and path collisions are rejected. Credential content is read-only and is never copied or rewritten. Token writes are atomic, no-overwrite, fsynced where supported, and use private local permissions supported by the standard library.
@@ -34,7 +38,9 @@ Raw access tokens, refresh tokens, client secrets, full client IDs, Authorizatio
 
 `ProductionWriteTokenGenerationState` is an opaque nonsecret counter bound to the `production_write` role and target safe identity. First issuance is generation 1. Rotation must be exactly predecessor generation plus one and bind the predecessor state hash. The counter is independent of token content; no raw-token or token-file hash is an authority.
 
-An unexpired valid token performs no refresh. An expired token permits at most one standard refresh. After refresh, exact scope, role, target binding, and unchanged generation are revalidated. Refresh-token rotation within the same authorization identity does not increment the generation. Refresh failure never opens a browser, starts interactive OAuth, calls Calendar, deletes the old token, or overwrites it.
+An unexpired valid token performs no refresh. An expired token permits at most one standard refresh. After refresh, exact scope, fresh refresh-response evidence, role, target binding, and unchanged generation are revalidated. A future live adapter must construct a fresh Google credential object with no carried `granted_scopes` before calling the public refresh method; if the fresh response omits its scope field, the operation stops instead of reusing the old grant. Refresh-token rotation within the same authorization identity does not increment the generation. Refresh failure never opens a browser, starts interactive OAuth, calls Calendar, deletes the old token, or overwrites it.
+
+The private token schema is version 2 and requires the grant-evidence record. Version 1 or requested-scope-only tokens are not silently migrated; explicit re-authorization is required.
 
 ## Explicit authorization and read challenges
 

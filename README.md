@@ -70,7 +70,8 @@ AuthorizationとrehearsalのCLI surfaceはPhase 6D.0ではlive hard-offです。
 - raw API call hard max 10、no rollback、Production Add / Delete到達不可、live Production execution hard-off
 - `google-production-write`へ隔離した専用Production write-token authorization foundation
 - `production_read` / `test_write` / `production_write`の3-role分離、exact owned-events scope、opaque token-generation state
-- repository外no-overwrite token storageと、scope / role / generationを再検証するbounded refresh foundation
+- requested scopeとfresh provider-granted evidenceを分離し、missing / stale / test-origin evidenceをProduction operational acceptanceで拒否
+- repository外no-overwrite token storageと、provider evidence / scope / role / generationを再検証するbounded refresh foundation
 - Production write-token rehearsalのlist/get-only capability、full snapshot / Baseline cross-binding、Source zero-diff、one deterministic fresh get
 - Event ID / ETag memory-only、redacted rehearsal report、raw Calendar API call hard max 5、live patch hard-off
 

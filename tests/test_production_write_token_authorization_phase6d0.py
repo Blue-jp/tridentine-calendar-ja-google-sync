@@ -26,6 +26,7 @@ from tridentine_calendar_google_sync.production_write_token import (
     ProductionWriteTokenAuthorizationError,
     ProductionWriteTokenConfigError,
     authorize_production_write_token,
+    authorize_production_write_token_mock,
     production_write_token_authorization_challenge,
     validate_production_token_role,
     validate_production_write_scopes,
@@ -59,7 +60,7 @@ def _authorize(
     paths = artifact_paths(root)
     write_fake_client_config(paths["client"])
     target = production_target()
-    result = authorize_production_write_token(
+    result = authorize_production_write_token_mock(
         paths["client"],
         paths["write"],
         paths["generation"],
@@ -67,7 +68,7 @@ def _authorize(
         paths["test"],
         target,
         production_write_token_authorization_challenge(target),
-        authorizer=authorizer,
+        test_authorizer=authorizer,
         issued_at=ISSUED_AT,
     )
     return result, paths
@@ -122,7 +123,7 @@ def test_confirmation_mismatch_stops_before_oauth_and_file_writes(
     authorizer = FakeAuthorizer(oauth_credentials())
 
     with pytest.raises(ProductionWriteTokenAuthorizationError) as captured:
-        authorize_production_write_token(
+        authorize_production_write_token_mock(
             paths["client"],
             paths["write"],
             paths["generation"],
@@ -130,7 +131,7 @@ def test_confirmation_mismatch_stops_before_oauth_and_file_writes(
             paths["test"],
             target,
             confirmation_transform(production_write_token_authorization_challenge(target)),
-            authorizer=authorizer,
+            test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
     assert captured.value.code == "production_write_token_confirmation_mismatch"
@@ -154,7 +155,6 @@ def test_default_live_authorizer_is_hard_off_and_calendar_capability_is_absent(
             paths["test"],
             target,
             production_write_token_authorization_challenge(target),
-            authorizer=None,
             issued_at=ISSUED_AT,
         )
     assert captured.value.code == "production_live_oauth_disabled_in_phase_6d0"
@@ -181,7 +181,7 @@ def test_test_or_primary_target_is_rejected_before_oauth(
     target = production_target().model_copy(update=target_update)
     authorizer = FakeAuthorizer(oauth_credentials())
     with pytest.raises(ValueError) as captured:
-        authorize_production_write_token(
+        authorize_production_write_token_mock(
             paths["client"],
             paths["write"],
             paths["generation"],
@@ -189,7 +189,7 @@ def test_test_or_primary_target_is_rejected_before_oauth(
             paths["test"],
             target,
             "does-not-matter",
-            authorizer=authorizer,
+            test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
     assert getattr(captured.value, "code", None) == expected_code
@@ -197,30 +197,37 @@ def test_test_or_primary_target_is_rejected_before_oauth(
 
 
 @pytest.mark.parametrize(
-    ("scopes", "granted_scopes"),
+    ("scopes", "granted_scopes", "expected_code"),
     (
-        ((), PRODUCTION_WRITE_SCOPES),
+        ((), PRODUCTION_WRITE_SCOPES, "unsafe_production_write_scope"),
         (
             (PRODUCTION_WRITE_SCOPE, "https://www.googleapis.com/auth/calendar"),
             PRODUCTION_WRITE_SCOPES,
+            "unsafe_production_write_scope",
         ),
         (
             ("https://www.googleapis.com/auth/calendar.events.owned.readonly",),
             PRODUCTION_WRITE_SCOPES,
+            "unsafe_production_write_scope",
         ),
-        (PRODUCTION_WRITE_SCOPES, ()),
-        (PRODUCTION_WRITE_SCOPES, (PRODUCTION_WRITE_SCOPE, "openid")),
+        (PRODUCTION_WRITE_SCOPES, (), "unsafe_production_write_grant_evidence"),
+        (
+            PRODUCTION_WRITE_SCOPES,
+            (PRODUCTION_WRITE_SCOPE, "openid"),
+            "unsafe_production_write_grant_evidence",
+        ),
     ),
 )
 def test_missing_broad_extra_or_incremental_scope_is_rejected_before_write(
     tmp_path: Path,
     scopes: tuple[str, ...],
     granted_scopes: tuple[str, ...],
+    expected_code: str,
 ) -> None:
     authorizer = FakeAuthorizer(oauth_credentials(scopes=scopes, granted_scopes=granted_scopes))
     with pytest.raises(ProductionWriteTokenConfigError) as captured:
         _authorize(tmp_path, authorizer)
-    assert captured.value.code == "unsafe_production_write_scope"
+    assert captured.value.code == expected_code
     assert authorizer.calls == 1
     assert not (tmp_path / "production-write-token.json").exists()
     assert not (tmp_path / "production-write-generation.json").exists()
@@ -246,7 +253,7 @@ def test_repository_existing_same_and_symlink_paths_stop_before_oauth(tmp_path: 
     write_fake_client_config(paths["client"])
     authorizer = FakeAuthorizer(oauth_credentials())
     with pytest.raises(ProductionWriteTokenIOError):
-        authorize_production_write_token(
+        authorize_production_write_token_mock(
             paths["client"],
             REPOSITORY_ROOT / "never-write-token.json",
             paths["generation"],
@@ -254,14 +261,14 @@ def test_repository_existing_same_and_symlink_paths_stop_before_oauth(tmp_path: 
             paths["test"],
             target,
             challenge,
-            authorizer=authorizer,
+            test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
     assert authorizer.calls == 0
 
     paths["write"].write_text("existing", encoding="utf-8")
     with pytest.raises(ProductionWriteTokenIOError):
-        authorize_production_write_token(
+        authorize_production_write_token_mock(
             paths["client"],
             paths["write"],
             paths["generation"],
@@ -269,14 +276,14 @@ def test_repository_existing_same_and_symlink_paths_stop_before_oauth(tmp_path: 
             paths["test"],
             target,
             challenge,
-            authorizer=authorizer,
+            test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
     assert authorizer.calls == 0
 
     paths["write"].unlink()
     with pytest.raises(ProductionWriteTokenIOError):
-        authorize_production_write_token(
+        authorize_production_write_token_mock(
             paths["client"],
             paths["write"],
             paths["generation"],
@@ -284,7 +291,7 @@ def test_repository_existing_same_and_symlink_paths_stop_before_oauth(tmp_path: 
             paths["test"],
             target,
             challenge,
-            authorizer=authorizer,
+            test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
     assert authorizer.calls == 0
@@ -295,7 +302,7 @@ def test_repository_existing_same_and_symlink_paths_stop_before_oauth(tmp_path: 
     except OSError:
         pytest.skip("symlink creation unavailable")
     with pytest.raises(ProductionWriteTokenIOError):
-        authorize_production_write_token(
+        authorize_production_write_token_mock(
             paths["client"],
             symlink,
             paths["generation"],
@@ -303,7 +310,7 @@ def test_repository_existing_same_and_symlink_paths_stop_before_oauth(tmp_path: 
             paths["test"],
             target,
             challenge,
-            authorizer=authorizer,
+            test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
     assert authorizer.calls == 0
@@ -320,7 +327,7 @@ def test_client_credential_symlink_is_rejected_before_oauth(tmp_path: Path) -> N
     target = production_target()
     authorizer = FakeAuthorizer(oauth_credentials())
     with pytest.raises(ProductionWriteTokenIOError):
-        authorize_production_write_token(
+        authorize_production_write_token_mock(
             client_link,
             paths["write"],
             paths["generation"],
@@ -328,7 +335,7 @@ def test_client_credential_symlink_is_rejected_before_oauth(tmp_path: Path) -> N
             paths["test"],
             target,
             production_write_token_authorization_challenge(target),
-            authorizer=authorizer,
+            test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
     assert authorizer.calls == 0
@@ -367,7 +374,7 @@ def test_private_files_are_atomic_private_and_public_report_is_redacted(
 
     token_schema = json.loads(
         (
-            REPOSITORY_ROOT / "schemas/production-write-authorized-user-token-v1.schema.json"
+            REPOSITORY_ROOT / "schemas/production-write-authorized-user-token-v2.schema.json"
         ).read_text("utf-8")
     )
     generation_schema = json.loads(
@@ -419,7 +426,7 @@ def test_second_bundle_write_failure_removes_only_new_outputs(
         fail_second_write,
     )
     with pytest.raises(ProductionWriteTokenIOError) as captured:
-        authorize_production_write_token(
+        authorize_production_write_token_mock(
             paths["client"],
             paths["write"],
             paths["generation"],
@@ -427,7 +434,7 @@ def test_second_bundle_write_failure_removes_only_new_outputs(
             paths["test"],
             target,
             production_write_token_authorization_challenge(target),
-            authorizer=authorizer,
+            test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
     assert captured.value.code == "injected_second_write_failure"

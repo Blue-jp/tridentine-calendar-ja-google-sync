@@ -23,7 +23,9 @@ from tridentine_calendar_google_sync.production_write_token import (
     ProductionWriteTokenConfigError,
     ProductionWriteTokenRefreshError,
     build_initial_production_write_token_generation_state,
-    prepare_production_write_rehearsal_credential_session,
+)
+from tridentine_calendar_google_sync.production_write_token import (
+    prepare_production_write_rehearsal_credential_session_mock as prepare_mock_session,
 )
 from tridentine_calendar_google_sync.production_write_token_io import (
     ProductionWriteTokenIOError,
@@ -35,6 +37,7 @@ from tridentine_calendar_google_sync.production_write_token_models import (
     PRODUCTION_WRITE_SCOPE,
     PRODUCTION_WRITE_SCOPES,
     ProductionWriteAuthorizedUserToken,
+    ProductionWriteGrantEvidenceOrigin,
     ProductionWriteOAuthAuthorizer,
     ProductionWriteTokenGenerationState,
     ProductionWriteTokenRefresher,
@@ -71,7 +74,7 @@ def test_unexpired_exact_token_uses_no_refresh_or_browser(tmp_path: Path) -> Non
         tmp_path,
         expiry=ISSUED_AT + timedelta(hours=1),
     )
-    session = prepare_production_write_rehearsal_credential_session(
+    session = prepare_mock_session(
         paths["write"],
         paths["generation"],
         paths["read"],
@@ -96,12 +99,14 @@ def test_expired_token_refreshes_exactly_once_without_generation_change(tmp_path
     refresher = FakeRefresher(
         oauth_credentials(
             expiry=now + timedelta(hours=1),
+            evidence_origin=(ProductionWriteGrantEvidenceOrigin.TEST_FIXTURE_REFRESH_RESPONSE),
+            evidence_observed_at=now,
             access_token="phase6d0-refreshed-access-token-never-live",
             refresh_token="phase6d0-rotated-refresh-token-never-live",
         )
     )
     generation_before = paths["generation"].read_bytes()
-    session = prepare_production_write_rehearsal_credential_session(
+    session = prepare_mock_session(
         paths["write"],
         paths["generation"],
         paths["read"],
@@ -133,7 +138,7 @@ def test_refresh_failure_has_no_browser_api_delete_or_overwrite(tmp_path: Path) 
     generation_before = paths["generation"].read_bytes()
     refresher = FakeRefresher(None, fail=True)
     with pytest.raises(ProductionWriteTokenRefreshError) as captured:
-        prepare_production_write_rehearsal_credential_session(
+        prepare_mock_session(
             paths["write"],
             paths["generation"],
             paths["read"],
@@ -158,7 +163,7 @@ def test_expired_token_without_explicit_refresher_never_starts_authorization(
         expiry=ISSUED_AT + timedelta(seconds=1),
     )
     with pytest.raises(ProductionWriteTokenRefreshError) as captured:
-        prepare_production_write_rehearsal_credential_session(
+        prepare_mock_session(
             paths["write"],
             paths["generation"],
             paths["read"],
@@ -176,7 +181,7 @@ def test_rehearsal_confirmation_mismatch_precedes_token_load_and_refresh(tmp_pat
     target = production_target()
     refresher = FakeRefresher(oauth_credentials(expiry=ISSUED_AT + timedelta(hours=1)))
     with pytest.raises(ProductionWriteTokenRehearsalError) as captured:
-        prepare_production_write_rehearsal_credential_session(
+        prepare_mock_session(
             paths["write"],
             paths["generation"],
             paths["read"],
@@ -191,18 +196,27 @@ def test_rehearsal_confirmation_mismatch_precedes_token_load_and_refresh(tmp_pat
 
 
 @pytest.mark.parametrize(
-    ("scopes", "granted_scopes"),
+    ("scopes", "granted_scopes", "expected_code"),
     (
-        ((), PRODUCTION_WRITE_SCOPES),
-        (PRODUCTION_WRITE_SCOPES, ()),
-        ((PRODUCTION_WRITE_SCOPE, "openid"), PRODUCTION_WRITE_SCOPES),
-        (PRODUCTION_WRITE_SCOPES, (PRODUCTION_WRITE_SCOPE, "openid")),
+        ((), PRODUCTION_WRITE_SCOPES, "unsafe_production_write_scope"),
+        (PRODUCTION_WRITE_SCOPES, (), "unsafe_production_write_grant_evidence"),
+        (
+            (PRODUCTION_WRITE_SCOPE, "openid"),
+            PRODUCTION_WRITE_SCOPES,
+            "unsafe_production_write_scope",
+        ),
+        (
+            PRODUCTION_WRITE_SCOPES,
+            (PRODUCTION_WRITE_SCOPE, "openid"),
+            "unsafe_production_write_grant_evidence",
+        ),
     ),
 )
 def test_refresh_scope_expansion_or_loss_is_rejected_without_overwrite(
     tmp_path: Path,
     scopes: tuple[str, ...],
     granted_scopes: tuple[str, ...],
+    expected_code: str,
 ) -> None:
     target, _state, _token, paths = _stored_token(
         tmp_path,
@@ -215,10 +229,12 @@ def test_refresh_scope_expansion_or_loss_is_rejected_without_overwrite(
             expiry=now + timedelta(hours=1),
             scopes=scopes,
             granted_scopes=granted_scopes,
+            evidence_origin=(ProductionWriteGrantEvidenceOrigin.TEST_FIXTURE_REFRESH_RESPONSE),
+            evidence_observed_at=now,
         )
     )
     with pytest.raises(ProductionWriteTokenConfigError) as captured:
-        prepare_production_write_rehearsal_credential_session(
+        prepare_mock_session(
             paths["write"],
             paths["generation"],
             paths["read"],
@@ -228,7 +244,7 @@ def test_refresh_scope_expansion_or_loss_is_rejected_without_overwrite(
             now=now,
             refresher=refresher,
         )
-    assert captured.value.code == "unsafe_production_write_scope"
+    assert captured.value.code == expected_code
     assert refresher.calls == 1
     assert paths["write"].read_bytes() == token_before
 
@@ -246,7 +262,7 @@ def test_wrong_role_token_stops_before_refresh_and_api(tmp_path: Path) -> None:
     )
     refresher = FakeRefresher(oauth_credentials(expiry=ISSUED_AT + timedelta(hours=1)))
     with pytest.raises(ProductionWriteTokenIOError):
-        prepare_production_write_rehearsal_credential_session(
+        prepare_mock_session(
             paths["write"],
             paths["generation"],
             paths["read"],
@@ -268,7 +284,7 @@ def test_generation_mismatch_stops_before_refresh(tmp_path: Path) -> None:
     write_production_write_authorized_user_token(mismatched, paths["write"], overwrite=True)
     refresher = FakeRefresher(oauth_credentials(expiry=ISSUED_AT + timedelta(hours=1)))
     with pytest.raises(ProductionWriteTokenConfigError) as captured:
-        prepare_production_write_rehearsal_credential_session(
+        prepare_mock_session(
             paths["write"],
             paths["generation"],
             paths["read"],
