@@ -22,6 +22,8 @@ from tridentine_calendar_google_sync.production_write_token import (
 from tridentine_calendar_google_sync.production_write_token_models import (
     ProductionTokenRole,
     ProductionWriteAuthorizedUserToken,
+    ProductionWriteGrantedScopeEvidence,
+    ProductionWriteGrantEvidenceOrigin,
     ProductionWriteTokenGenerationState,
 )
 from tridentine_calendar_google_sync.sensitive_paths import (
@@ -130,7 +132,15 @@ def private_production_write_authorized_user_token_data(
         "client_secret": token.client_secret,
         "token_uri": token.token_uri,
         "scopes": list(token.scopes),
-        "granted_scopes": list(token.granted_scopes),
+        "grant_evidence": {
+            "schema_version": token.grant_evidence.schema_version,
+            "evidence_type": token.grant_evidence.evidence_type,
+            "origin": token.grant_evidence.origin.value,
+            "response_scope_field_present": (token.grant_evidence.response_scope_field_present),
+            "raw_scope_tokens": list(token.grant_evidence.raw_scope_tokens),
+            "granted_scopes": list(token.grant_evidence.granted_scopes),
+            "observed_at": token.grant_evidence.observed_at.isoformat(),
+        },
         "expiry": token.expiry.isoformat(),
     }
 
@@ -156,8 +166,18 @@ _TOKEN_FIELDS = {
     "client_secret",
     "token_uri",
     "scopes",
-    "granted_scopes",
+    "grant_evidence",
     "expiry",
+}
+
+_GRANT_EVIDENCE_FIELDS = {
+    "schema_version",
+    "evidence_type",
+    "origin",
+    "response_scope_field_present",
+    "raw_scope_tokens",
+    "granted_scopes",
+    "observed_at",
 }
 
 
@@ -169,11 +189,26 @@ def parse_production_write_authorized_user_token_bytes(
     data = _decode_json(raw_bytes, _TOKEN_FIELDS)
     try:
         scopes = data["scopes"]
-        granted_scopes = data["granted_scopes"]
-        if not isinstance(scopes, list) or not isinstance(granted_scopes, list):
+        evidence_data = data["grant_evidence"]
+        if not isinstance(scopes, list) or not isinstance(evidence_data, dict):
+            raise TypeError
+        if set(evidence_data) != _GRANT_EVIDENCE_FIELDS:
+            raise TypeError
+        raw_scope_tokens = evidence_data["raw_scope_tokens"]
+        granted_scopes = evidence_data["granted_scopes"]
+        if not isinstance(raw_scope_tokens, list) or not isinstance(granted_scopes, list):
             raise TypeError
         if ProductionTokenRole(data["role"]) is not ProductionTokenRole.PRODUCTION_WRITE:
             raise ValueError
+        grant_evidence = ProductionWriteGrantedScopeEvidence(
+            schema_version=evidence_data["schema_version"],
+            evidence_type=evidence_data["evidence_type"],
+            origin=ProductionWriteGrantEvidenceOrigin(evidence_data["origin"]),
+            response_scope_field_present=evidence_data["response_scope_field_present"],
+            raw_scope_tokens=tuple(raw_scope_tokens),
+            granted_scopes=tuple(granted_scopes),
+            observed_at=datetime.fromisoformat(evidence_data["observed_at"]),
+        )
         token = ProductionWriteAuthorizedUserToken(
             schema_version=data["schema_version"],
             token_type=data["token_type"],
@@ -187,7 +222,7 @@ def parse_production_write_authorized_user_token_bytes(
             client_secret=data["client_secret"],
             token_uri=data["token_uri"],
             scopes=tuple(scopes),
-            granted_scopes=tuple(granted_scopes),
+            grant_evidence=grant_evidence,
             expiry=datetime.fromisoformat(data["expiry"]),
         )
         _require_canonical(raw_bytes, render_production_write_authorized_user_token_json(token))

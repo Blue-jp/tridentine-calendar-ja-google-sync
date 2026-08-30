@@ -16,6 +16,7 @@ from tridentine_calendar_google_sync.production_write_token import (
 from tridentine_calendar_google_sync.production_write_token_models import (
     PRODUCTION_WRITE_SCOPES,
     ProductionTokenRole,
+    ProductionWriteGrantEvidenceOrigin,
     ProductionWriteTokenAuthorizationResult,
     ProductionWriteTokenGenerationState,
 )
@@ -93,6 +94,8 @@ def build_production_write_token_authorization_report(
         token.role is ProductionTokenRole.PRODUCTION_WRITE
         and token.scopes == PRODUCTION_WRITE_SCOPES
         and token.granted_scopes == PRODUCTION_WRITE_SCOPES
+        and token.grant_evidence.origin
+        is ProductionWriteGrantEvidenceOrigin.TEST_FIXTURE_AUTHORIZATION_RESPONSE
         and hmac.compare_digest(token.target_safe_ref, state.target_safe_ref)
         and hmac.compare_digest(token.target_config_hash, state.target_config_hash)
     ):

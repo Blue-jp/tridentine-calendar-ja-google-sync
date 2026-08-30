@@ -30,9 +30,9 @@ from tridentine_calendar_google_sync.production_write_target import (
 )
 from tridentine_calendar_google_sync.production_write_token import (
     ProductionWriteTokenRefreshError,
+    _verify_mock_production_write_authorized_user_token,
     validate_production_token_role,
     validate_production_write_scopes,
-    verify_production_write_authorized_user_token,
     verify_production_write_token_generation_state,
 )
 from tridentine_calendar_google_sync.production_write_token_models import (
@@ -177,7 +177,7 @@ def _safe_public_token_role(
     return "invalid"
 
 
-def _session_context(
+def _mock_session_context(
     session: ProductionWriteCredentialSession,
     target: ProductionWriteTargetConfig,
 ) -> _Context:
@@ -197,7 +197,9 @@ def _session_context(
         token_role=role,
         token_generation=generation,
         scope_count=len(scopes),
-        scope_exact=scopes == PRODUCTION_WRITE_SCOPES,
+        scope_exact=(
+            session.token.scopes == PRODUCTION_WRITE_SCOPES and scopes == PRODUCTION_WRITE_SCOPES
+        ),
         refresh_count=refresh_count,
     )
     try:
@@ -208,7 +210,7 @@ def _session_context(
             session.generation_state,
             target=target,
         )
-        verify_production_write_authorized_user_token(
+        _verify_mock_production_write_authorized_user_token(
             session.token,
             session.generation_state,
             target,
@@ -624,7 +626,7 @@ def _run_production_write_token_readonly_rehearsal_with_session_mock(
     )
     try:
         verify_production_write_token_rehearsal_confirmation(target, confirmation)
-        context = _session_context(credential_session, target)
+        context = _mock_session_context(credential_session, target)
         context.rehearsal_client_construction_count = rehearsal_client_construction_count
         require_phase6d0_rehearsal_transport(transport)
         _verify_manifest_source(manifest, accepted_profile, accepted_source)
@@ -771,7 +773,7 @@ def run_production_write_token_readonly_rehearsal_mock(
         code = getattr(exc, "code", "production_rehearsal_token_session_failed")
         return _finish(context, state=_state_for_error(code), safe_code=code)
     try:
-        validated_context = _session_context(session, target)
+        validated_context = _mock_session_context(session, target)
         transport = transport_provider.build_transport(session=session, target=target)
         validated_context.rehearsal_client_construction_count = 1
     except Exception as exc:

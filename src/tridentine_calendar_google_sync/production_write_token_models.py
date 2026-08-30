@@ -27,6 +27,40 @@ class ProductionTokenRole(StrEnum):
     PRODUCTION_WRITE = "production_write"
 
 
+class ProductionWriteGrantEvidenceOrigin(StrEnum):
+    """Closed origin set for fresh provider or explicit test evidence."""
+
+    FRESH_AUTHORIZATION_RESPONSE = "fresh_authorization_response"
+    FRESH_REFRESH_RESPONSE = "fresh_refresh_response"
+    TEST_FIXTURE_AUTHORIZATION_RESPONSE = "test_fixture_authorization_response"
+    TEST_FIXTURE_REFRESH_RESPONSE = "test_fixture_refresh_response"
+
+
+class ProductionWriteGrantedScopeEvidence(StrictFrozenModel):
+    """Fresh, context-bound evidence for the provider-returned scope field."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    evidence_type: Literal["production-write-granted-scope-evidence-v1"] = (
+        "production-write-granted-scope-evidence-v1"
+    )
+    origin: ProductionWriteGrantEvidenceOrigin
+    response_scope_field_present: Literal[True] = True
+    raw_scope_tokens: tuple[str, ...] = Field(repr=False, exclude=True)
+    granted_scopes: tuple[str, ...] = Field(repr=False, exclude=True)
+    observed_at: datetime
+
+    @model_validator(mode="after")
+    def exact_fresh_scope_evidence(self) -> ProductionWriteGrantedScopeEvidence:
+        if (
+            self.raw_scope_tokens != PRODUCTION_WRITE_SCOPES
+            or self.granted_scopes != PRODUCTION_WRITE_SCOPES
+            or self.raw_scope_tokens != self.granted_scopes
+            or not _is_utc(self.observed_at)
+        ):
+            raise ValueError("Production write granted-scope evidence violates policy")
+        return self
+
+
 class ProductionWriteOAuthClientMaterial(StrictFrozenModel):
     """Secret desktop-client material passed only to an injected OAuth adapter."""
 
@@ -52,14 +86,20 @@ class ProductionWriteOAuthCredentials(StrictFrozenModel):
     client_secret: str = Field(min_length=1, repr=False, exclude=True)
     token_uri: Literal["https://oauth2.googleapis.com/token"]
     scopes: tuple[str, ...] = Field(repr=False, exclude=True)
-    granted_scopes: tuple[str, ...] = Field(repr=False, exclude=True)
+    grant_evidence: ProductionWriteGrantedScopeEvidence = Field(repr=False, exclude=True)
     expiry: datetime = Field(repr=False, exclude=True)
+
+    @property
+    def granted_scopes(self) -> tuple[str, ...]:
+        """Return only scopes carried by validated grant evidence."""
+
+        return self.grant_evidence.granted_scopes
 
     @model_validator(mode="after")
     def exact_scope_and_expiry_metadata(self) -> ProductionWriteOAuthCredentials:
         if (
             self.scopes != PRODUCTION_WRITE_SCOPES
-            or self.granted_scopes != PRODUCTION_WRITE_SCOPES
+            or self.grant_evidence.granted_scopes != PRODUCTION_WRITE_SCOPES
             or not _is_utc(self.expiry)
         ):
             raise ValueError("Production write OAuth credentials violate policy")
@@ -69,9 +109,9 @@ class ProductionWriteOAuthCredentials(StrictFrozenModel):
 class ProductionWriteAuthorizedUserToken(StrictFrozenModel):
     """Private repository-external token artifact with exact role and target binding."""
 
-    schema_version: Literal["1.0"] = "1.0"
-    token_type: Literal["production-write-authorized-user-token-v1"] = (
-        "production-write-authorized-user-token-v1"
+    schema_version: Literal["2.0"] = "2.0"
+    token_type: Literal["production-write-authorized-user-token-v2"] = (
+        "production-write-authorized-user-token-v2"
     )
     role: Literal[ProductionTokenRole.PRODUCTION_WRITE] = ProductionTokenRole.PRODUCTION_WRITE
     target_safe_ref: str = Field(pattern=r"^T-[0-9a-f]{12}$")
@@ -83,15 +123,21 @@ class ProductionWriteAuthorizedUserToken(StrictFrozenModel):
     client_secret: str = Field(min_length=1, repr=False, exclude=True)
     token_uri: Literal["https://oauth2.googleapis.com/token"]
     scopes: tuple[str, ...] = Field(repr=False, exclude=True)
-    granted_scopes: tuple[str, ...] = Field(repr=False, exclude=True)
+    grant_evidence: ProductionWriteGrantedScopeEvidence = Field(repr=False, exclude=True)
     expiry: datetime = Field(repr=False, exclude=True)
+
+    @property
+    def granted_scopes(self) -> tuple[str, ...]:
+        """Return only scopes carried by persisted grant evidence."""
+
+        return self.grant_evidence.granted_scopes
 
     @model_validator(mode="after")
     def exact_production_write_contract(self) -> ProductionWriteAuthorizedUserToken:
         if (
             self.role is not ProductionTokenRole.PRODUCTION_WRITE
             or self.scopes != PRODUCTION_WRITE_SCOPES
-            or self.granted_scopes != PRODUCTION_WRITE_SCOPES
+            or self.grant_evidence.granted_scopes != PRODUCTION_WRITE_SCOPES
             or not _is_utc(self.expiry)
         ):
             raise ValueError("Production write token violates role or scope policy")
@@ -188,6 +234,8 @@ __all__ = [
     "ProductionTokenRole",
     "ProductionWriteAuthorizedUserToken",
     "ProductionWriteCredentialSession",
+    "ProductionWriteGrantEvidenceOrigin",
+    "ProductionWriteGrantedScopeEvidence",
     "ProductionWriteOAuthAuthorizer",
     "ProductionWriteOAuthClientMaterial",
     "ProductionWriteOAuthCredentials",
