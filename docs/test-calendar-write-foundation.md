@@ -57,7 +57,7 @@ The Plan is not executable. A later patch still requires the exact Test-only app
 
 ## Narrow Google adapter
 
-The adapter surface is limited to `events.list`, `events.get`, `events.import`, and `events.patch`. A generic Google service is not exposed to application code. There is no insert, full update, delete, move, watch, clear, ACL, CalendarList, Calendars, or batch method.
+The adapter surface is limited to `events.list`, `events.get`, `events.import`, and `events.patch`. Construction requires the fully validated Test target config, stores that target privately, and every operation uses only its Calendar identity; operation methods accept no per-call Calendar ID. The runner verifies that the approved Run Spec target matches the client binding before the first API call and again immediately before mutation. A generic Google service is not exposed to application code. There is no insert, full update, delete, move, watch, clear, ACL, CalendarList, Calendars, or batch method.
 
 Add uses `events.import` so the source UID remains the Google `iCalUID`. The payload allowlist is `iCalUID`, `summary`, `description`, all-day `start.date`, exclusive `end.date`, and `eventType=default`. A fresh list preflight must find no matching `iCalUID`; the imported event is then read back with `events.get` and compared exactly.
 

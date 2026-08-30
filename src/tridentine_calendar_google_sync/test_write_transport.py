@@ -370,7 +370,6 @@ def _fresh_snapshot(
 
         def list_page(token: str | None = page_token) -> Mapping[str, object]:
             return client.list_events(
-                calendar_id=target.calendar_id,
                 page_token=token,
                 ical_uid=None,
             )
@@ -555,7 +554,6 @@ def _list_uid_matches(
 
         def list_page(token: str | None = page_token) -> Mapping[str, object]:
             return client.list_events(
-                calendar_id=target.calendar_id,
                 page_token=token,
                 ical_uid=uid,
             )
@@ -599,7 +597,7 @@ def _get_event(
     jitter: Callable[[float], float],
 ) -> Mapping[str, object]:
     return _read_with_retry(
-        lambda: client.get_event(calendar_id=target.calendar_id, event_id=event_id),
+        lambda: client.get_event(event_id=event_id),
         operation="events.get",
         counters=counters,
         policy=policy,
@@ -818,6 +816,7 @@ def run_test_calendar_write(
         single_update_plan=single_update_plan,
         trusted_baseline=trusted_baseline,
     )
+    client.verify_bound_target(target)
 
     policy = read_policy or RetryPolicy()
     counters = _Counters()
@@ -898,10 +897,10 @@ def run_test_calendar_write(
     mutation_error: SafeGoogleError | None = None
     response: Mapping[str, object] | None = None
     try:
+        client.verify_bound_target(target)
         counters.consume_mutation()
         if run_spec.operation.operation is TestWriteOperationKind.ADD:
             response = client.import_event(
-                calendar_id=target.calendar_id,
                 body=_import_body(desired),
             )
         else:
@@ -915,7 +914,6 @@ def run_test_calendar_write(
                     "Test write update identity is incomplete",
                 )
             response = client.patch_event(
-                calendar_id=target.calendar_id,
                 event_id=event_id,
                 body=_patch_body(run_spec),
                 etag=etag,

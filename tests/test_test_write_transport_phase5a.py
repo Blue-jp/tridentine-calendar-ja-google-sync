@@ -10,6 +10,9 @@ from phase5a_helpers import SYNTHETIC_ETAG, SYNTHETIC_EVENT_ID, make_test_target
 
 from tridentine_calendar_google_sync.apply_policy import PRODUCTION_TARGET_REFERENCE
 from tridentine_calendar_google_sync.google_errors import SafeGoogleError
+from tridentine_calendar_google_sync.google_test_write_client import (
+    TestWriteClientError as ClientError,
+)
 from tridentine_calendar_google_sync.test_write_approval import (
     test_write_approval_challenge as approval_challenge,
 )
@@ -73,6 +76,18 @@ class _Client:
     import_queue: list[object] = field(default_factory=list)
     patch_queue: list[object] = field(default_factory=list)
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
+    bound_calendar_id: str | None = None
+
+    def verify_bound_target(self, target_config: object) -> None:
+        calendar_id = getattr(target_config, "calendar_id", None)
+        if self.bound_calendar_id is None:
+            self.bound_calendar_id = calendar_id
+            return
+        if self.bound_calendar_id != calendar_id:
+            raise ClientError(
+                "test_write_target_binding_mismatch",
+                "Test write client target binding did not match",
+            )
 
     def _take(
         self,
@@ -92,33 +107,28 @@ class _Client:
     def list_events(
         self,
         *,
-        calendar_id: str,
         page_token: str | None,
         ical_uid: str | None = None,
     ) -> Mapping[str, object]:
         return self._take(
             "list",
             self.list_queue,
-            {"calendar_id": calendar_id, "page_token": page_token, "ical_uid": ical_uid},
+            {"page_token": page_token, "ical_uid": ical_uid},
         )
 
-    def get_event(self, *, calendar_id: str, event_id: str) -> Mapping[str, object]:
-        return self._take("get", self.get_queue, {"calendar_id": calendar_id, "event_id": event_id})
+    def get_event(self, *, event_id: str) -> Mapping[str, object]:
+        return self._take("get", self.get_queue, {"event_id": event_id})
 
     def import_event(
         self,
         *,
-        calendar_id: str,
         body: Mapping[str, object],
     ) -> Mapping[str, object]:
-        return self._take(
-            "import", self.import_queue, {"calendar_id": calendar_id, "body": dict(body)}
-        )
+        return self._take("import", self.import_queue, {"body": dict(body)})
 
     def patch_event(
         self,
         *,
-        calendar_id: str,
         event_id: str,
         body: Mapping[str, object],
         etag: str,
@@ -127,7 +137,6 @@ class _Client:
             "patch",
             self.patch_queue,
             {
-                "calendar_id": calendar_id,
                 "event_id": event_id,
                 "body": dict(body),
                 "etag": etag,
@@ -212,6 +221,8 @@ def _prepare(
 
 
 def _run(spec: Any, target: Any, client: _Client, challenge: str) -> Any:
+    if client.bound_calendar_id is None:
+        client.bound_calendar_id = target.calendar_id
     return run_test_calendar_write(
         spec,
         target,
@@ -638,6 +649,23 @@ def test_production_or_mismatched_target_is_rejected_before_client_touch(
     with pytest.raises(TransportError) as captured:
         _run(spec, target, client, challenge)
     assert captured.value.code == "production_or_mismatched_test_write_target"
+    assert client.calls == []
+
+
+def test_client_target_binding_mismatch_is_rejected_before_first_api(
+    tmp_path: Any,
+    synthetic_profile_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec, _bundle, target, challenge = _prepare(
+        tmp_path, synthetic_profile_factory, monkeypatch, update=False
+    )
+    client = _Client(bound_calendar_id="other-owned-target@example.invalid")
+
+    with pytest.raises(ClientError) as captured:
+        _run(spec, target, client, challenge)
+
+    assert captured.value.code == "test_write_target_binding_mismatch"
     assert client.calls == []
 
 

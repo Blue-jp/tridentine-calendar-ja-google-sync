@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Mapping
 from datetime import date as Date
 from typing import Any, Protocol, cast
@@ -41,10 +42,12 @@ class TestWriteClientError(ValueError):
 class TestCalendarWriteClient(Protocol):
     """The complete Phase 5A Google method allowlist."""
 
+    def verify_bound_target(self, target_config: TestWriteTargetConfig) -> None:
+        """Fail before API access unless the approved target matches this capability."""
+
     def list_events(
         self,
         *,
-        calendar_id: str,
         page_token: str | None,
         ical_uid: str | None = None,
     ) -> Mapping[str, object]:
@@ -53,7 +56,6 @@ class TestCalendarWriteClient(Protocol):
     def get_event(
         self,
         *,
-        calendar_id: str,
         event_id: str,
     ) -> Mapping[str, object]:
         """Execute one Test-only events.get request."""
@@ -61,7 +63,6 @@ class TestCalendarWriteClient(Protocol):
     def import_event(
         self,
         *,
-        calendar_id: str,
         body: Mapping[str, object],
     ) -> Mapping[str, object]:
         """Execute one Test-only events.import mutation."""
@@ -69,7 +70,6 @@ class TestCalendarWriteClient(Protocol):
     def patch_event(
         self,
         *,
-        calendar_id: str,
         event_id: str,
         body: Mapping[str, object],
         etag: str,
@@ -87,14 +87,6 @@ def _validated_mapping(response: object, *, operation: str) -> Mapping[str, obje
             operation=operation,
         )
     return cast(Mapping[str, object], response)
-
-
-def _validate_calendar_id(calendar_id: str) -> None:
-    if not calendar_id or calendar_id.casefold() == "primary":
-        raise TestWriteClientError(
-            "invalid_test_calendar_id",
-            "Test Calendar identity is invalid",
-        )
 
 
 def _validated_all_day_boundary(value: object, *, name: str) -> Date:
@@ -185,26 +177,58 @@ def validate_patch_body(body: Mapping[str, object]) -> None:
 class GoogleTestCalendarWriteClient:
     """Adapter exposing only list, get, import, and patch operations."""
 
-    __slots__ = ("_service",)
+    __slots__ = ("__service", "__target_config")
 
-    def __init__(self, service: object) -> None:
-        self._service = service
+    def __init__(self, service: object, *, target_config: TestWriteTargetConfig) -> None:
+        validate_test_write_target_config(target_config)
+        self.__service = service
+        self.__target_config = target_config.model_copy(deep=True)
 
     def __repr__(self) -> str:
         return "GoogleTestCalendarWriteClient(test_only=True, production_locked=True)"
 
+    def verify_bound_target(self, target_config: TestWriteTargetConfig) -> None:
+        validate_test_write_target_config(target_config)
+        bound = self.__target_config
+        if not (
+            hmac.compare_digest(
+                target_config.calendar_id.encode("utf-8", errors="strict"),
+                bound.calendar_id.encode("utf-8", errors="strict"),
+            )
+            and hmac.compare_digest(
+                target_config.expected_target_fingerprint,
+                bound.expected_target_fingerprint,
+            )
+            and hmac.compare_digest(
+                target_config.expected_summary.encode("utf-8", errors="strict"),
+                bound.expected_summary.encode("utf-8", errors="strict"),
+            )
+            and target_config.target_environment == bound.target_environment
+            and target_config.target_label == bound.target_label
+            and target_config.target_purpose == bound.target_purpose
+            and target_config.expected_access_role == bound.expected_access_role
+            and target_config.expected_time_zone == bound.expected_time_zone
+        ):
+            raise TestWriteClientError(
+                "test_write_target_binding_mismatch",
+                "Test write client target binding did not match",
+            )
+
+    def __validated_bound_calendar_id(self) -> str:
+        validate_test_write_target_config(self.__target_config)
+        return self.__target_config.calendar_id
+
     def list_events(
         self,
         *,
-        calendar_id: str,
         page_token: str | None,
         ical_uid: str | None = None,
     ) -> Mapping[str, object]:
-        _validate_calendar_id(calendar_id)
+        calendar_id = self.__validated_bound_calendar_id()
         if ical_uid == "":
             raise TestWriteClientError("invalid_ical_uid", "iCalendar identity is invalid")
         try:
-            service = cast(Any, self._service)
+            service = cast(Any, self.__service)
             parameters: dict[str, object] = {
                 "calendarId": calendar_id,
                 "maxResults": TEST_WRITE_MAX_RESULTS,
@@ -230,14 +254,13 @@ class GoogleTestCalendarWriteClient:
     def get_event(
         self,
         *,
-        calendar_id: str,
         event_id: str,
     ) -> Mapping[str, object]:
-        _validate_calendar_id(calendar_id)
+        calendar_id = self.__validated_bound_calendar_id()
         if not event_id:
             raise TestWriteClientError("invalid_event_identity", "Google event identity is invalid")
         try:
-            service = cast(Any, self._service)
+            service = cast(Any, self.__service)
             response = (
                 service.events()
                 .get(
@@ -260,13 +283,12 @@ class GoogleTestCalendarWriteClient:
     def import_event(
         self,
         *,
-        calendar_id: str,
         body: Mapping[str, object],
     ) -> Mapping[str, object]:
-        _validate_calendar_id(calendar_id)
+        calendar_id = self.__validated_bound_calendar_id()
         validate_import_body(body)
         try:
-            service = cast(Any, self._service)
+            service = cast(Any, self.__service)
             response = (
                 service.events()
                 .import_(
@@ -289,12 +311,11 @@ class GoogleTestCalendarWriteClient:
     def patch_event(
         self,
         *,
-        calendar_id: str,
         event_id: str,
         body: Mapping[str, object],
         etag: str,
     ) -> Mapping[str, object]:
-        _validate_calendar_id(calendar_id)
+        calendar_id = self.__validated_bound_calendar_id()
         if not event_id:
             raise TestWriteClientError("invalid_event_identity", "Google event identity is invalid")
         if not etag or etag == "*" or "\r" in etag or "\n" in etag:
@@ -304,7 +325,7 @@ class GoogleTestCalendarWriteClient:
             )
         validate_patch_body(body)
         try:
-            service = cast(Any, self._service)
+            service = cast(Any, self.__service)
             request = service.events().patch(
                 calendarId=calendar_id,
                 eventId=event_id,
@@ -353,7 +374,7 @@ def build_test_calendar_write_client(
             credentials=credentials,
             cache_discovery=False,
         )
-        return GoogleTestCalendarWriteClient(service)
+        return GoogleTestCalendarWriteClient(service, target_config=target_config)
     except Exception as exc:
         raise safe_google_error_from_exception(
             exc,
