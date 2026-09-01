@@ -20,6 +20,7 @@ from tridentine_calendar_google_sync.google_auth import (
     validate_readonly_scopes,
 )
 from tridentine_calendar_google_sync.google_optional import GoogleOptionalBindings
+from tridentine_calendar_google_sync.sensitive_paths import atomic_write_private_text
 
 pytestmark = pytest.mark.google_read
 
@@ -47,6 +48,12 @@ def _token_document(scopes: list[str] | None = None) -> dict[str, object]:
         "client_secret": "fixture-client-secret",
         "scopes": scopes if scopes is not None else list(READ_ONLY_GOOGLE_SCOPES),
     }
+
+
+def _write_private_json(path: Path, document: dict[str, object]) -> None:
+    """Create a synthetic secret fixture using the runtime private writer."""
+
+    atomic_write_private_text(path, json.dumps(document))
 
 
 class FakeRequest:
@@ -153,7 +160,7 @@ def test_missing_write_broad_duplicate_or_extra_scope_is_rejected(
 
 def test_desktop_client_config_requires_installed_loopback_shape(tmp_path: Path) -> None:
     path = tmp_path / "client.json"
-    path.write_text(json.dumps(_desktop_client_document()), encoding="utf-8")
+    _write_private_json(path, _desktop_client_document())
 
     config = load_desktop_client_config(path)
 
@@ -165,11 +172,11 @@ def test_desktop_client_config_requires_installed_loopback_shape(tmp_path: Path)
 
 def test_web_client_and_nonloopback_redirect_are_rejected(tmp_path: Path) -> None:
     web_path = tmp_path / "web.json"
-    web_path.write_text(json.dumps({"web": _desktop_client_document()["installed"]}))
+    _write_private_json(web_path, {"web": _desktop_client_document()["installed"]})
     redirect_path = tmp_path / "redirect.json"
     document = _desktop_client_document()
     document["installed"]["redirect_uris"] = ["http://localhost", "urn:fixture"]  # type: ignore[index]
-    redirect_path.write_text(json.dumps(document), encoding="utf-8")
+    _write_private_json(redirect_path, document)
 
     for path in (web_path, redirect_path):
         with pytest.raises(GoogleAuthConfigError) as caught:
@@ -179,7 +186,7 @@ def test_web_client_and_nonloopback_redirect_are_rejected(tmp_path: Path) -> Non
 
 def test_authorized_user_token_requires_exact_scope_and_redacts_values(tmp_path: Path) -> None:
     path = tmp_path / "token.json"
-    path.write_text(json.dumps(_token_document()), encoding="utf-8")
+    _write_private_json(path, _token_document())
 
     token = load_authorized_user_token(path)
 
@@ -196,9 +203,9 @@ def test_authorized_user_token_requires_exact_scope_and_redacts_values(tmp_path:
 
 def test_authorized_user_write_scope_is_rejected_without_echo(tmp_path: Path) -> None:
     path = tmp_path / "token.json"
-    path.write_text(
-        json.dumps(_token_document(["https://www.googleapis.com/auth/calendar.events"])),
-        encoding="utf-8",
+    _write_private_json(
+        path,
+        _token_document(["https://www.googleapis.com/auth/calendar.events"]),
     )
 
     with pytest.raises(GoogleAuthConfigError) as caught:
@@ -210,7 +217,7 @@ def test_authorized_user_write_scope_is_rejected_without_echo(tmp_path: Path) ->
 
 def test_valid_existing_token_constructs_credentials_without_flow(tmp_path: Path) -> None:
     path = tmp_path / "token.json"
-    path.write_text(json.dumps(_token_document()), encoding="utf-8")
+    _write_private_json(path, _token_document())
     FakeInstalledAppFlow.calls.clear()
 
     credentials = load_readonly_credentials(path, bindings=_bindings())
@@ -224,7 +231,7 @@ def test_expired_token_refreshes_once_with_injected_request_and_persists(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "token.json"
-    path.write_text(json.dumps(_token_document()), encoding="utf-8")
+    _write_private_json(path, _token_document())
     credentials = FakeCredentials(valid=False, expired=True)
 
     class ExpiredCredentialsFactory(FakeCredentials):
@@ -248,7 +255,7 @@ def test_expired_token_refreshes_once_with_injected_request_and_persists(
 
 def test_refresh_failure_redacts_raw_exception_and_path(tmp_path: Path) -> None:
     path = tmp_path / "token.json"
-    path.write_text(json.dumps(_token_document()), encoding="utf-8")
+    _write_private_json(path, _token_document())
     credentials = FakeCredentials(valid=False, expired=True, fail_refresh=True)
 
     class FailingCredentialsFactory(FakeCredentials):
@@ -271,7 +278,7 @@ def test_refresh_failure_redacts_raw_exception_and_path(tmp_path: Path) -> None:
 
 def test_authorization_cancellation_stops_before_flow_or_token_write(tmp_path: Path) -> None:
     client_path = tmp_path / "client.json"
-    client_path.write_text(json.dumps(_desktop_client_document()), encoding="utf-8")
+    _write_private_json(client_path, _desktop_client_document())
     token_path = tmp_path / "new-token.json"
     flow_calls = 0
 
@@ -298,7 +305,7 @@ def test_mocked_authorization_passes_exact_scope_and_persists_atomically(
     tmp_path: Path,
 ) -> None:
     client_path = tmp_path / "client.json"
-    client_path.write_text(json.dumps(_desktop_client_document()), encoding="utf-8")
+    _write_private_json(client_path, _desktop_client_document())
     token_path = tmp_path / "new-token.json"
     FakeInstalledAppFlow.calls.clear()
     flow_calls = 0
@@ -327,9 +334,9 @@ def test_mocked_authorization_passes_exact_scope_and_persists_atomically(
 
 def test_existing_token_rejects_authorization_before_flow(tmp_path: Path) -> None:
     client_path = tmp_path / "client.json"
-    client_path.write_text(json.dumps(_desktop_client_document()), encoding="utf-8")
+    _write_private_json(client_path, _desktop_client_document())
     token_path = tmp_path / "existing-token.json"
-    token_path.write_text("synthetic existing value", encoding="utf-8")
+    atomic_write_private_text(token_path, "synthetic existing value")
     flow_calls = 0
 
     def flow_runner(_flow: object) -> FakeCredentials:

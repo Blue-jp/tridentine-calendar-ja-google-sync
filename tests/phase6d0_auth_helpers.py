@@ -20,6 +20,7 @@ from tridentine_calendar_google_sync.production_write_token_models import (
     ProductionWriteOAuthCredentials,
     ProductionWriteTokenGenerationState,
 )
+from tridentine_calendar_google_sync.sensitive_paths import atomic_write_private_text
 
 ISSUED_AT = datetime(2099, 1, 1, 12, 0, tzinfo=UTC)
 FAKE_ACCESS_TOKEN = "phase6d0-fake-access-token-never-live"
@@ -44,7 +45,10 @@ def production_target() -> ProductionWriteTargetConfig:
 
 
 def write_fake_client_config(path: Path) -> Path:
-    path.write_text(
+    """Create a synthetic OAuth client using the runtime private writer."""
+
+    atomic_write_private_text(
+        path,
         json.dumps(
             {
                 "installed": {
@@ -56,9 +60,7 @@ def write_fake_client_config(path: Path) -> Path:
                 }
             }
         ),
-        encoding="utf-8",
     )
-    path.chmod(0o600)
     return path
 
 
