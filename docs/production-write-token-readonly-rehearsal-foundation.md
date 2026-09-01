@@ -87,7 +87,7 @@ Only 429, rate-limit 403, and 500/502/503 read failures are retryable. Permissio
 
 ## Sanitized evidence
 
-Future rehearsal output consists of a repository-external sanitized snapshot and Human/JSON reports created atomically without overwrite or symlink traversal. Safe output contains safe references, hashes, aggregate counts, scope/role/generation metadata, refresh and API counters, verification booleans, privacy findings, and a closed result state.
+Future rehearsal output consists of a repository-external sanitized snapshot and Human/JSON reports created atomically without overwrite or reparse traversal. The snapshot is redacted operational-private evidence and uses the private writer. Human/JSON reports are sanitized public-safe aggregates and use the same handle-bound path-integrity and safe-parent policy without requiring token-confidential leaf ACLs. Safe output contains safe references, hashes, aggregate counts, scope/role/generation metadata, refresh and API counters, verification booleans, privacy findings, and a closed result state. Windows path and ACL details are defined in [Windows sensitive filesystem security](windows-sensitive-filesystem-security.md).
 
 It excludes Calendar ID, full target fingerprint, raw UID, Summary, Description, Event ID, ETag, access/refresh token, credentials, client secret, Authorization header, local username, and absolute path.
 
