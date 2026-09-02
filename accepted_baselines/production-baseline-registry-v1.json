@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "registry_type": "accepted_production_baseline_registry",
+  "production": true,
+  "synthetic": false,
+  "source_repository": "Blue-jp/tridentine_calendar",
+  "sync_repository": "Blue-jp/tridentine-calendar-ja-google-sync",
+  "active_pin_id": null,
+  "pins": [],
+  "registry_content_hash": "f6b8e8206bb507d9a05f46d99a6787cadf6a9f1b6c96b2e35c06ab40616d1748"
+}
