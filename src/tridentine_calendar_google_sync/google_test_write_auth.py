@@ -20,6 +20,7 @@ from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     atomic_write_private_json,
     read_sensitive_bytes,
+    sensitive_path_identity,
     validate_sensitive_input_path,
     validate_sensitive_output_path,
 )
@@ -153,12 +154,28 @@ def validate_test_write_token_separation(
 
     try:
         test_path = (
-            validate_sensitive_input_path(test_write_token_path)
+            validate_sensitive_input_path(
+                test_write_token_path,
+                windows_private_acl=True,
+            )
             if test_token_exists
             else validate_sensitive_output_path(test_write_token_path, overwrite=False)
         )
-        production_path = validate_sensitive_input_path(production_read_token_path)
-        if test_path.resolve(strict=False) == production_path.resolve(strict=False):
+        production_path = validate_sensitive_input_path(
+            production_read_token_path,
+            windows_private_acl=True,
+        )
+        test_identity = sensitive_path_identity(
+            test_path,
+            exists=test_token_exists,
+            windows_private_acl=test_token_exists,
+        )
+        production_identity = sensitive_path_identity(
+            production_path,
+            exists=True,
+            windows_private_acl=True,
+        )
+        if test_identity == production_identity:
             raise TestWriteAuthConfigError(
                 "test_write_token_reuses_production_token",
                 "Test write token must be separate from the Production read-only token",
@@ -179,7 +196,14 @@ def load_test_write_authorized_user_token(
     """Load one explicit repository-external Test-write token with exact scope."""
 
     try:
-        value = _normalize_token_payload(_decode_json_object(read_sensitive_bytes(path)))
+        value = _normalize_token_payload(
+            _decode_json_object(
+                read_sensitive_bytes(
+                    path,
+                    windows_private_acl=True,
+                )
+            )
+        )
         return TestWriteAuthorizedUserToken.model_validate(value, strict=True)
     except TestWriteAuthError:
         raise

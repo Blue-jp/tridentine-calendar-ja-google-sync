@@ -16,6 +16,7 @@ from tridentine_calendar_google_sync.production_write_token_rehearsal_report imp
 )
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
+    atomic_write_integrity_text,
     atomic_write_private_text,
     validate_sensitive_output_path,
 )
@@ -65,7 +66,11 @@ def _output_paths(
         if paths.snapshot is not None:
             outputs.insert(0, paths.snapshot)
         for output in outputs:
-            validate_sensitive_output_path(output, overwrite=False)
+            validate_sensitive_output_path(
+                output,
+                overwrite=False,
+                windows_private_acl=(paths.snapshot is not None and output == paths.snapshot),
+            )
     except SensitivePathError as exc:
         raise ProductionWriteTokenRehearsalIOError(
             "unsafe_production_rehearsal_output",
@@ -103,7 +108,12 @@ def write_production_write_token_rehearsal_outputs(
         )
     try:
         for path, text in payloads:
-            atomic_write_private_text(
+            writer = (
+                atomic_write_private_text
+                if paths.snapshot is not None and path == paths.snapshot
+                else atomic_write_integrity_text
+            )
+            writer(
                 path,
                 text,
                 overwrite=False,

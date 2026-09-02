@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -184,3 +185,14 @@ def synthetic_profile_factory() -> Callable[..., AcceptedSourceProfile]:
 @pytest.fixture
 def synthetic_baseline_bundle_factory() -> Callable[..., SyntheticBaselineBundle]:
     return build_synthetic_baseline_bundle
+
+
+@pytest.fixture(autouse=True)
+def protect_windows_pytest_temp_directory(request: pytest.FixtureRequest) -> None:
+    """Make synthetic Windows temp parents deterministic for sensitive-I/O tests."""
+
+    if sys.platform != "win32" or "tmp_path" not in request.fixturenames:
+        return
+    from windows_sensitive_fs_helpers import protect_acl_directory
+
+    protect_acl_directory(request.getfixturevalue("tmp_path"))

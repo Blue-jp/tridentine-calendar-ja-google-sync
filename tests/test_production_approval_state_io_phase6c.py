@@ -160,17 +160,31 @@ def test_consumed_state_is_fsynced_before_return(tmp_path: Path, monkeypatch: An
         / production_execute_permit_consumption_filename(artifacts.permit)
     )
     calls = 0
-    original_fsync = os.fsync
+    if os.name == "nt":
+        from tridentine_calendar_google_sync import (
+            _windows_sensitive_files as windows_files,
+        )
 
-    def counting_fsync(descriptor: int) -> None:
-        nonlocal calls
-        calls += 1
-        original_fsync(descriptor)
+        original_flush = windows_files._FlushFileBuffers
 
-    monkeypatch.setattr(
-        "tridentine_calendar_google_sync.sensitive_paths.os.fsync",
-        counting_fsync,
-    )
+        def counting_flush(handle: object) -> object:
+            nonlocal calls
+            calls += 1
+            return original_flush(handle)
+
+        monkeypatch.setattr(windows_files, "_FlushFileBuffers", counting_flush)
+    else:
+        original_fsync = os.fsync
+
+        def counting_fsync(descriptor: int) -> None:
+            nonlocal calls
+            calls += 1
+            original_fsync(descriptor)
+
+        monkeypatch.setattr(
+            "tridentine_calendar_google_sync.sensitive_paths.os.fsync",
+            counting_fsync,
+        )
     consumption = consume_production_execute_permit(
         artifacts.permit,
         state_path,

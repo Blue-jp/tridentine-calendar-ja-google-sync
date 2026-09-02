@@ -46,7 +46,7 @@ Broad read scope、write scope、追加scope、重複scopeは拒否します。R
 
 通常のlocal absolute pathだけを使用し、relative path、HTTP(S)、`file://`、UNC、symbolic linkを使用しません。既存tokenとsnapshotはdefaultで上書きされません。File名、path、内容をlog、issue、Pull Request、CI artifactへ載せないでください。
 
-POSIX環境ではsecretとsnapshotをowner-only mode `0600`で保存します。Windowsでは専用のuser-private directoryを使用し、親directoryから継承されるACLが現在のユーザー以外へ不要なread権限を与えていないことを確認してください。GitignoreはOS file permissionの代替ではありません。
+POSIX環境ではsecretとsnapshotをowner-only mode `0600`で保存します。Windowsでは専用のuser-private directoryを使用します。Sensitive writerはtokenをcurrent-userのprotected DACL付きでcreation時から作成し、loaderはcredential/tokenのeffective ACLをhandleから検証します。他のnon-admin local userにwrite/deleteを許すparentやreadを許すsecret fileは拒否され、旧unsafe tokenは自動修復されません。GitignoreはOS file permissionの代替ではありません。詳細は[Windows sensitive filesystem security](windows-sensitive-filesystem-security.md)を参照してください。
 
 Sanitized snapshotはcredentialsを含みませんが、event title、description、opaque event IDを含むためsensitive runtime dataとして扱います。
 

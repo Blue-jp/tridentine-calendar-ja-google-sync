@@ -30,6 +30,8 @@ from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     atomic_write_private_text,
     read_sensitive_bytes,
+    remove_sensitive_file_if_matches,
+    sensitive_path_identity,
     validate_sensitive_input_path,
     validate_sensitive_output_path,
 )
@@ -47,9 +49,18 @@ class _DuplicateJsonKey(ValueError):
 
 
 def _require_private_file_mode(path: Path) -> None:
-    """Reject group/other POSIX access; Windows relies on local inherited ACLs."""
+    """Reject group/other POSIX access; Windows is checked on the open handle."""
 
-    if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) & 0o077:
+    if os.name != "posix":
+        return
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        raise SensitivePathError(
+            "sensitive_path_unavailable",
+            "sensitive path cannot be safely inspected",
+        ) from None
+    if mode & 0o077:
         raise SensitivePathError(
             "sensitive_input_permissions_unsafe",
             "sensitive input permissions are unsafe",
@@ -242,22 +253,24 @@ def load_production_write_authorized_user_token(
     """Load one explicit repository-external token path with no fallback search."""
 
     try:
-        validated = validate_sensitive_input_path(
-            path,
-            max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
-        )
+        validated = Path(path)
         _reject_repository_parent(validated)
         _require_private_file_mode(validated)
         return parse_production_write_authorized_user_token_bytes(
-            read_sensitive_bytes(validated, max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES)
+            read_sensitive_bytes(
+                validated,
+                max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
+                windows_private_acl=True,
+                windows_require_protected_acl=True,
+            )
         )
     except ProductionWriteTokenIOError:
         raise
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise ProductionWriteTokenIOError(
             "unsafe_production_write_token_path",
             "Production write-token path is unsafe or unavailable",
-        ) from exc
+        ) from None
 
 
 def write_production_write_authorized_user_token(
@@ -269,20 +282,25 @@ def write_production_write_authorized_user_token(
     """Atomically persist one private token with no overwrite by default."""
 
     try:
-        validated = validate_sensitive_output_path(path, overwrite=overwrite)
+        validated = validate_sensitive_output_path(
+            path,
+            overwrite=overwrite,
+            windows_require_existing_protected_acl=True,
+        )
         _reject_repository_parent(validated)
         atomic_write_private_text(
             validated,
             render_production_write_authorized_user_token_json(token),
             overwrite=overwrite,
             max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
+            windows_require_existing_protected_acl=True,
         )
         return validated
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise ProductionWriteTokenIOError(
             "production_write_token_write_failed",
             "Production write token could not be persisted safely",
-        ) from exc
+        ) from None
 
 
 _GENERATION_FIELDS = {
@@ -339,22 +357,23 @@ def load_production_write_token_generation_state(
     path: str | Path,
 ) -> ProductionWriteTokenGenerationState:
     try:
-        validated = validate_sensitive_input_path(
-            path,
-            max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
-        )
+        validated = Path(path)
         _reject_repository_parent(validated)
         _require_private_file_mode(validated)
         return parse_production_write_token_generation_state_bytes(
-            read_sensitive_bytes(validated, max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES)
+            read_sensitive_bytes(
+                validated,
+                max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
+                windows_integrity_acl=True,
+            )
         )
     except ProductionWriteTokenIOError:
         raise
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise ProductionWriteTokenIOError(
             "unsafe_production_write_token_generation_path",
             "Production write-token generation path is unsafe or unavailable",
-        ) from exc
+        ) from None
 
 
 def write_production_write_token_generation_state(
@@ -373,26 +392,31 @@ def write_production_write_token_generation_state(
             max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
         )
         return validated
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise ProductionWriteTokenIOError(
             "production_write_token_generation_write_failed",
             "Production write-token generation state could not be written safely",
-        ) from exc
+        ) from None
 
 
-def _remove_exact_new_artifact(path: Path, expected: bytes) -> bool:
+def _remove_exact_new_artifact(
+    path: Path,
+    expected: bytes,
+    *,
+    private: bool,
+    integrity: bool,
+) -> bool:
     """Remove only a regular, non-symlink artifact matching this invocation."""
 
     try:
-        if not path.exists():
-            return True
-        if path.is_symlink() or not path.is_file():
-            return False
-        actual = read_sensitive_bytes(path, max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES)
-        if not hmac.compare_digest(actual, expected):
-            return False
-        path.unlink()
-        return not path.exists()
+        return remove_sensitive_file_if_matches(
+            path,
+            expected,
+            max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
+            windows_private_acl=private,
+            windows_integrity_acl=integrity,
+            windows_require_protected_acl=private,
+        )
     except (OSError, SensitivePathError):
         return False
 
@@ -430,16 +454,22 @@ def write_production_write_token_bundle(
         validated_state = validate_sensitive_output_path(state_output, overwrite=False)
         _reject_repository_parent(validated_token)
         _reject_repository_parent(validated_state)
-        if validated_token.resolve(strict=False) == validated_state.resolve(strict=False):
+        if sensitive_path_identity(
+            validated_token,
+            exists=False,
+        ) == sensitive_path_identity(
+            validated_state,
+            exists=False,
+        ):
             raise SensitivePathError(
                 "production_write_token_bundle_path_collision",
                 "Production write-token bundle paths must be distinct",
             )
-    except (OSError, SensitivePathError) as exc:
+    except (OSError, SensitivePathError):
         raise ProductionWriteTokenIOError(
             "unsafe_production_write_token_bundle_paths",
             "Production write-token bundle paths are unsafe or unavailable",
-        ) from exc
+        ) from None
 
     state_bytes = render_production_write_token_generation_state_json(state).encode("utf-8")
     token_bytes = render_production_write_authorized_user_token_json(token).encode("utf-8")
@@ -456,10 +486,24 @@ def write_production_write_token_bundle(
         )
     except Exception as exc:
         token_removed = (
-            _remove_exact_new_artifact(validated_token, token_bytes) if token_attempted else True
+            _remove_exact_new_artifact(
+                validated_token,
+                token_bytes,
+                private=True,
+                integrity=False,
+            )
+            if token_attempted
+            else True
         )
         state_removed = (
-            _remove_exact_new_artifact(validated_state, state_bytes) if state_created else True
+            _remove_exact_new_artifact(
+                validated_state,
+                state_bytes,
+                private=False,
+                integrity=True,
+            )
+            if state_created
+            else True
         )
         if not token_removed or not state_removed:
             raise ProductionWriteTokenIOError(
@@ -475,11 +519,15 @@ def _validate_reserved_path(
     *,
     exists: bool,
     require_private: bool = False,
+    require_integrity: bool = False,
 ) -> Path:
     if exists:
         validated = validate_sensitive_input_path(
             path,
             max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
+            windows_private_acl=require_private,
+            windows_integrity_acl=require_integrity,
+            windows_require_protected_acl=require_private,
         )
         if require_private:
             _require_private_file_mode(validated)
@@ -491,12 +539,12 @@ def _reject_repository_parent(path: Path) -> None:
     try:
         resolved = path.resolve(strict=False)
         repository_parent = _REPOSITORY_ROOT.parent.resolve(strict=True)
-    except OSError as exc:
+    except (OSError, RuntimeError):
         raise SensitivePathError(
             "sensitive_path_unavailable",
             "sensitive path cannot be safely inspected",
-        ) from exc
-    if resolved.parent == repository_parent:
+        ) from None
+    if resolved.is_relative_to(repository_parent):
         raise SensitivePathError(
             "sensitive_path_in_repository_parent",
             "sensitive data must not be stored in the repository parent",
@@ -524,7 +572,8 @@ def validate_production_write_token_path_set(
         generation_path = _validate_reserved_path(
             generation_state_path,
             exists=generation_state_exists,
-            require_private=generation_state_exists,
+            require_private=False,
+            require_integrity=generation_state_exists,
         )
         read_path = _validate_reserved_path(
             production_read_token_path,
@@ -535,7 +584,10 @@ def validate_production_write_token_path_set(
             exists=Path(test_write_token_path).exists(),
         )
         client_path = (
-            validate_sensitive_input_path(client_config_path)
+            validate_sensitive_input_path(
+                client_config_path,
+                windows_private_acl=True,
+            )
             if client_config_path is not None
             else None
         )
@@ -544,9 +596,29 @@ def validate_production_write_token_path_set(
         paths = (write_path, generation_path, read_path, test_path)
         for path in (*paths, *((client_path,) if client_path is not None else ())):
             _reject_repository_parent(path)
-        identities = [path.resolve(strict=False) for path in paths]
+        identities = [
+            sensitive_path_identity(
+                write_path,
+                exists=write_token_exists,
+                windows_private_acl=write_token_exists,
+                windows_require_protected_acl=write_token_exists,
+            ),
+            sensitive_path_identity(
+                generation_path,
+                exists=generation_state_exists,
+                windows_integrity_acl=generation_state_exists,
+            ),
+            sensitive_path_identity(read_path, exists=read_path.exists()),
+            sensitive_path_identity(test_path, exists=test_path.exists()),
+        ]
         if client_path is not None:
-            identities.append(client_path.resolve(strict=True))
+            identities.append(
+                sensitive_path_identity(
+                    client_path,
+                    exists=True,
+                    windows_private_acl=True,
+                )
+            )
         if len(set(identities)) != len(identities):
             raise SensitivePathError(
                 "production_token_paths_not_distinct",
@@ -555,11 +627,11 @@ def validate_production_write_token_path_set(
         return write_path, generation_path, read_path, test_path, client_path
     except ProductionWriteTokenIOError:
         raise
-    except (OSError, SensitivePathError) as exc:
+    except (OSError, SensitivePathError):
         raise ProductionWriteTokenIOError(
             "unsafe_production_write_token_path_set",
             "Production token role paths are unsafe or not distinct",
-        ) from exc
+        ) from None
 
 
 __all__ = [

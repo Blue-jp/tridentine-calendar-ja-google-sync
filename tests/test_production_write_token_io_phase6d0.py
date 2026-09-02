@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import traceback
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
@@ -36,6 +38,7 @@ from tridentine_calendar_google_sync.production_write_token_models import (
 from tridentine_calendar_google_sync.production_write_token_report import (
     build_production_write_token_generation_inspection,
 )
+from tridentine_calendar_google_sync.sensitive_paths import SensitivePathError
 
 pytestmark = pytest.mark.google_production_write
 
@@ -177,6 +180,128 @@ def test_posix_group_or_other_token_access_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ProductionWriteTokenIOError) as captured:
         load_production_write_authorized_user_token(token_path)
     assert captured.value.code == "unsafe_production_write_token_path"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX permission branch")
+@pytest.mark.parametrize(
+    ("loader", "expected_code", "filename"),
+    [
+        (
+            load_production_write_authorized_user_token,
+            "unsafe_production_write_token_path",
+            "token.json",
+        ),
+        (
+            load_production_write_token_generation_state,
+            "unsafe_production_write_token_generation_path",
+            "generation.json",
+        ),
+    ],
+)
+def test_posix_stat_errors_never_disclose_sensitive_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    loader: Callable[[str | Path], object],
+    expected_code: str,
+    filename: str,
+) -> None:
+    marker = "PRIVATE_PATH_MARKER"
+    sensitive_path = tmp_path / marker / filename
+    original_stat = Path.stat
+
+    def injected_stat(
+        path: Path,
+        *,
+        follow_symlinks: bool = True,
+    ) -> os.stat_result:
+        if path == sensitive_path:
+            raise PermissionError(f"synthetic denial for {sensitive_path}")
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", injected_stat)
+    with pytest.raises(ProductionWriteTokenIOError) as captured:
+        loader(sensitive_path)
+
+    public_error = captured.value
+    streams = capsys.readouterr()
+    rendered_exception = "".join(traceback.format_exception(public_error))
+    public_report = f"{public_error.code}:{public_error.public_message}"
+    json_report = json.dumps(
+        {"code": public_error.code, "message": public_error.public_message},
+        sort_keys=True,
+    )
+    assert public_error.code == expected_code
+    assert public_error.__cause__ is None
+    assert public_error.__suppress_context__ is True
+    for rendered in (
+        str(public_error),
+        rendered_exception,
+        streams.out,
+        streams.err,
+        public_report,
+        json_report,
+    ):
+        assert marker not in rendered
+        assert str(sensitive_path) not in rendered
+
+
+@pytest.mark.parametrize(
+    ("loader", "expected_code"),
+    [
+        (load_production_write_authorized_user_token, "unsafe_production_write_token_path"),
+        (
+            load_production_write_token_generation_state,
+            "unsafe_production_write_token_generation_path",
+        ),
+    ],
+)
+def test_loader_boundary_suppresses_path_bearing_exception_chains(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    loader: Callable[[str | Path], object],
+    expected_code: str,
+) -> None:
+    marker = "PRIVATE_PATH_MARKER"
+    sensitive_path = Path.cwd().anchor + marker
+
+    def injected_repository_check(_path: Path) -> None:
+        try:
+            raise PermissionError(f"synthetic denial for {sensitive_path}")
+        except PermissionError as exc:
+            raise SensitivePathError(
+                "sensitive_path_unavailable",
+                "sensitive path cannot be safely inspected",
+            ) from exc
+
+    monkeypatch.setattr(
+        "tridentine_calendar_google_sync.production_write_token_io._reject_repository_parent",
+        injected_repository_check,
+    )
+    with pytest.raises(ProductionWriteTokenIOError) as captured:
+        loader(sensitive_path)
+
+    public_error = captured.value
+    streams = capsys.readouterr()
+    rendered_exception = "".join(traceback.format_exception(public_error))
+    public_report = f"{public_error.code}:{public_error.public_message}"
+    json_report = json.dumps(
+        {"code": public_error.code, "message": public_error.public_message},
+        sort_keys=True,
+    )
+    assert public_error.code == expected_code
+    assert public_error.__cause__ is None
+    assert public_error.__suppress_context__ is True
+    for rendered in (
+        str(public_error),
+        rendered_exception,
+        streams.out,
+        streams.err,
+        public_report,
+        json_report,
+    ):
+        assert marker not in rendered
+        assert sensitive_path not in rendered
 
 
 def test_noncanonical_duplicate_unknown_and_role_tamper_are_rejected() -> None:

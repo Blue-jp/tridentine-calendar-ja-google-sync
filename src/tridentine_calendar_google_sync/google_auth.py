@@ -185,7 +185,7 @@ def load_desktop_client_config(path: str | Path) -> DesktopInstalledClientConfig
     """Load one explicit desktop client JSON file outside every committed worktree."""
 
     try:
-        raw = read_sensitive_bytes(path)
+        raw = read_sensitive_bytes(path, windows_private_acl=True)
         value = _normalize_client_payload(_decode_json_object(raw, kind="desktop_client_config"))
         return DesktopInstalledClientConfig.model_validate(value, strict=True)
     except GoogleAuthError:
@@ -206,7 +206,10 @@ def load_authorized_user_token(path: str | Path) -> AuthorizedUserToken:
     """Load one explicit authorized-user JSON file and enforce the exact scope."""
 
     try:
-        raw = read_sensitive_bytes(path)
+        raw = read_sensitive_bytes(
+            path,
+            windows_private_acl=True,
+        )
         value = _normalize_token_payload(_decode_json_object(raw, kind="authorized_user_token"))
         return AuthorizedUserToken.model_validate(value, strict=True)
     except GoogleAuthError:

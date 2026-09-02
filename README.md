@@ -10,6 +10,8 @@ Phase 6D.0はPhase 6Cのmock-only transportをlive patchへ接続せず、専用
 
 AuthorizationとrehearsalのCLI surfaceはPhase 6D.0ではlive hard-offです。実OAuth、token作成、browser authorization、Calendar API、Production Calendar access、ARM / EXECUTE運用、patchは実行できません。既存Production write hard lock、default-off kill switch、Add / Delete unavailableも維持されます。Phase 6Bのartifact境界は[Production single-update planning foundation](docs/production-single-update-planning-foundation.md)、Phase 6Cのmock execution semanticsは[Production single-update transport foundation](docs/production-single-update-transport-foundation.md)、Phase 6D.0の境界は[Production write-token read-only rehearsal foundation](docs/production-write-token-readonly-rehearsal-foundation.md)を参照してください。Repository-wide Deep security scanはmerge後かつProduction OAuth前に必須です。Repository-wide Deep security scan required after merge and before Production OAuth.
 
+Windowsのsensitive runtime artifactは、junction/reparseを含むancestor全件のhandle検証、operation中のidentity保持、secret書込前からのcurrent-user protected DACL、unsafe parent ACL拒否を必須とします。詳細は[Windows sensitive filesystem security](docs/windows-sensitive-filesystem-security.md)を参照してください。
+
 ### Implemented
 
 - raw bytesのSHA-256をparse前に検証

@@ -22,6 +22,7 @@ from tridentine_calendar_google_sync.google_test_write_auth import (
 from tridentine_calendar_google_sync.google_test_write_auth import (
     TestWriteAuthorizationCancelled as AuthorizationCancelled,
 )
+from tridentine_calendar_google_sync.sensitive_paths import atomic_write_private_text
 from tridentine_calendar_google_sync.test_write_target import (
     TestWriteTargetPolicyError as TargetPolicyError,
 )
@@ -39,6 +40,12 @@ def _token_document(scopes: list[str]) -> dict[str, object]:
         "client_secret": "fixture-client-secret",
         "scopes": scopes,
     }
+
+
+def _write_private_json(path: Path, document: dict[str, object]) -> None:
+    """Create a synthetic token fixture using the runtime private writer."""
+
+    atomic_write_private_text(path, json.dumps(document))
 
 
 def test_test_write_scope_is_exactly_one_owned_events_scope() -> None:
@@ -78,7 +85,7 @@ def test_every_missing_readonly_broad_multiple_or_duplicate_scope_is_rejected(
 def test_synthetic_exact_scope_token_loads_without_exposing_secret(tmp_path: Path) -> None:
     token_path = tmp_path / "fixture-test-write-token.json"
     document = _token_document([GOOGLE_TEST_EVENTS_OWNED_WRITE_SCOPE])
-    token_path.write_text(json.dumps(document), encoding="utf-8")
+    _write_private_json(token_path, document)
 
     token = load_test_write_authorized_user_token(token_path)
 
@@ -111,7 +118,7 @@ def test_token_loader_rejects_nonexact_scope_without_secret_echo(
 ) -> None:
     token_path = tmp_path / "fixture-invalid-test-write-token.json"
     document = _token_document(scopes)
-    token_path.write_text(json.dumps(document), encoding="utf-8")
+    _write_private_json(token_path, document)
 
     with pytest.raises(AuthConfigError) as captured:
         load_test_write_authorized_user_token(token_path)
@@ -122,8 +129,8 @@ def test_token_loader_rejects_nonexact_scope_without_secret_echo(
 def test_test_write_and_production_read_token_paths_must_be_distinct(tmp_path: Path) -> None:
     test_token = tmp_path / "fixture-test-write-token.json"
     production_read = tmp_path / "fixture-production-read-token.json"
-    test_token.write_text("{}", encoding="utf-8")
-    production_read.write_text("{}", encoding="utf-8")
+    _write_private_json(test_token, {})
+    _write_private_json(production_read, {})
 
     validated_test, validated_read = validate_test_write_token_separation(
         test_token,
@@ -144,9 +151,9 @@ def test_new_test_token_refuses_existing_output_repository_path_and_symlink(
     tmp_path: Path,
 ) -> None:
     production_read = tmp_path / "fixture-production-read-token.json"
-    production_read.write_text("{}", encoding="utf-8")
+    _write_private_json(production_read, {})
     existing = tmp_path / "existing-test-write-token.json"
-    existing.write_text("{}", encoding="utf-8")
+    _write_private_json(existing, {})
     with pytest.raises(AuthConfigError):
         validate_test_write_token_separation(
             existing,
