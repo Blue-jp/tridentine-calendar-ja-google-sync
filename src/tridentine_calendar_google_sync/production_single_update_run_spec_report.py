@@ -14,7 +14,7 @@ from tridentine_calendar_google_sync.production_single_update_run_spec_models im
 )
 
 _REPORT_HASH_DOMAIN = (
-    b"tridentine-calendar-google-sync:production-single-update-run-spec-report:v1\x00"
+    b"tridentine-calendar-google-sync:production-single-update-run-spec-report:v2\x00"
 )
 
 
@@ -41,8 +41,8 @@ def build_production_single_update_run_spec_inspection(
         temporal_state = "current"
     operation = run_spec.operation
     data: dict[str, object] = {
-        "schema_version": "1.0",
-        "report_type": "production-single-update-run-spec-inspection-v1",
+        "schema_version": "2.0",
+        "report_type": "production-single-update-run-spec-inspection-v2",
         "planning_mode": run_spec.planning_mode,
         "production_only": run_spec.production_only,
         "synthetic": run_spec.synthetic,
@@ -55,6 +55,9 @@ def build_production_single_update_run_spec_inspection(
         "expired": temporal_state == "expired",
         "target_safe_ref": run_spec.target_safe_ref,
         "baseline_reference": f"B-{run_spec.trusted_baseline_hash[:12]}",
+        "accepted_baseline_pin_id": run_spec.accepted_baseline_pin_id,
+        "accepted_baseline_generation": run_spec.accepted_baseline_generation,
+        "accepted_baseline_pin_reference": f"A-{run_spec.accepted_baseline_pin_hash[:12]}",
         "manifest_reference": f"M-{run_spec.manifest_hash[:12]}",
         "snapshot_reference": f"N-{run_spec.current_snapshot_hash[:12]}",
         "plan_reference": f"P-{run_spec.production_plan_hash[:12]}",
@@ -126,6 +129,8 @@ def render_production_single_update_run_spec_inspection_text(
             f"temporal state: {report['temporal_state']}",
             f"target reference: {report['target_safe_ref']}",
             f"baseline reference: {report['baseline_reference']}",
+            f"accepted baseline pin: {report['accepted_baseline_pin_id']}",
+            f"accepted baseline generation: {report['accepted_baseline_generation']}",
             f"manifest reference: {report['manifest_reference']}",
             f"source events: {report['source_event_count']}",
             f"snapshot events: {report['snapshot_event_count']}",

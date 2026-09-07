@@ -36,9 +36,9 @@ class ProductionSingleUpdateOperation(StrictFrozenModel):
 class ProductionSingleUpdateRunSpec(StrictFrozenModel):
     """Integrity-pinned offline contract without execution authority."""
 
-    schema_version: Literal["1.0"] = "1.0"
-    run_type: Literal["production-single-update-run-spec-v1"] = (
-        "production-single-update-run-spec-v1"
+    schema_version: Literal["2.0"] = "2.0"
+    run_type: Literal["production-single-update-run-spec-v2"] = (
+        "production-single-update-run-spec-v2"
     )
     planning_mode: Literal["production_single_update"] = "production_single_update"
     production: Literal[True] = True
@@ -55,6 +55,9 @@ class ProductionSingleUpdateRunSpec(StrictFrozenModel):
     target_config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_environment: Literal["production"] = "production"
     baseline_state: Literal["trusted"] = "trusted"
+    accepted_baseline_pin_id: str = Field(pattern=r"^production-baseline-g[0-9]{4,}$")
+    accepted_baseline_generation: int = Field(ge=1)
+    accepted_baseline_pin_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     trusted_baseline_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -91,6 +94,8 @@ class ProductionSingleUpdateRunSpec(StrictFrozenModel):
             or expires_offset.total_seconds() != 0
             or not 0 < lifetime <= PRODUCTION_RUN_SPEC_MAX_LIFETIME_SECONDS
             or self.target_safe_ref != f"T-{self.target_fingerprint[:12]}"
+            or self.accepted_baseline_pin_id
+            != f"production-baseline-g{self.accepted_baseline_generation:04d}"
             or self.baseline_snapshot_hash != self.current_snapshot_hash
             or self.source_event_count != self.snapshot_event_count
             or self.unchanged_count != self.source_event_count - 1

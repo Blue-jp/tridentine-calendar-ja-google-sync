@@ -21,7 +21,6 @@ from tridentine_calendar_google_sync.baseline_engine import (
 from tridentine_calendar_google_sync.baseline_models import BaselineState, TrustedBaseline
 from tridentine_calendar_google_sync.production_write_target import (
     ProductionWriteTargetConfig,
-    calculate_production_write_target_hash,
     production_write_target_reference,
     validate_production_write_target_config,
 )
@@ -77,7 +76,6 @@ def accepted_production_baseline_pin_data(
         "baseline_schema_version": pin.baseline_schema_version,
         "tool_version": pin.tool_version,
         "target_safe_ref": pin.target_safe_ref,
-        "target_config_hash": pin.target_config_hash,
         "source_profile": pin.source_profile,
         "accepted_tag": pin.accepted_tag,
         "accepted_commit": pin.accepted_commit,
@@ -124,7 +122,6 @@ def verify_accepted_production_baseline_pin(
             "Accepted Production baseline pin policy verification failed",
         ) from exc
     required_nonzero = (
-        pin.target_config_hash,
         pin.source_sha256,
         pin.snapshot_content_hash,
         pin.diff_content_hash,
@@ -275,7 +272,6 @@ def build_accepted_production_baseline_pin(
             baseline_schema_version="1.0",
             tool_version=trusted_baseline.tool_version,
             target_safe_ref=production_write_target_reference(target),
-            target_config_hash=calculate_production_write_target_hash(target),
             source_profile=trusted_baseline.source_profile,
             accepted_tag=trusted_baseline.accepted_tag,
             accepted_commit=trusted_baseline.accepted_commit,
@@ -336,10 +332,6 @@ def verify_trusted_baseline_against_accepted_pin(
         and pin.baseline_schema_version == baseline.schema_version
         and pin.tool_version == baseline.tool_version
         and pin.target_safe_ref == production_write_target_reference(target)
-        and hmac.compare_digest(
-            pin.target_config_hash,
-            calculate_production_write_target_hash(target),
-        )
         and pin.source_profile == baseline.source_profile
         and pin.accepted_tag == baseline.accepted_tag
         and pin.accepted_commit == baseline.accepted_commit

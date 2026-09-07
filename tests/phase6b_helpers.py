@@ -8,6 +8,14 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from conftest import set_phase6d1g_active_accepted_baseline_pin
+
+from tridentine_calendar_google_sync.accepted_production_baseline import (
+    build_accepted_production_baseline_pin,
+)
+from tridentine_calendar_google_sync.accepted_production_baseline_models import (
+    AcceptedProductionBaselinePin,
+)
 from tridentine_calendar_google_sync.accepted_production_source_manifest import (
     build_accepted_production_source_manifest,
 )
@@ -59,6 +67,7 @@ class ProductionPlanningInputs:
     updated: ProductionSourceFixture
     snapshot: GoogleSnapshot
     baseline: TrustedBaseline
+    accepted_baseline_pin: AcceptedProductionBaselinePin
     manifest: AcceptedProductionSourceManifest
     target: ProductionWriteTargetConfig
 
@@ -298,6 +307,13 @@ def build_production_planning_inputs(
     current_diff = diff_source_to_snapshot(current.source, snapshot)
     candidate = build_baseline_candidate(current.profile, current.source, snapshot, current_diff)
     baseline = trust_baseline(candidate, baseline_confirmation_phrase(candidate))
+    accepted_baseline_pin = build_accepted_production_baseline_pin(
+        candidate,
+        baseline,
+        target,
+        generation=1,
+    )
+    set_phase6d1g_active_accepted_baseline_pin(accepted_baseline_pin)
     manifest = build_accepted_production_source_manifest(
         desired.profile,
         desired.source,
@@ -308,6 +324,7 @@ def build_production_planning_inputs(
         updated=desired,
         snapshot=snapshot,
         baseline=baseline,
+        accepted_baseline_pin=accepted_baseline_pin,
         manifest=manifest,
         target=target,
     )

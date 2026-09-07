@@ -95,7 +95,7 @@ def test_phase6b_schemas_and_documentation_are_packaged_and_linked() -> None:
     assert "docs/production-single-update-planning-foundation.md" in readme
     for name in (
         "accepted-production-source-manifest-v1.schema.json",
-        "production-single-update-plan-v1.schema.json",
-        "production-single-update-run-spec-v1.schema.json",
+        "production-single-update-plan-v2.schema.json",
+        "production-single-update-run-spec-v2.schema.json",
     ):
         assert (REPOSITORY_ROOT / "schemas" / name).is_file()

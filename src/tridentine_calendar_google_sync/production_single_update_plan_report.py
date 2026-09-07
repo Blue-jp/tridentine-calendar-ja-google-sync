@@ -12,7 +12,7 @@ from tridentine_calendar_google_sync.production_single_update_plan_models import
     ProductionSingleUpdatePlan,
 )
 
-_REPORT_HASH_DOMAIN = b"tridentine-calendar-google-sync:production-single-update-plan-report:v1\x00"
+_REPORT_HASH_DOMAIN = b"tridentine-calendar-google-sync:production-single-update-plan-report:v2\x00"
 
 
 def build_production_single_update_plan_inspection(
@@ -22,8 +22,8 @@ def build_production_single_update_plan_inspection(
 
     verify_production_single_update_plan(plan)
     data: dict[str, object] = {
-        "schema_version": "1.0",
-        "report_type": "production-single-update-plan-inspection-v1",
+        "schema_version": "2.0",
+        "report_type": "production-single-update-plan-inspection-v2",
         "planning_mode": plan.planning_mode,
         "production": True,
         "production_only": True,
@@ -33,6 +33,9 @@ def build_production_single_update_plan_inspection(
         "target_safe_ref": plan.target_safe_ref,
         "target_config_reference": f"C-{plan.target_config_hash[:12]}",
         "baseline_reference": f"B-{plan.baseline_hash[:12]}",
+        "accepted_baseline_pin_id": plan.accepted_baseline_pin_id,
+        "accepted_baseline_generation": plan.accepted_baseline_generation,
+        "accepted_baseline_pin_reference": f"A-{plan.accepted_baseline_pin_hash[:12]}",
         "manifest_reference": f"M-{plan.manifest_hash[:12]}",
         "source_reference": f"S-{plan.source_content_hash[:12]}",
         "snapshot_reference": f"N-{plan.snapshot_hash[:12]}",
@@ -98,6 +101,8 @@ def render_production_single_update_plan_inspection_text(
             "executable: no",
             f"target reference: {report['target_safe_ref']}",
             f"baseline reference: {report['baseline_reference']}",
+            f"accepted baseline pin: {report['accepted_baseline_pin_id']}",
+            f"accepted baseline generation: {report['accepted_baseline_generation']}",
             f"manifest reference: {report['manifest_reference']}",
             f"source events: {report['source_event_count']}",
             f"snapshot events: {report['snapshot_event_count']}",

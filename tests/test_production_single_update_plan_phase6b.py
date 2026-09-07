@@ -8,7 +8,7 @@ from typing import Any
 
 import jsonschema
 import pytest
-from conftest import REPOSITORY_ROOT
+from conftest import REPOSITORY_ROOT, set_phase6d1g_active_accepted_baseline_pin
 from phase5a_helpers import make_test_target_config
 from phase6b_helpers import (
     PRODUCTION_LIKE_REPOSITORY,
@@ -24,6 +24,9 @@ from phase6b_helpers import (
     write_production_source,
 )
 
+from tridentine_calendar_google_sync.accepted_production_baseline import (
+    build_accepted_production_baseline_pin,
+)
 from tridentine_calendar_google_sync.accepted_production_source_manifest import (
     AcceptedProductionSourceManifestError,
     build_accepted_production_source_manifest,
@@ -128,7 +131,7 @@ def test_plan_is_deterministic_schema_valid_and_round_trips_canonically(tmp_path
     assert first == second
     assert parse_production_single_update_plan_bytes(rendered.encode("utf-8")) == first
     schema = json.loads(
-        (REPOSITORY_ROOT / "schemas" / "production-single-update-plan-v1.schema.json").read_text(
+        (REPOSITORY_ROOT / "schemas" / "production-single-update-plan-v2.schema.json").read_text(
             encoding="utf-8"
         )
     )
@@ -408,12 +411,12 @@ def test_plan_io_is_repository_external_atomic_and_no_overwrite(tmp_path: Path) 
     (
         lambda raw: raw.replace(b'"operation_count": 1', b'"operation_count": 2', 1),
         lambda raw: raw.replace(
-            b'"schema_version": "1.0",',
+            b'"schema_version": "2.0",',
             b'"schema_version": "1.0",\n  "unexpected": true,',
             1,
         ),
         lambda raw: raw.replace(
-            b'"schema_version": "1.0",',
+            b'"schema_version": "2.0",',
             b'"schema_version": "1.0",\n  "schema_version": "1.0",',
             1,
         ),
@@ -580,6 +583,15 @@ def test_safe_older_baseline_provenance_need_not_equal_current_manifest(tmp_path
         source_sha256="b" * 64,
     )
 
+    older_candidate = _rehash_baseline(older, state=BaselineState.CANDIDATE)
+    older_pin = build_accepted_production_baseline_pin(
+        older_candidate,
+        older,
+        inputs.target,
+        generation=1,
+    )
+    set_phase6d1g_active_accepted_baseline_pin(older_pin)
+
     plan = build_production_single_update_plan(
         inputs.manifest,
         inputs.updated.profile,
@@ -589,6 +601,7 @@ def test_safe_older_baseline_provenance_need_not_equal_current_manifest(tmp_path
         inputs.target,
     )
     assert plan.baseline_hash == older.baseline_content_hash
+    assert plan.accepted_baseline_pin_hash == older_pin.pin_content_hash
     assert plan.accepted_tag == inputs.manifest.accepted_tag
 
 

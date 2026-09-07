@@ -239,7 +239,7 @@ def test_cli_offline_manifest_plan_and_run_spec_flow_never_loads_google(
         )
         == 0
     )
-    assert "production-single-update-plan-inspection-v1" in plan_report.read_text(encoding="utf-8")
+    assert "production-single-update-plan-inspection-v2" in plan_report.read_text(encoding="utf-8")
 
     assert (
         cli.main(
@@ -275,7 +275,7 @@ def test_cli_offline_manifest_plan_and_run_spec_flow_never_loads_google(
         == 0
     )
     inspection = capsys.readouterr().out
-    assert "production-single-update-run-spec-inspection-v1" in inspection
+    assert "production-single-update-run-spec-inspection-v2" in inspection
     assert '"temporal_state": "current"' in inspection
     assert inputs.updated.source.events[-1].description not in inspection
 

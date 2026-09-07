@@ -12,6 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Never
 
+from tridentine_calendar_google_sync.accepted_production_baseline_registry import (
+    AcceptedProductionBaselineRegistryError,
+    load_active_accepted_production_baseline_pin,
+)
 from tridentine_calendar_google_sync.accepted_production_source_manifest import (
     AcceptedProductionSourceManifestError,
 )
@@ -364,8 +368,9 @@ _PRODUCTION_MANIFEST_INSPECTION_HELP = (
 
 _PRODUCTION_SINGLE_UPDATE_PLAN_HELP = (
     "Offline Production planning only; no Production executor exists.\n"
-    "Requires an explicit Accepted Production Source Manifest, trusted Production "
-    "Baseline, exact complete full snapshot, and Production target config.\n"
+    "Requires the package-owned active Accepted Production Baseline pin, explicit "
+    "Accepted Production Source Manifest, matching private trusted Baseline, exact "
+    "complete full snapshot, and Production target config.\n"
     "Produces one non-executable Description-only Update Plan; Add and Delete are "
     "structurally unavailable.\n"
     "No OAuth, Google dependency, Google client, or Calendar API call is used."
@@ -1588,6 +1593,7 @@ def _inspect_accepted_production_source_manifest_command(args: argparse.Namespac
 def _build_production_single_update_plan_command(args: argparse.Namespace) -> int:
     """Build one offline, non-executable Production planning artifact."""
 
+    load_active_accepted_production_baseline_pin()
     manifest = load_accepted_production_source_manifest(args.manifest)
     profile = load_profile(args.profile, args.profiles_dir)
     source = inspect_source(args.source, profile)
@@ -1632,6 +1638,7 @@ def _inspect_production_single_update_plan_command(args: argparse.Namespace) -> 
 def _build_production_single_update_run_spec_command(args: argparse.Namespace) -> int:
     """Build one short-lived static Run Spec with no approval or executor."""
 
+    load_active_accepted_production_baseline_pin()
     manifest = load_accepted_production_source_manifest(args.manifest)
     profile = load_profile(args.profile, args.profiles_dir)
     source = inspect_source(args.source, profile)
@@ -2406,6 +2413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stderr.write(f"error: {exc.public_message}\n")
         return EXIT_FATAL_GUARD
     except (
+        AcceptedProductionBaselineRegistryError,
         AcceptedProductionSourceManifestError,
         ProductionSingleUpdatePlanError,
         ProductionSingleUpdateRunSpecError,

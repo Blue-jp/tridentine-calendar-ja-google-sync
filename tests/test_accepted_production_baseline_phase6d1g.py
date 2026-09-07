@@ -277,6 +277,32 @@ def test_nonproduction_markers_and_wrong_target_fail_before_pin_creation() -> No
     assert captured.value.code == "accepted_production_baseline_target_mismatch"
 
 
+def test_target_config_metadata_change_does_not_rotate_baseline_pin() -> None:
+    candidate = _candidate()
+    trusted = _trusted(candidate)
+    first_target = _target()
+    renamed_target = first_target.model_copy(
+        update={"expected_summary": "Renamed Production Calendar"}
+    )
+
+    first = build_accepted_production_baseline_pin(
+        candidate,
+        trusted,
+        first_target,
+        generation=1,
+    )
+    second = build_accepted_production_baseline_pin(
+        candidate,
+        trusted,
+        renamed_target,
+        generation=1,
+    )
+
+    assert "target_config_hash" not in AcceptedProductionBaselinePin.model_fields
+    assert first == second
+    verify_trusted_baseline_against_accepted_pin(trusted, renamed_target, first)
+
+
 def test_registry_hash_changes_for_any_active_pin_change() -> None:
     first = build_accepted_production_baseline_registry((_pin(),))
     changed_pin = _rehash_pin(first.pins[0], accepted_commit="6" * 40)

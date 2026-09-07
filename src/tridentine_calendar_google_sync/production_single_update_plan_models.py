@@ -21,6 +21,9 @@ class ProductionSingleUpdateEligibility(StrictFrozenModel):
     safe_uid_ref: str = Field(pattern=r"^U-[0-9a-f]{12}$")
     google_ref: str = Field(pattern=r"^G-[0-9a-f]{12}$")
     baseline_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accepted_baseline_pin_id: str = Field(pattern=r"^production-baseline-g[0-9]{4,}$")
+    accepted_baseline_generation: int = Field(ge=1)
+    accepted_baseline_pin_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -39,7 +42,7 @@ class ProductionSingleUpdateEligibility(StrictFrozenModel):
 class ProductionSingleUpdatePlan(StrictFrozenModel):
     """Non-executable, raw-content-free plan for one Production update."""
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     plan_type: Literal["production_single_update"] = "production_single_update"
     planning_mode: Literal["production_single_update"] = "production_single_update"
     production: Literal[True] = True
@@ -61,6 +64,9 @@ class ProductionSingleUpdatePlan(StrictFrozenModel):
     baseline_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     baseline_state: Literal["trusted"] = "trusted"
+    accepted_baseline_pin_id: str = Field(pattern=r"^production-baseline-g[0-9]{4,}$")
+    accepted_baseline_generation: int = Field(ge=1)
+    accepted_baseline_pin_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     managed_uid_count: int = Field(ge=2)
     manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_profile: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -90,6 +96,8 @@ class ProductionSingleUpdatePlan(StrictFrozenModel):
     def fixed_contract_is_coherent(self) -> Self:
         if (
             self.target_safe_ref != f"T-{self.target_fingerprint[:12]}"
+            or self.accepted_baseline_pin_id
+            != f"production-baseline-g{self.accepted_baseline_generation:04d}"
             or self.baseline_snapshot_hash != self.snapshot_hash
             or self.managed_uid_count != self.source_event_count
             or self.source_event_count != self.snapshot_event_count
