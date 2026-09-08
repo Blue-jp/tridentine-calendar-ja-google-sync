@@ -312,10 +312,7 @@ def baseline_confirmation_phrase(candidate: BaselineCandidate) -> str:
         "only a candidate baseline can be trusted",
     )
     verify_baseline_content_hash(candidate)
-    return (
-        f"TRUST BASELINE T-{candidate.target_fingerprint[:12]} "
-        f"{candidate.baseline_content_hash[:12]}"
-    )
+    return f"TRUST BASELINE T-{candidate.target_fingerprint[:12]} {candidate.baseline_content_hash}"
 
 
 def trust_baseline(

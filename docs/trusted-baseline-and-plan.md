@@ -21,11 +21,13 @@ Candidateはownership evidenceではありません。誤って作成したcandi
 
 ## Trust transition
 
-Trustはcandidateとは別fileを作る明示的なstate transitionです。Candidate hashとshort target referenceから生成された次の形のconfirmation phraseを完全一致で入力する必要があります。
+Trustはcandidateとは別fileを作る明示的なstate transitionです。Candidate full hashとshort target referenceから生成された次の形のconfirmation phraseを完全一致で入力する必要があります。
 
 ```text
-TRUST BASELINE T-<12 hex> <candidate hash first 12 hex>
+TRUST BASELINE T-<12 hex> <candidate hash 64 hex>
 ```
+
+このconfirmation phraseは人間の意図確認であり、authenticity rootではありません。Candidate full hashはcandidateの全内容（full target fingerprintを含む）にcommitします。Production authorityは別途、review済みpackageに固定されたAccepted Production Baseline pinで決まります。
 
 Trust後はstateを含めてcontent hashを再計算します。Candidate fileをin-placeで上書きしません。Trusted baselineもrepository外へ置き、public reportにはraw UID inventoryを出しません。
 
