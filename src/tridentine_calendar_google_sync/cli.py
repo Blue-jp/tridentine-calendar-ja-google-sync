@@ -65,7 +65,11 @@ from tridentine_calendar_google_sync.baseline_engine import (
     render_baseline_text,
     trust_baseline,
 )
-from tridentine_calendar_google_sync.baseline_io import load_baseline, write_baseline
+from tridentine_calendar_google_sync.baseline_io import (
+    load_baseline,
+    load_production_trusted_baseline,
+    write_baseline,
+)
 from tridentine_calendar_google_sync.baseline_models import TrustedBaseline
 from tridentine_calendar_google_sync.diff_engine import diff_source_to_snapshot
 from tridentine_calendar_google_sync.diff_models import CalendarDiff, ManagedScope
@@ -1598,7 +1602,7 @@ def _build_production_single_update_plan_command(args: argparse.Namespace) -> in
     profile = load_profile(args.profile, args.profiles_dir)
     source = inspect_source(args.source, profile)
     snapshot = load_google_snapshot(args.google_snapshot)
-    baseline = load_baseline(args.trusted_baseline)
+    baseline = load_production_trusted_baseline(args.trusted_baseline)
     target = load_production_write_target_config(args.target_config)
     plan = build_production_single_update_plan(
         manifest,
@@ -1644,7 +1648,7 @@ def _build_production_single_update_run_spec_command(args: argparse.Namespace) -
     source = inspect_source(args.source, profile)
     snapshot = load_google_snapshot(args.google_snapshot)
     plan = load_production_single_update_plan(args.production_plan)
-    baseline = load_baseline(args.trusted_baseline)
+    baseline = load_production_trusted_baseline(args.trusted_baseline)
     target = load_production_write_target_config(args.target_config)
     issued_at = datetime.now(UTC)
     run_spec = build_production_single_update_run_spec(
