@@ -5,7 +5,9 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import stat
 import subprocess
+import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
@@ -284,6 +286,171 @@ def read_sensitive_bytes(
     return content
 
 
+if sys.platform != "win32":
+
+    def _read_posix_private_bytes(path: Path, *, max_size: int) -> bytes:
+        # Read one owner-only regular file through a no-follow fd chain.
+        if os.name != "posix":
+            raise SensitivePathError(
+                "sensitive_private_io_unavailable",
+                "strict private input verification is unavailable",
+            )
+
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        directory_flag = getattr(os, "O_DIRECTORY", 0)
+        close_on_exec = getattr(os, "O_CLOEXEC", 0)
+        if no_follow == 0 or directory_flag == 0:
+            raise SensitivePathError(
+                "sensitive_private_io_unavailable",
+                "strict private input verification is unavailable",
+            )
+
+        parts = path.parts
+        if (
+            not path.anchor
+            or path.name in {"", ".", ".."}
+            or any(component in {".", ".."} for component in parts[1:])
+        ):
+            raise SensitivePathError(
+                "sensitive_path_alias",
+                "sensitive path uses an unsafe local alias",
+            )
+
+        parent_descriptor = -1
+        file_descriptor = -1
+        try:
+            directory_flags = os.O_RDONLY | directory_flag | no_follow | close_on_exec
+            parent_descriptor = os.open(path.anchor, directory_flags)
+
+            for component in parts[1:-1]:
+                next_descriptor = os.open(
+                    component,
+                    directory_flags,
+                    dir_fd=parent_descriptor,
+                )
+                os.close(parent_descriptor)
+                parent_descriptor = next_descriptor
+
+            file_descriptor = os.open(
+                path.name,
+                os.O_RDONLY | no_follow | close_on_exec,
+                dir_fd=parent_descriptor,
+            )
+            before = os.fstat(file_descriptor)
+            mode = stat.S_IMODE(before.st_mode)
+            effective_uid = os.geteuid()
+
+            if not stat.S_ISREG(before.st_mode):
+                raise SensitivePathError(
+                    "sensitive_input_not_file",
+                    "sensitive input is not a regular local file",
+                )
+            if before.st_nlink != 1:
+                raise SensitivePathError(
+                    "sensitive_path_hardlink",
+                    "hard-linked files are not accepted for sensitive data",
+                )
+            if before.st_uid != effective_uid:
+                raise SensitivePathError(
+                    "sensitive_input_owner_unsafe",
+                    "sensitive input owner is unsafe",
+                )
+            if mode & 0o077:
+                raise SensitivePathError(
+                    "sensitive_input_permissions_unsafe",
+                    "sensitive input permissions are unsafe",
+                )
+            if before.st_size < 0 or before.st_size > max_size:
+                raise SensitivePathError(
+                    "sensitive_input_too_large",
+                    "sensitive input exceeds the size limit",
+                )
+
+            content = bytearray()
+            while len(content) <= max_size:
+                request_size = min(1024 * 1024, max_size + 1 - len(content))
+                if request_size <= 0:
+                    break
+                chunk = os.read(file_descriptor, request_size)
+                if not chunk:
+                    break
+                content.extend(chunk)
+
+            if len(content) > max_size:
+                raise SensitivePathError(
+                    "sensitive_input_too_large",
+                    "sensitive input exceeds the size limit",
+                )
+
+            after = os.fstat(file_descriptor)
+            after_mode = stat.S_IMODE(after.st_mode)
+            if (
+                after.st_dev != before.st_dev
+                or after.st_ino != before.st_ino
+                or after.st_nlink != 1
+                or after.st_uid != effective_uid
+                or after_mode & 0o077
+                or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or len(content) != before.st_size
+            ):
+                raise SensitivePathError(
+                    "sensitive_input_changed",
+                    "sensitive input changed during verification",
+                )
+            return bytes(content)
+        except SensitivePathError:
+            raise
+        except (OSError, ValueError):
+            raise SensitivePathError(
+                "sensitive_input_unavailable",
+                "sensitive input is unavailable",
+            ) from None
+        finally:
+            if file_descriptor >= 0:
+                with suppress(OSError):
+                    os.close(file_descriptor)
+            if parent_descriptor >= 0:
+                with suppress(OSError):
+                    os.close(parent_descriptor)
+
+else:
+
+    def _read_posix_private_bytes(path: Path, *, max_size: int) -> bytes:
+        del path, max_size
+        raise SensitivePathError(
+            "sensitive_private_io_unavailable",
+            "strict private input verification is unavailable",
+        )
+
+
+def read_private_sensitive_bytes(
+    value: str | Path,
+    *,
+    max_size: int = MAX_SENSITIVE_FILE_BYTES,
+) -> bytes:
+    """Read one strictly private local file without repairing its permissions."""
+
+    if max_size <= 0:
+        raise ValueError("max_size must be positive")
+    path = _absolute_local_path(value)
+    _reject_symlink_components(path)
+    _reject_git_worktree(path)
+    if os.name == "nt":
+        try:
+            return read_windows_sensitive_bytes(
+                path,
+                _PACKAGE_REPOSITORY_ROOT,
+                max_size=max_size,
+                private_acl=True,
+                integrity_acl=False,
+                require_protected_acl=True,
+            )
+        except WindowsSensitiveFileError as exc:
+            raise SensitivePathError(exc.code, exc.public_message) from exc
+    return _read_posix_private_bytes(path, max_size=max_size)
+
+
 def _fsync_parent(parent: Path) -> None:
     directory_flag = getattr(os, "O_DIRECTORY", 0)
     try:
@@ -557,6 +724,7 @@ __all__ = [
     "atomic_write_integrity_text",
     "atomic_write_private_json",
     "atomic_write_private_text",
+    "read_private_sensitive_bytes",
     "read_sensitive_bytes",
     "remove_sensitive_file_if_matches",
     "sensitive_path_identity",

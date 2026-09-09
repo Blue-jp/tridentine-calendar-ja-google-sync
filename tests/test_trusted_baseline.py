@@ -67,7 +67,12 @@ def test_exact_clean_inputs_build_candidate_and_explicit_trust_transition(
     assert bundle.candidate.managed_uids == ("fixture-valid-001@example.invalid",)
     verify_baseline_content_hash(bundle.candidate)
     phrase = baseline_confirmation_phrase(bundle.candidate)
-    assert phrase.startswith("TRUST BASELINE T-")
+    assert phrase == (
+        f"TRUST BASELINE T-{bundle.candidate.target_fingerprint[:12]} "
+        f"{bundle.candidate.baseline_content_hash}"
+    )
+    assert phrase.rsplit(" ", 1)[1] == bundle.candidate.baseline_content_hash
+    assert len(phrase.rsplit(" ", 1)[1]) == 64
     assert "fixture-valid-001@example.invalid" not in phrase
 
     assert bundle.trusted.state is BaselineState.TRUSTED
@@ -89,8 +94,14 @@ def test_trust_requires_exact_confirmation_and_candidate_state(
         google_snapshots_dir,
     )
 
+    legacy_truncated = (
+        f"TRUST BASELINE T-{bundle.candidate.target_fingerprint[:12]} "
+        f"{bundle.candidate.baseline_content_hash[:12]}"
+    )
     with pytest.raises(BaselineConfirmationError):
-        trust_baseline(bundle.candidate, "TRUST BASELINE T-000000000000 000000000000")
+        trust_baseline(bundle.candidate, legacy_truncated)
+    with pytest.raises(BaselineConfirmationError):
+        trust_baseline(bundle.candidate, "TRUST BASELINE T-000000000000 " + "0" * 64)
     with pytest.raises(BaselineGuardError):
         baseline_confirmation_phrase(bundle.trusted)
 

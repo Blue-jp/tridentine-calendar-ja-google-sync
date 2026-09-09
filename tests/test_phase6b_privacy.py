@@ -26,8 +26,8 @@ PHASE6B_MODULES = {
 
 PHASE6B_SCHEMAS = {
     "accepted-production-source-manifest-v1.schema.json",
-    "production-single-update-plan-v1.schema.json",
-    "production-single-update-run-spec-v1.schema.json",
+    "production-single-update-plan-v2.schema.json",
+    "production-single-update-run-spec-v2.schema.json",
 }
 
 

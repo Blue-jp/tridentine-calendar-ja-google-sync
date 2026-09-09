@@ -9,6 +9,18 @@ import re
 from collections.abc import Mapping
 from datetime import date, datetime
 
+from tridentine_calendar_google_sync.accepted_production_baseline import (
+    AcceptedProductionBaselineError,
+    verify_accepted_production_baseline_pin,
+    verify_trusted_baseline_against_accepted_pin,
+)
+from tridentine_calendar_google_sync.accepted_production_baseline_models import (
+    AcceptedProductionBaselinePin,
+)
+from tridentine_calendar_google_sync.accepted_production_baseline_registry import (
+    AcceptedProductionBaselineRegistryError,
+    load_active_accepted_production_baseline_pin,
+)
 from tridentine_calendar_google_sync.accepted_production_source_manifest import (
     AcceptedProductionSourceManifestError,
     build_accepted_production_source_manifest,
@@ -50,7 +62,7 @@ from tridentine_calendar_google_sync.production_write_target import (
 )
 from tridentine_calendar_google_sync.provenance import tool_version
 
-_PLAN_HASH_DOMAIN = b"tridentine-calendar-google-sync:production-single-update-plan:v1\x00"
+_PLAN_HASH_DOMAIN = b"tridentine-calendar-google-sync:production-single-update-plan:v2\x00"
 _PRE_IMAGE_HASH_DOMAIN = (
     b"tridentine-calendar-google-sync:production-single-update-pre-image:v1\x00"
 )
@@ -197,6 +209,9 @@ def private_production_single_update_plan_data(
         "baseline_hash": plan.baseline_hash,
         "baseline_snapshot_hash": plan.baseline_snapshot_hash,
         "baseline_state": plan.baseline_state,
+        "accepted_baseline_pin_id": plan.accepted_baseline_pin_id,
+        "accepted_baseline_generation": plan.accepted_baseline_generation,
+        "accepted_baseline_pin_hash": plan.accepted_baseline_pin_hash,
         "managed_uid_count": plan.managed_uid_count,
         "manifest_hash": plan.manifest_hash,
         "source_profile": plan.source_profile,
@@ -245,6 +260,7 @@ def verify_production_single_update_plan(plan: ProductionSingleUpdatePlan) -> No
         plan.target_config_hash,
         plan.baseline_hash,
         plan.baseline_snapshot_hash,
+        plan.accepted_baseline_pin_hash,
         plan.manifest_hash,
         plan.source_sha256,
         plan.source_content_hash,
@@ -255,7 +271,7 @@ def verify_production_single_update_plan(plan: ProductionSingleUpdatePlan) -> No
         plan.plan_content_hash,
     )
     valid = (
-        plan.schema_version == "1.0"
+        plan.schema_version == "2.0"
         and plan.plan_type == "production_single_update"
         and plan.planning_mode == "production_single_update"
         and plan.production is True
@@ -272,6 +288,8 @@ def verify_production_single_update_plan(plan: ProductionSingleUpdatePlan) -> No
         and plan.target_label == "production"
         and plan.target_purpose == PRODUCTION_WRITE_TARGET_PURPOSE
         and plan.baseline_state == "trusted"
+        and plan.accepted_baseline_pin_id
+        == f"production-baseline-g{plan.accepted_baseline_generation:04d}"
         and plan.baseline_snapshot_hash == plan.snapshot_hash
         and plan.managed_uid_count >= 2
         and plan.managed_uid_count == plan.source_event_count
@@ -299,6 +317,67 @@ def verify_production_single_update_plan(plan: ProductionSingleUpdatePlan) -> No
         raise ProductionSingleUpdatePlanError(
             "production_single_update_plan_hash_mismatch",
             "Production Single Update Plan integrity verification failed",
+        )
+
+
+def _load_and_verify_active_accepted_baseline_pin(
+    baseline: TrustedBaseline,
+    target: ProductionWriteTargetConfig,
+) -> AcceptedProductionBaselinePin:
+    """Load the package trust root and bind one private Trusted Baseline to it."""
+
+    try:
+        pin = load_active_accepted_production_baseline_pin()
+    except AcceptedProductionBaselineRegistryError as exc:
+        raise ProductionSingleUpdatePlanError(
+            "production_single_update_accepted_baseline_unavailable",
+            "No active Accepted Production baseline pin is available",
+        ) from exc
+    try:
+        verify_accepted_production_baseline_pin(pin)
+        verify_trusted_baseline_against_accepted_pin(baseline, target, pin)
+    except AcceptedProductionBaselineError as exc:
+        raise ProductionSingleUpdatePlanError(
+            "production_single_update_accepted_baseline_binding_invalid",
+            "Trusted Production baseline does not match the active accepted pin",
+        ) from exc
+    return pin
+
+
+def verify_production_single_update_plan_accepted_baseline(
+    plan: ProductionSingleUpdatePlan,
+) -> None:
+    """Require a Plan claim to match the package-owned currently active pin."""
+
+    try:
+        pin = load_active_accepted_production_baseline_pin()
+        verify_accepted_production_baseline_pin(pin)
+    except AcceptedProductionBaselineRegistryError as exc:
+        raise ProductionSingleUpdatePlanError(
+            "production_single_update_accepted_baseline_unavailable",
+            "No active Accepted Production baseline pin is available",
+        ) from exc
+    except AcceptedProductionBaselineError as exc:
+        raise ProductionSingleUpdatePlanError(
+            "production_single_update_accepted_baseline_binding_invalid",
+            "Production Plan accepted baseline pin is invalid",
+        ) from exc
+
+    valid = (
+        plan.accepted_baseline_pin_id == pin.pin_id
+        and plan.accepted_baseline_generation == pin.generation
+        and hmac.compare_digest(plan.accepted_baseline_pin_hash, pin.pin_content_hash)
+        and hmac.compare_digest(plan.baseline_hash, pin.trusted_baseline_content_hash)
+        and hmac.compare_digest(plan.baseline_snapshot_hash, pin.snapshot_content_hash)
+        and plan.snapshot_event_count == pin.snapshot_event_count
+        and plan.managed_uid_count == pin.managed_uid_count
+        and plan.source_event_count == pin.source_event_count
+        and plan.target_safe_ref == pin.target_safe_ref
+    )
+    if not valid:
+        raise ProductionSingleUpdatePlanError(
+            "production_single_update_accepted_baseline_binding_invalid",
+            "Production Plan does not match the active accepted baseline pin",
         )
 
 
@@ -531,6 +610,10 @@ def validate_production_single_update_eligibility(
         current_snapshot,
         target_fingerprint,
     )
+    accepted_pin = _load_and_verify_active_accepted_baseline_pin(
+        trusted_baseline,
+        target,
+    )
     safe_uid_reference, google_reference = _validate_diff(diff)
     source_event, google_event = _resolve_update_events(
         source,
@@ -546,6 +629,9 @@ def validate_production_single_update_eligibility(
         safe_uid_ref=safe_uid_reference,
         google_ref=google_reference,
         baseline_hash=trusted_baseline.baseline_content_hash,
+        accepted_baseline_pin_id=accepted_pin.pin_id,
+        accepted_baseline_generation=accepted_pin.generation,
+        accepted_baseline_pin_hash=accepted_pin.pin_content_hash,
         manifest_hash=manifest.manifest_content_hash,
         source_sha256=source.raw_sha256,
         source_content_hash=source.content_hash,
@@ -597,6 +683,9 @@ def build_production_single_update_plan(
         target_config_hash=eligibility.target_config_hash,
         baseline_hash=trusted_baseline.baseline_content_hash,
         baseline_snapshot_hash=trusted_baseline.snapshot_content_hash,
+        accepted_baseline_pin_id=eligibility.accepted_baseline_pin_id,
+        accepted_baseline_generation=eligibility.accepted_baseline_generation,
+        accepted_baseline_pin_hash=eligibility.accepted_baseline_pin_hash,
         managed_uid_count=trusted_baseline.managed_uid_count,
         manifest_hash=manifest.manifest_content_hash,
         source_profile=manifest.source_profile,
@@ -619,6 +708,7 @@ def build_production_single_update_plan(
         update={"plan_content_hash": calculate_production_single_update_plan_hash(provisional)}
     )
     verify_production_single_update_plan(plan)
+    verify_production_single_update_plan_accepted_baseline(plan)
     return plan
 
 
@@ -631,4 +721,5 @@ __all__ = [
     "private_production_single_update_plan_data",
     "validate_production_single_update_eligibility",
     "verify_production_single_update_plan",
+    "verify_production_single_update_plan_accepted_baseline",
 ]

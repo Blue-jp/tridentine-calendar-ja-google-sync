@@ -137,7 +137,7 @@ def test_valid_run_spec_is_short_lived_non_executable_and_exactly_bound(
     plan = _plan(inputs)
     run_spec = _run_spec(inputs)
 
-    assert run_spec.run_type == "production-single-update-run-spec-v1"
+    assert run_spec.run_type == "production-single-update-run-spec-v2"
     assert run_spec.production is True
     assert run_spec.production_only is True
     assert run_spec.synthetic is False
@@ -243,7 +243,7 @@ def test_run_spec_is_deterministic_schema_valid_and_canonical(tmp_path: Path) ->
     )
     schema = json.loads(
         (
-            REPOSITORY_ROOT / "schemas" / "production-single-update-run-spec-v1.schema.json"
+            REPOSITORY_ROOT / "schemas" / "production-single-update-run-spec-v2.schema.json"
         ).read_text(encoding="utf-8")
     )
     document = json.loads(rendered)
@@ -431,12 +431,12 @@ def test_run_spec_io_is_repository_external_atomic_expiry_aware_and_no_overwrite
     (
         lambda raw: raw.replace(b'"operation_count": 1', b'"operation_count": 2', 1),
         lambda raw: raw.replace(
-            b'"schema_version": "1.0",',
+            b'"schema_version": "2.0",',
             b'"schema_version": "1.0",\n  "unexpected": true,',
             1,
         ),
         lambda raw: raw.replace(
-            b'"schema_version": "1.0",',
+            b'"schema_version": "2.0",',
             b'"schema_version": "1.0",\n  "schema_version": "1.0",',
             1,
         ),

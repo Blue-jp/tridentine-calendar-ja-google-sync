@@ -18,6 +18,7 @@ from tridentine_calendar_google_sync.baseline_models import BaselineState, Trust
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     atomic_write_private_text,
+    read_private_sensitive_bytes,
     read_sensitive_bytes,
 )
 
@@ -144,6 +145,30 @@ def load_baseline(path: str | Path) -> TrustedBaseline:
         ) from exc
 
 
+def load_production_trusted_baseline(path: str | Path) -> TrustedBaseline:
+    """Load one Production Trusted Baseline through the strict private-file boundary."""
+
+    try:
+        raw_bytes = read_private_sensitive_bytes(
+            path,
+            max_size=MAX_BASELINE_BYTES,
+        )
+        baseline = parse_baseline_bytes(raw_bytes)
+        if baseline.state is not BaselineState.TRUSTED:
+            raise BaselineValidationError(
+                "production_baseline_not_trusted",
+                "Production baseline must be in trusted state",
+            )
+        return baseline
+    except BaselineError:
+        raise
+    except SensitivePathError:
+        raise BaselineInputError(
+            "unsafe_production_baseline_path",
+            "Production trusted baseline path is unsafe or unavailable",
+        ) from None
+
+
 def write_baseline(baseline: TrustedBaseline, path: str | Path) -> Path:
     """Atomically create a private baseline without allowing overwrite."""
 
@@ -168,6 +193,7 @@ def write_baseline(baseline: TrustedBaseline, path: str | Path) -> Path:
 __all__ = [
     "MAX_BASELINE_BYTES",
     "load_baseline",
+    "load_production_trusted_baseline",
     "parse_baseline_bytes",
     "render_baseline_json",
     "write_baseline",

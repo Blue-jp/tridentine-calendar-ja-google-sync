@@ -16,7 +16,7 @@ from tridentine_calendar_google_sync.production_single_update_run_spec_models im
 )
 
 _APPROVAL_MATERIAL_HASH_DOMAIN = (
-    b"tridentine-calendar-google-sync:production-approval-material:v1\x00"
+    b"tridentine-calendar-google-sync:production-approval-material:v2\x00"
 )
 
 
@@ -53,6 +53,9 @@ def production_approval_material_data(
         "target_config_hash": run_spec.target_config_hash,
         "target_environment": run_spec.target_environment,
         "baseline_state": run_spec.baseline_state,
+        "accepted_baseline_pin_id": run_spec.accepted_baseline_pin_id,
+        "accepted_baseline_generation": run_spec.accepted_baseline_generation,
+        "accepted_baseline_pin_hash": run_spec.accepted_baseline_pin_hash,
         "trusted_baseline_hash": run_spec.trusted_baseline_hash,
         "baseline_snapshot_hash": run_spec.baseline_snapshot_hash,
         "manifest_hash": run_spec.manifest_hash,

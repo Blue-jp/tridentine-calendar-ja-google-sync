@@ -67,6 +67,7 @@ include = [
   "/LICENSE",
   "/README.md",
   "/SECURITY.md",
+  "/accepted_baselines",
   "/profiles",
   "/schemas",
   "/src",
@@ -77,6 +78,7 @@ include = [
 packages = ["src/tridentine_calendar_google_sync"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"accepted_baselines/production-baseline-registry-v1.json" = "tridentine_calendar_google_sync/_accepted_baselines/production-baseline-registry-v1.json"
 "profiles/accepted-20260814.toml" = "tridentine_calendar_google_sync/_profiles/accepted-20260814.toml"
 "schemas" = "tridentine_calendar_google_sync/_schemas"
 

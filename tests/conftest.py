@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -10,6 +10,9 @@ from typing import Any
 
 import pytest
 
+from tridentine_calendar_google_sync.accepted_production_baseline_models import (
+    AcceptedProductionBaselinePin,
+)
 from tridentine_calendar_google_sync.baseline_engine import (
     baseline_confirmation_phrase,
     build_baseline_candidate,
@@ -26,6 +29,23 @@ from tridentine_calendar_google_sync.models import (
 )
 from tridentine_calendar_google_sync.profiles import load_profile
 from tridentine_calendar_google_sync.source_ics import inspect_source
+
+_PHASE6D1G_ACTIVE_ACCEPTED_BASELINE_PIN: AcceptedProductionBaselinePin | None = None
+
+
+def set_phase6d1g_active_accepted_baseline_pin(pin: AcceptedProductionBaselinePin) -> None:
+    # Test-only state shared with worker threads.
+    global _PHASE6D1G_ACTIVE_ACCEPTED_BASELINE_PIN
+    if not isinstance(pin, AcceptedProductionBaselinePin):
+        raise TypeError("Phase 6D.1G test pin is invalid")
+    _PHASE6D1G_ACTIVE_ACCEPTED_BASELINE_PIN = pin
+
+
+def clear_phase6d1g_active_accepted_baseline_pin() -> None:
+    # Restore the real package registry for the current test.
+    global _PHASE6D1G_ACTIVE_ACCEPTED_BASELINE_PIN
+    _PHASE6D1G_ACTIVE_ACCEPTED_BASELINE_PIN = None
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -185,6 +205,31 @@ def synthetic_profile_factory() -> Callable[..., AcceptedSourceProfile]:
 @pytest.fixture
 def synthetic_baseline_bundle_factory() -> Callable[..., SyntheticBaselineBundle]:
     return build_synthetic_baseline_bundle
+
+
+@pytest.fixture(autouse=True)
+def phase6d1g_active_accepted_baseline_pin_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    # Patch only test module globals; Production APIs retain no override argument.
+    from tridentine_calendar_google_sync import cli as cli_module
+    from tridentine_calendar_google_sync import production_single_update_plan as plan_module
+    from tridentine_calendar_google_sync.accepted_production_baseline_registry import (
+        load_active_accepted_production_baseline_pin as real_loader,
+    )
+
+    clear_phase6d1g_active_accepted_baseline_pin()
+
+    def test_loader() -> AcceptedProductionBaselinePin:
+        pin = _PHASE6D1G_ACTIVE_ACCEPTED_BASELINE_PIN
+        return real_loader() if pin is None else pin
+
+    monkeypatch.setattr(plan_module, "load_active_accepted_production_baseline_pin", test_loader)
+    monkeypatch.setattr(cli_module, "load_active_accepted_production_baseline_pin", test_loader)
+    try:
+        yield
+    finally:
+        clear_phase6d1g_active_accepted_baseline_pin()
 
 
 @pytest.fixture(autouse=True)

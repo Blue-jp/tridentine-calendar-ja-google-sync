@@ -26,6 +26,7 @@ from tridentine_calendar_google_sync.production_approval_material import (
 from tridentine_calendar_google_sync.production_single_update_plan import (
     build_production_single_update_plan,
     verify_production_single_update_plan,
+    verify_production_single_update_plan_accepted_baseline,
 )
 from tridentine_calendar_google_sync.production_single_update_plan_models import (
     PRODUCTION_SINGLE_UPDATE_CHANGED_FIELDS,
@@ -44,7 +45,7 @@ from tridentine_calendar_google_sync.provenance import tool_version
 _OPERATION_HASH_DOMAIN = (
     b"tridentine-calendar-google-sync:production-single-update-operation:v1\x00"
 )
-_RUN_SPEC_HASH_DOMAIN = b"tridentine-calendar-google-sync:production-single-update-run-spec:v1\x00"
+_RUN_SPEC_HASH_DOMAIN = b"tridentine-calendar-google-sync:production-single-update-run-spec:v2\x00"
 
 
 class ProductionSingleUpdateRunSpecError(ValueError):
@@ -106,6 +107,9 @@ def private_production_single_update_run_spec_data(
         "target_config_hash": run_spec.target_config_hash,
         "target_environment": run_spec.target_environment,
         "baseline_state": run_spec.baseline_state,
+        "accepted_baseline_pin_id": run_spec.accepted_baseline_pin_id,
+        "accepted_baseline_generation": run_spec.accepted_baseline_generation,
+        "accepted_baseline_pin_hash": run_spec.accepted_baseline_pin_hash,
         "trusted_baseline_hash": run_spec.trusted_baseline_hash,
         "baseline_snapshot_hash": run_spec.baseline_snapshot_hash,
         "manifest_hash": run_spec.manifest_hash,
@@ -194,6 +198,7 @@ def verify_production_single_update_run_spec(
         run_spec.target_config_hash,
         run_spec.trusted_baseline_hash,
         run_spec.baseline_snapshot_hash,
+        run_spec.accepted_baseline_pin_hash,
         run_spec.manifest_hash,
         run_spec.source_sha256,
         run_spec.source_content_hash,
@@ -208,8 +213,8 @@ def verify_production_single_update_run_spec(
     )
     lifetime = (run_spec.expires_at - run_spec.issued_at).total_seconds()
     valid = (
-        run_spec.schema_version == "1.0"
-        and run_spec.run_type == "production-single-update-run-spec-v1"
+        run_spec.schema_version == "2.0"
+        and run_spec.run_type == "production-single-update-run-spec-v2"
         and run_spec.planning_mode == "production_single_update"
         and run_spec.production is True
         and run_spec.production_only is True
@@ -225,6 +230,8 @@ def verify_production_single_update_run_spec(
         and run_spec.target_safe_ref == f"T-{run_spec.target_fingerprint[:12]}"
         and run_spec.target_environment == "production"
         and run_spec.baseline_state == "trusted"
+        and run_spec.accepted_baseline_pin_id
+        == f"production-baseline-g{run_spec.accepted_baseline_generation:04d}"
         and run_spec.baseline_snapshot_hash == run_spec.current_snapshot_hash
         and run_spec.source_event_count == run_spec.snapshot_event_count
         and run_spec.source_event_count >= 2
@@ -286,6 +293,9 @@ def verify_production_single_update_run_spec_bindings(
         or run_spec.target_config_hash != plan.target_config_hash
         or run_spec.trusted_baseline_hash != plan.baseline_hash
         or run_spec.baseline_snapshot_hash != plan.baseline_snapshot_hash
+        or run_spec.accepted_baseline_pin_id != plan.accepted_baseline_pin_id
+        or run_spec.accepted_baseline_generation != plan.accepted_baseline_generation
+        or run_spec.accepted_baseline_pin_hash != plan.accepted_baseline_pin_hash
         or run_spec.manifest_hash != plan.manifest_hash
         or run_spec.source_profile != plan.source_profile
         or run_spec.accepted_tag != plan.accepted_tag
@@ -307,6 +317,13 @@ def verify_production_single_update_run_spec_bindings(
             "production_single_update_run_spec_binding_mismatch",
             "Production Plan and Run Spec do not match",
         )
+    try:
+        verify_production_single_update_plan_accepted_baseline(plan)
+    except Exception as exc:
+        raise ProductionSingleUpdateRunSpecError(
+            "production_single_update_accepted_baseline_binding_invalid",
+            "Production Plan does not match the active accepted baseline pin",
+        ) from exc
 
 
 def build_production_single_update_run_spec(
@@ -376,6 +393,9 @@ def build_production_single_update_run_spec(
         target_fingerprint=production_plan.target_fingerprint,
         target_safe_ref=production_plan.target_safe_ref,
         target_config_hash=production_plan.target_config_hash,
+        accepted_baseline_pin_id=production_plan.accepted_baseline_pin_id,
+        accepted_baseline_generation=production_plan.accepted_baseline_generation,
+        accepted_baseline_pin_hash=production_plan.accepted_baseline_pin_hash,
         trusted_baseline_hash=production_plan.baseline_hash,
         baseline_snapshot_hash=production_plan.baseline_snapshot_hash,
         manifest_hash=production_plan.manifest_hash,
