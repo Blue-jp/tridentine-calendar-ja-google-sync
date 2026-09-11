@@ -98,8 +98,8 @@ can therefore remain broadly readable without becoming broadly mutable.
 
 ## Artifact classification
 
-- Production write token and OAuth client credentials are secrets and require private
-  file ACL validation.
+- Production write token, OAuth client credentials, and Production target config are
+  private operational inputs and require private file ACL validation.
 - `ProductionWriteTokenGenerationState` is non-secret operational metadata. It retains
   handle-based integrity ACL, safe-parent, path-identity, reparse, and
   repository-exclusion controls. Broad read is permitted, but non-administrator write or

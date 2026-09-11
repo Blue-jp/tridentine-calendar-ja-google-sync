@@ -24,7 +24,7 @@ The private manifest stores full provenance. Its Human/JSON inspection report em
 
 Planning requires a repository-external `ProductionWriteTargetConfig` with environment and label `production`, purpose `production_calendar_single_update`, owner access, and `Asia/Tokyo`. The explicit Calendar ID must hash to the configured target fingerprint. The `primary` alias and Test/synthetic target markers are rejected.
 
-The target config is private. Public artifacts carry only its domain-separated config hash, target fingerprint internally where required for binding, and a short `T-` reference for inspection.
+The target config is private and is loaded only through the strict private-file boundary. Windows requires a current-user-owned protected private DACL and the existing handle-bound anti-reparse/anti-hardlink checks. POSIX requires the effective user to own a single-link regular file with no group/other permissions and reads it through the no-follow fd chain. Unsafe-path and parse failures are surfaced without private paths or target values. Public artifacts carry only its domain-separated config hash, target fingerprint internally where required for binding, and a short `T-` reference for inspection.
 
 ## Baseline and full-snapshot freshness
 
