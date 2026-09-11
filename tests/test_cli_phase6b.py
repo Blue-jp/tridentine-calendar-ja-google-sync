@@ -75,8 +75,6 @@ def _plan_arguments(paths: dict[str, Path], profile_id: str) -> list[str]:
         str(paths["source"]),
         "--profile",
         profile_id,
-        "--profiles-dir",
-        str(paths["profiles"]),
         "--google-snapshot",
         str(paths["snapshot"]),
         "--trusted-baseline",
@@ -118,8 +116,6 @@ def test_phase6b_parser_contract_has_only_explicit_local_artifact_arguments() ->
         "accepted.ics",
         "--profile",
         "accepted-20990101",
-        "--profiles-dir",
-        "profiles",
         "--google-snapshot",
         "snapshot.json",
         "--trusted-baseline",
@@ -174,6 +170,18 @@ def test_phase6b_parser_contract_has_only_explicit_local_artifact_arguments() ->
             ]
         )
 
+    with pytest.raises(argparse.ArgumentError):
+        parser.parse_args(
+            [
+                "build-production-single-update-plan",
+                *common,
+                "--profiles-dir",
+                "untrusted-profiles",
+                "--output",
+                "plan.json",
+            ]
+        )
+
 
 def test_cli_offline_manifest_plan_and_run_spec_flow_never_loads_google(
     tmp_path: Path,
@@ -187,6 +195,11 @@ def test_cli_offline_manifest_plan_and_run_spec_flow_never_loads_google(
         raise AssertionError("Phase 6B CLI touched an optional Google boundary")
 
     monkeypatch.setattr(cli, "load_google_optional_bindings", forbidden_google_boundary)
+    monkeypatch.setattr(
+        cli,
+        "load_accepted_production_profile",
+        lambda _profile_id: inputs.updated.profile,
+    )
     monkeypatch.setattr(cli, "datetime", _FixedDateTime)
 
     assert (

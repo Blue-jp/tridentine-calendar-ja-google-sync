@@ -42,7 +42,6 @@ from tridentine_calendar_google_sync.production_write_target import (
 from tridentine_calendar_google_sync.source_ics import inspect_source
 
 PRODUCTION_LIKE_PROFILE_ID = "accepted-20990101"
-PRODUCTION_LIKE_REPOSITORY = "calendar-owner/calendar-source"
 PRODUCTION_LIKE_CALENDAR_ID = "phase6b-production@calendar.example"
 PRODUCTION_LIKE_SUMMARY = "Phase 6B Production Calendar"
 PRODUCTION_LIKE_TIME_ZONE = "Asia/Tokyo"
@@ -317,7 +316,6 @@ def build_production_planning_inputs(
     manifest = build_accepted_production_source_manifest(
         desired.profile,
         desired.source,
-        repository_identity=PRODUCTION_LIKE_REPOSITORY,
     )
     return ProductionPlanningInputs(
         current=current,

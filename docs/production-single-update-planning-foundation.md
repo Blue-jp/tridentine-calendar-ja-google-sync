@@ -16,7 +16,7 @@ The Production Plan and Run Spec are distinct artifact types. They are not accep
 - nonzero event count, exact first/last dates, and coherent all-day/timed/recurring aggregates; and
 - a domain-separated manifest hash over every field except that hash itself.
 
-The builder independently verifies the Accepted profile and `SourceCalendarInspection`. Source bytes must match the profile SHA, validation must be exactly clean, aggregates and canonical content hash must match, every UID must be present and unique, and `.invalid`, Test, or synthetic identity markers are rejected. Pins are supplied by the manifest and profile; code contains no hardcoded current Production tag, commit, ICS SHA, target fingerprint, or event-count constant.
+The builder independently verifies the Accepted profile and `SourceCalendarInspection`. Source bytes must match the profile SHA, validation must be exactly clean, aggregates and canonical content hash must match, every UID must be present and unique, and `.invalid`, Test, or synthetic identity markers are rejected. Production source authority is rooted in the reviewed package/repository: the source repository identity is fixed to `Blue-jp/tridentine_calendar`, and Production CLI loads only a code-pinned packaged Accepted profile whose raw TOML SHA-256 must match the reviewed code pin. Production commands do not accept an external `--profiles-dir`. A new Accepted Production source therefore requires a reviewed repository/package change before it can become Production planning authority.
 
 The private manifest stores full provenance. Its Human/JSON inspection report emits only safe `R-`, `A-`, `C-`, `I-`, `P-`, `S-`, and `M-` references plus aggregate counts and dates.
 

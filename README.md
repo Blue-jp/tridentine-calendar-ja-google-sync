@@ -284,7 +284,7 @@ Bootstrap成功後はこの経路を再利用せず、Source 1 / Google 1の一�
 
 `inspect-accepted-production-source-manifest`は、別途作成されたAccepted Production Source Manifestをstrictに検証し、repository/tag/commit/ICS/profile/source hashをsafe referenceへ変換して表示します。Manifestは`production=true`、`acceptance_state=accepted`、`synthetic=false`で、cleanなAccepted sourceのexact provenanceとaggregateだけを認めます。
 
-`build-production-single-update-plan`はmanifest、Accepted source/profile、Trusted Production Baseline、同baseline snapshot hashに一致するfull sanitized snapshot、明示的Production target configをofflineで再検証します。全件のうちexactly 1件だけがDESCRIPTION update、少なくとも1件がunrelated unchanged、add/delete/duplicate/ambiguous/unmanaged/fatal/warningがすべて0の場合だけ、non-executable Planを作ります。
+`build-production-single-update-plan`はmanifest、Accepted source/profile、Trusted Production Baseline、同baseline snapshot hashに一致するfull sanitized snapshot、明示的Production target configをofflineで再検証します。Production profileはreview済みpackage/repositoryにcode-pinnedされたものだけを使用し、Production commandは外部`--profiles-dir`を受け付けません。Source repository identityも`Blue-jp/tridentine_calendar`へ固定されます。全件のうちexactly 1件だけがDESCRIPTION update、少なくとも1件がunrelated unchanged、add/delete/duplicate/ambiguous/unmanaged/fatal/warningがすべて0の場合だけ、non-executable Planを作ります。
 
 `build-production-single-update-run-spec`は同じ入力とPlanを再bindし、UTC-aware `issued_at <= now < expires_at`かつ最大24時間の短命Run Specを作ります。Run Specはsafe UID reference、canonical pre-image hash、Description patch hashを保持しますが、raw UID、SUMMARY、DESCRIPTION、current/desired body、Calendar ID、Google event ID、ETag、payload、endpoint、HTTP methodを保持しません。実際のidentity/content解決とETag取得は、将来の別Phaseがfresh inputをmemory上で再検証した後にだけ行います。
 
@@ -298,8 +298,7 @@ tridentine-calendar-google-sync inspect-accepted-production-source-manifest `
 tridentine-calendar-google-sync build-production-single-update-plan `
   --manifest "<repository外のmanifest path>" `
   --source "<repository外のAccepted ICS path>" `
-  --profile "<accepted profile id>" `
-  --profiles-dir "<repository外のprofile directory>" `
+  --profile "<package-pinned Accepted profile id>" `
   --google-snapshot "<repository外のfull sanitized snapshot path>" `
   --trusted-baseline "<repository外のtrusted baseline path>" `
   --target-config "<repository外のProduction target TOML path>" `
@@ -312,8 +311,7 @@ tridentine-calendar-google-sync inspect-production-single-update-plan `
 tridentine-calendar-google-sync build-production-single-update-run-spec `
   --manifest "<repository外のmanifest path>" `
   --source "<repository外のAccepted ICS path>" `
-  --profile "<accepted profile id>" `
-  --profiles-dir "<repository外のprofile directory>" `
+  --profile "<package-pinned Accepted profile id>" `
   --google-snapshot "<repository外のfull sanitized snapshot path>" `
   --production-plan "<repository外のProduction Plan path>" `
   --trusted-baseline "<repository外のtrusted baseline path>" `
