@@ -6,7 +6,6 @@ import hmac
 import json
 import os
 import stat
-import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -80,50 +79,37 @@ def _reject_symlink_components(path: Path) -> None:
 
 
 def _reject_git_worktree(path: Path) -> None:
-    """Reject paths beneath a committed worktree without emitting Git output."""
+    """Reject any ancestor .git marker without running Git or reading its contents."""
 
-    start = path if path.is_dir() else path.parent
     if path.is_relative_to(_PACKAGE_REPOSITORY_ROOT):
         raise SensitivePathError(
             "sensitive_path_in_git_worktree",
             "sensitive data must be stored outside every Git worktree",
         )
+    try:
+        start = path if path.is_dir() else path.parent
+    except OSError:
+        raise SensitivePathError(
+            "sensitive_path_unavailable",
+            "sensitive path cannot be safely inspected",
+        ) from None
     for ancestor in (start, *start.parents):
-        marker = ancestor / ".git"
         try:
-            if marker.exists() or marker.is_symlink():
-                try:
-                    result = subprocess.run(
-                        [
-                            "git",
-                            "-c",
-                            "safe.directory=*",
-                            "-C",
-                            os.fspath(ancestor),
-                            "rev-parse",
-                            "--verify",
-                            "HEAD",
-                        ],
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                        timeout=5,
-                    )
-                except (OSError, subprocess.SubprocessError):
-                    continue
-                if result.returncode == 0:
-                    raise SensitivePathError(
-                        "sensitive_path_in_git_worktree",
-                        "sensitive data must be stored outside every Git worktree",
-                    )
-        except SensitivePathError:
-            raise
-        except OSError as exc:
+            (ancestor / ".git").lstat()
+        except FileNotFoundError:
+            # Only a positively missing marker permits traversal to continue.
+            continue
+        except OSError:
             raise SensitivePathError(
                 "sensitive_path_unavailable",
                 "sensitive path cannot be safely inspected",
-            ) from exc
+            ) from None
+        # A directory, gitfile, malformed marker, or dangling link all block.
+        # Do not make privacy depend on Git availability or a resolvable HEAD.
+        raise SensitivePathError(
+            "sensitive_path_in_git_worktree",
+            "sensitive data must be stored outside every Git worktree",
+        )
 
 
 def validate_sensitive_input_path(
