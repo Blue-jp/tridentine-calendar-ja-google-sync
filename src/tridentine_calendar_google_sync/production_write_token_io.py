@@ -29,6 +29,7 @@ from tridentine_calendar_google_sync.production_write_token_models import (
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     atomic_write_private_text,
+    read_private_sensitive_bytes,
     read_sensitive_bytes,
     remove_sensitive_file_if_matches,
     sensitive_path_identity,
@@ -255,13 +256,10 @@ def load_production_write_authorized_user_token(
     try:
         validated = Path(path)
         _reject_repository_parent(validated)
-        _require_private_file_mode(validated)
         return parse_production_write_authorized_user_token_bytes(
-            read_sensitive_bytes(
+            read_private_sensitive_bytes(
                 validated,
                 max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
-                windows_private_acl=True,
-                windows_require_protected_acl=True,
             )
         )
     except ProductionWriteTokenIOError:

@@ -284,8 +284,9 @@ if sys.platform != "win32":
 
         no_follow = getattr(os, "O_NOFOLLOW", 0)
         directory_flag = getattr(os, "O_DIRECTORY", 0)
+        nonblocking = getattr(os, "O_NONBLOCK", 0)
         close_on_exec = getattr(os, "O_CLOEXEC", 0)
-        if no_follow == 0 or directory_flag == 0:
+        if no_follow == 0 or directory_flag == 0 or nonblocking == 0:
             raise SensitivePathError(
                 "sensitive_private_io_unavailable",
                 "strict private input verification is unavailable",
@@ -319,7 +320,7 @@ if sys.platform != "win32":
 
             file_descriptor = os.open(
                 path.name,
-                os.O_RDONLY | no_follow | close_on_exec,
+                os.O_RDONLY | no_follow | close_on_exec | nonblocking,
                 dir_fd=parent_descriptor,
             )
             before = os.fstat(file_descriptor)
@@ -414,8 +415,15 @@ def read_private_sensitive_bytes(
     value: str | Path,
     *,
     max_size: int = MAX_SENSITIVE_FILE_BYTES,
+    windows_require_protected_acl: bool = True,
 ) -> bytes:
-    """Read one strictly private local file without repairing its permissions."""
+    """Read private bytes without permission repair or a generic-reader fallback.
+
+    POSIX always requires effective-owner, single-link, owner-only fd checks.
+    The Windows-only option preserves inherited-but-private credential support;
+    it does not relax POSIX checks. Baseline, target, and Production token callers
+    retain the protected-DACL default.
+    """
 
     if max_size <= 0:
         raise ValueError("max_size must be positive")
@@ -430,7 +438,7 @@ def read_private_sensitive_bytes(
                 max_size=max_size,
                 private_acl=True,
                 integrity_acl=False,
-                require_protected_acl=True,
+                require_protected_acl=windows_require_protected_acl,
             )
         except WindowsSensitiveFileError as exc:
             raise SensitivePathError(exc.code, exc.public_message) from exc

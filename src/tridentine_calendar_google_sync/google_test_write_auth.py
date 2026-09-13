@@ -19,7 +19,7 @@ from tridentine_calendar_google_sync.sensitive_paths import (
     JsonValue,
     SensitivePathError,
     atomic_write_private_json,
-    read_sensitive_bytes,
+    read_private_sensitive_bytes,
     sensitive_path_identity,
     validate_sensitive_input_path,
     validate_sensitive_output_path,
@@ -198,20 +198,20 @@ def load_test_write_authorized_user_token(
     try:
         value = _normalize_token_payload(
             _decode_json_object(
-                read_sensitive_bytes(
+                read_private_sensitive_bytes(
                     path,
-                    windows_private_acl=True,
+                    windows_require_protected_acl=False,
                 )
             )
         )
         return TestWriteAuthorizedUserToken.model_validate(value, strict=True)
     except TestWriteAuthError:
         raise
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise TestWriteAuthConfigError(
             "unsafe_test_write_authorized_user_path",
             "Test write authorized-user token path is unsafe or unavailable",
-        ) from exc
+        ) from None
     except ValidationError as exc:
         raise TestWriteAuthConfigError(
             "invalid_test_write_authorized_user_token",
