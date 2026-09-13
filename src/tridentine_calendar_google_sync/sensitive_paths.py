@@ -274,6 +274,57 @@ def read_sensitive_bytes(
 
 if sys.platform != "win32":
 
+    def _prepare_posix_private_output_fd(descriptor: int) -> None:
+        """Set and verify mode on the fresh mkstemp descriptor before content write.
+
+        This helper is only for the empty temporary file just created by this
+        writer. It is not a permission-repair API for existing inputs or outputs.
+        Publication, ancestor binding, and cleanup remain separate boundaries.
+        """
+
+        if os.name != "posix":
+            raise SensitivePathError(
+                "sensitive_private_io_unavailable",
+                "strict private output permission verification is unavailable",
+            )
+        try:
+            before = os.fstat(descriptor)
+            effective_uid = os.geteuid()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_uid != effective_uid
+                or before.st_size != 0
+                or stat.S_IMODE(before.st_mode) & ~0o600
+            ):
+                raise SensitivePathError(
+                    "sensitive_write_failed",
+                    "sensitive temporary output failed permission verification",
+                )
+            # Apply permissions to the opened object, never to a replaceable name.
+            os.fchmod(descriptor, 0o600)
+            after = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(after.st_mode)
+                or after.st_dev != before.st_dev
+                or after.st_ino != before.st_ino
+                or after.st_nlink != 1
+                or after.st_uid != effective_uid
+                or after.st_size != 0
+                or stat.S_IMODE(after.st_mode) != 0o600
+            ):
+                raise SensitivePathError(
+                    "sensitive_write_failed",
+                    "sensitive temporary output failed permission verification",
+                )
+        except SensitivePathError:
+            raise
+        except (OSError, AttributeError, NotImplementedError):
+            raise SensitivePathError(
+                "sensitive_write_failed",
+                "sensitive temporary output permissions could not be verified",
+            ) from None
+
     def _read_posix_private_bytes(path: Path, *, max_size: int) -> bytes:
         # Read one owner-only regular file through a no-follow fd chain.
         if os.name != "posix":
@@ -403,6 +454,13 @@ if sys.platform != "win32":
 
 else:
 
+    def _prepare_posix_private_output_fd(descriptor: int) -> None:
+        del descriptor
+        raise SensitivePathError(
+            "sensitive_private_io_unavailable",
+            "strict POSIX output permission verification is unavailable",
+        )
+
     def _read_posix_private_bytes(path: Path, *, max_size: int) -> bytes:
         del path, max_size
         raise SensitivePathError(
@@ -483,7 +541,7 @@ def _atomic_private_write(
     try:
         descriptor, temporary_name = tempfile.mkstemp(prefix=".private-write-", dir=path.parent)
         temporary_path = Path(temporary_name)
-        os.chmod(temporary_path, 0o600)
+        _prepare_posix_private_output_fd(descriptor)
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
             descriptor = -1
             stream.write(content)
@@ -502,7 +560,6 @@ def _atomic_private_write(
                 ) from exc
             temporary_path.unlink()
             temporary_path = None
-        os.chmod(path, 0o600)
         _fsync_parent(path.parent)
     except SensitivePathError:
         raise
