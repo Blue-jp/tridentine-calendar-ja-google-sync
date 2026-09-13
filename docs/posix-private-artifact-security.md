@@ -47,9 +47,43 @@ Parent/ancestor substitution, concurrent destination changes, crash durability,
 filesystem ACL/mount policy, and multi-artifact rollback remain unclosed work.
 No existing operational file or directory is repaired or re-permissioned here.
 
-## Remaining DS-04 work (not closed by this increment)
+## DS-04 / Unit 4C: retained-directory binding foundation, not yet integrated
 
-Units 4A and 4B do not complete POSIX writer hardening, refresh replacement, exact-artifact
+`_posix_sensitive_directory.open_posix_private_directory` opens one existing
+private directory from `/` using no-follow directory descriptors. All ancestor
+descriptors remain open for the context lifetime. Directory identities are
+checked before/after open and each child's name is compared with its retained
+parent descriptor. `revalidate()` repeats the identity, owner, mode, effective-UID,
+and `.git` marker checks and closes the binding on failure.
+
+The final parent must be owned by the effective user with mode exactly `0700`.
+Root and intermediate directories must be owned by root or the effective user
+and must not be group/other writable. A root-owned sticky directory is allowed
+only as an intermediate ancestor, never as the final private parent; its next
+child must also have a trusted owner. Symbolic links, untrusted owners, detected
+name substitution, present `.git` markers, unsupported primitives, and inspection
+errors stop without a generic-path fallback. No existing permission is repaired.
+A maximum of 128 path components bounds descriptor use.
+
+This foundation is NOT used by any existing reader, writer, or cleanup function
+yet. It performs only metadata inspection and directory opens/closes, and does
+not create, publish, replace, delete, or change the permissions of an artifact.
+Windows receives an unavailable result from this POSIX-only component; existing
+Windows I/O and ACL policy are unchanged. The tests exercise the component
+independently. Passing them is not approval for the current POSIX writer.
+
+A retained descriptor prevents later relative operations from being redirected
+by reparsing an absolute pathname, but revalidation is not a filesystem lock.
+It does not make future link/replace/unlink calls conditional on a leaf inode,
+and does not eliminate changes after a check by the same user or a privileged
+actor. Integration, leaf identity/content checks, exact cleanup, concurrent
+replacement semantics, mount/filesystem ACL policy, and durability still require
+separate review. Inputs with `/` as their final parent, `..`, `//` anchors, or
+nonabsolute paths are unsupported rather than normalized through symlinks.
+
+## Remaining DS-04 work (not closed by these increments)
+
+Units 4A, 4B, and 4C do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.
