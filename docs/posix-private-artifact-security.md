@@ -108,11 +108,12 @@ The boolean is conservative evidence, not retry authorization. If the parent
 or temporary identity cannot be verified, cleanup leaves the object alone.
 Raw paths, file content and OS exception text are suppressed from public errors.
 
-This backend is exercised by synthetic tests only in this increment. Existing
+Unit 4D introduced this backend independently. Unit 4E now connects only the
+Production Plan and Run Spec file writers through a dedicated adapter. Common
 `atomic_write_private_text/json`, integrity writers, token refresh/rollback and
-operational callers are NOT switched to it. Windows public writers are unchanged;
-this new POSIX-only API fails closed on other platforms. Integrating all callers
-requires a separate compatibility, concurrency and failure-semantics review.
+all other operational callers are NOT switched to it. Windows retains its existing
+private writer. Integrating further callers requires a separate compatibility,
+concurrency and failure-semantics review.
 
 The private parent prevents other users from normal namespace mutation under the
 stated owner/mode policy. It does not defend against hostile same-UID or privileged
@@ -124,9 +125,46 @@ exact-artifact rollback, and multi-file transactions are not closed here. An fsy
 success is not a universal power-loss guarantee. Do not interpret this independent
 backend test as approval of the old public POSIX writer or Production operations.
 
+## DS-04 / Unit 4E: first caller integration, single planning artifacts only
+
+`write_production_single_update_plan` and `write_production_single_update_run_spec`
+now use `_private_create_io.create_private_text`. Their existing CLI build commands
+already invoke these writers, so the actual saved artifacts (not merely a test-only
+entry point) take this route. Rendering, canonical bytes, schemas, accepted-pin
+checks, lifetimes and authorization rules are unchanged. Inspection report outputs
+are not migrated. No active Production pin, OAuth or live adapter is enabled.
+
+On POSIX the adapter first performs the existing local-path/repository preflight,
+then uses the retained-directory create-only backend with no legacy fallback.
+The final parent must already be effective-user-owned with mode exactly `0700`;
+no existing directory is created or repaired. This is an intentional tightening
+for these two output writers only. Unsupported flags or filesystems stop rather
+than choosing a less strict writer. On Windows the adapter delegates to the
+existing private text writer with overwrite disabled and its unchanged ACL policy.
+
+The two existing role-specific I/O exception classes retain their error codes and
+now carry `publication_possible`. For write failures, `False` means no final-name
+publication was attempted by that call; it does not promise no private temporary
+or no output created by another process. `True` means a link attempt occurred.
+`None` means the adapter cannot determine publication state (including unspecified
+backend or Windows writer errors). Parse/read errors do not assign write evidence.
+The boolean/unknown state is not authorization to retry, overwrite, delete, or
+infer that the target name is absent. None of these writers retries or rolls back.
+
+For `True` or `None`, the role-specific safe error message warns that output may
+exist and must not be retried or removed automatically. The unchanged CLI error
+handler prints that message and returns its existing nonzero error code without a
+success message. OS text, paths and content are suppressed from normal traceback
+chains. Cancellation/BaseException is not a new transactional guarantee.
+
+Token-plus-generation-state bundle rollback and other multi-artifact callers are
+explicitly left on their existing paths: swapping the common writer here would
+silently change their failure semantics. Their correction is still required.
+Unit 4E is a bounded integration, not full POSIX I/O or Production approval.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, and 4D do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, and 4E do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.

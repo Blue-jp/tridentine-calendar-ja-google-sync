@@ -392,7 +392,7 @@ def test_directory_foundation_only_has_the_reviewed_create_backend_consumer() ->
         for node in ast.walk(backend_tree)
     )
     for module in Path(directory.__file__).parent.glob("*.py"):
-        if module.name == "_posix_private_create.py":
+        if module.name in ("_posix_private_create.py", "_private_create_io.py"):
             continue
-        # New publisher is tested independently; no public writer dispatch yet.
+        # Only the reviewed planning adapter may import the publisher.
         assert "_posix_private_create" not in module.read_text(encoding="utf-8")

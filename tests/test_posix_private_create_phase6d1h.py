@@ -424,7 +424,7 @@ def test_non_posix_has_no_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     )
 
 
-def test_backend_not_wired_to_public_writers_and_no_replace_or_path_chmod() -> None:
+def test_backend_not_wired_to_common_writer_and_no_replace_or_path_chmod() -> None:
     tree = ast.parse(Path(create.__file__).read_text(encoding="utf-8"))
     calls = {
         node.func.attr

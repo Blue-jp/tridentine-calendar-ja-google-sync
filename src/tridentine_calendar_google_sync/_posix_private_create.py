@@ -1,4 +1,4 @@
-"""Create-only POSIX byte publisher; existing public writers are not routed here yet.
+"""Create-only POSIX byte publisher; selected planning writers opt in via an adapter.
 
 The directory and source descriptors remain open throughout. No overwrite or
 final-name rollback is provided. Name checks are not an inode compare-and-swap;
