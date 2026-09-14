@@ -47,7 +47,7 @@ Parent/ancestor substitution, concurrent destination changes, crash durability,
 filesystem ACL/mount policy, and multi-artifact rollback remain unclosed work.
 No existing operational file or directory is repaired or re-permissioned here.
 
-## DS-04 / Unit 4C: retained-directory binding foundation, not yet integrated
+## DS-04 / Unit 4C: retained-directory binding foundation
 
 `_posix_sensitive_directory.open_posix_private_directory` opens one existing
 private directory from `/` using no-follow directory descriptors. All ancestor
@@ -65,8 +65,8 @@ name substitution, present `.git` markers, unsupported primitives, and inspectio
 errors stop without a generic-path fallback. No existing permission is repaired.
 A maximum of 128 path components bounds descriptor use.
 
-This foundation is NOT used by any existing reader, writer, or cleanup function
-yet. It performs only metadata inspection and directory opens/closes, and does
+Unit 4D uses this foundation in the separately tested create-only backend.
+Existing public readers, writers, and cleanup functions still do not use it. It performs only metadata inspection and directory opens/closes, and does
 not create, publish, replace, delete, or change the permissions of an artifact.
 Windows receives an unavailable result from this POSIX-only component; existing
 Windows I/O and ACL policy are unchanged. The tests exercise the component
@@ -81,9 +81,52 @@ replacement semantics, mount/filesystem ACL policy, and durability still require
 separate review. Inputs with `/` as their final parent, `..`, `//` anchors, or
 nonabsolute paths are unsupported rather than normalized through symlinks.
 
+## DS-04 / Unit 4D: independent create-only publication backend
+
+`_posix_private_create.create_posix_private_bytes` uses the retained private
+parent from Unit 4C and the descriptor permission preparation from Unit 4B.
+It creates an unpredictable temporary relative to the held parent with
+`O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC`, prepares/verifies `0600` before writing,
+handles short writes, fsyncs the file, and reads back the expected bytes through
+the same descriptor. Name-to-inode, ownership, permissions, content and parent
+checks are repeated before and after publication. Content is bounded by the
+existing sensitive-file size limit.
+
+Publication uses `link` with both names relative to the retained parent and
+`follow_symlinks=False`. There is no overwrite parameter, rename fallback or
+pre-existing destination deletion. An existing file, directory or dangling link
+blocks creation. On success the final name is bound to the verified file and
+has one link, exact `0600`, and expected content; directory fsync is required.
+The temporary is removed only after checking its name against the still-open
+original descriptor and revalidating the parent. Cleanup never targets the
+final output. No existing permissions are repaired.
+
+Failures are NOT promised to be side-effect-free. `PosixPrivateCreateError` has
+`publication_possible=True` from the first link attempt, including a reported
+`FileExistsError`; an error can leave a published artifact and/or private temp.
+The boolean is conservative evidence, not retry authorization. If the parent
+or temporary identity cannot be verified, cleanup leaves the object alone.
+Raw paths, file content and OS exception text are suppressed from public errors.
+
+This backend is exercised by synthetic tests only in this increment. Existing
+`atomic_write_private_text/json`, integrity writers, token refresh/rollback and
+operational callers are NOT switched to it. Windows public writers are unchanged;
+this new POSIX-only API fails closed on other platforms. Integrating all callers
+requires a separate compatibility, concurrency and failure-semantics review.
+
+The private parent prevents other users from normal namespace mutation under the
+stated owner/mode policy. It does not defend against hostile same-UID or privileged
+actors, and name checks are not inode-conditional link/unlink operations. Parent
+binding is not a lock. A same-UID change after inspection can still race a syscall;
+post-checks can detect some changes but cannot undo an already-visible publication.
+POSIX filesystem ACLs, special mounts, storage durability guarantees, replacement,
+exact-artifact rollback, and multi-file transactions are not closed here. An fsync
+success is not a universal power-loss guarantee. Do not interpret this independent
+backend test as approval of the old public POSIX writer or Production operations.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, and 4C do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, and 4D do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.

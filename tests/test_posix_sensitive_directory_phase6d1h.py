@@ -348,7 +348,7 @@ def test_windows_has_no_posix_open_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     assert captured.value.code == "posix_directory_binding_unavailable"
 
 
-def test_foundation_performs_no_mutation_and_is_not_yet_a_runtime_backend() -> None:
+def test_directory_foundation_only_has_the_reviewed_create_backend_consumer() -> None:
     source = Path(directory.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
     forbidden = {
@@ -372,7 +372,7 @@ def test_foundation_performs_no_mutation_and_is_not_yet_a_runtime_backend() -> N
     }
     assert not (calls & forbidden)
     for module in Path(directory.__file__).parent.glob("*.py"):
-        if module.name == "_posix_sensitive_directory.py":
+        if module.name in ("_posix_sensitive_directory.py", "_posix_private_create.py"):
             continue
         other = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(other):
@@ -382,3 +382,17 @@ def test_foundation_performs_no_mutation_and_is_not_yet_a_runtime_backend() -> N
                 assert not any(
                     alias.name.endswith("._posix_sensitive_directory") for alias in node.names
                 )
+
+    backend = Path(directory.__file__).with_name("_posix_private_create.py")
+    backend_tree = ast.parse(backend.read_text(encoding="utf-8"))
+    assert any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "tridentine_calendar_google_sync"
+        and any(alias.name == "_posix_sensitive_directory" for alias in node.names)
+        for node in ast.walk(backend_tree)
+    )
+    for module in Path(directory.__file__).parent.glob("*.py"):
+        if module.name == "_posix_private_create.py":
+            continue
+        # New publisher is tested independently; no public writer dispatch yet.
+        assert "_posix_private_create" not in module.read_text(encoding="utf-8")
