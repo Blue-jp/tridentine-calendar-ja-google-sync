@@ -109,9 +109,10 @@ or temporary identity cannot be verified, cleanup leaves the object alone.
 Raw paths, file content and OS exception text are suppressed from public errors.
 
 Unit 4D introduced this backend independently. Unit 4E now connects only the
-Production Plan and Run Spec file writers through a dedicated adapter. Common
+Production Plan and Run Spec file writers through a dedicated adapter; Unit 4F
+also connects rehearsal evidence outputs. Common
 `atomic_write_private_text/json`, integrity writers, token refresh/rollback and
-all other operational callers are NOT switched to it. Windows retains its existing
+other operational callers are NOT switched to it. Windows retains its existing
 private writer. Integrating further callers requires a separate compatibility,
 concurrency and failure-semantics review.
 
@@ -162,9 +163,43 @@ explicitly left on their existing paths: swapping the common writer here would
 silently change their failure semantics. Their correction is still required.
 Unit 4E is a bounded integration, not full POSIX I/O or Production approval.
 
+## DS-04 / Unit 4F: rehearsal evidence batch, no transactional rollback
+
+The rehearsal snapshot and text/JSON report writers now use the create-only
+adapter. Existing file names, ordering (snapshot when present, text, JSON),
+rendering, canonical bytes, and snapshot-optional behavior are unchanged. This
+is local evidence output only; the live rehearsal CLI remains hard-off.
+
+On POSIX all three outputs use the retained-directory publisher: existing
+user-owned 0700 parent and new 0600 files, with no legacy writer fallback. Reports
+remain sanitized data even though they are stored with private mode. On Windows the
+snapshot retains the existing private writer and the two reports retain the
+existing integrity writer. No existing ACL, owner, or directory is repaired.
+
+This is NOT an atomic multi-file transaction. All payloads are rendered before
+writing. A failure stops the sequence without retrying or deleting any final
+output, including outputs whose writer already returned. The error retains
+`publication_possible` and `completed_output_count` (the number of writer calls
+that returned normally, not a persisted transaction record). For the batch,
+`False` rules out only a final-name attempt by its writers, not temporary residue
+or a competitor's output. `True` means a previous writer returned or the failed
+writer reported a publication attempt. `None` means unknown when no earlier
+writer returned. Unknown Windows/unspecified errors are never demoted to False.
+For True or None, the safe message warns against automatic retry or removal.
+Adapter/writer and recognized path-preflight errors suppress private path/content
+and OS traceback context. Render errors happen before writing. Process termination
+or BaseException remains outside this evidence contract.
+
+No count/flag proves that a complete, mutually bound evidence set persists. A
+successful snapshot alone must not be treated as completion of the batch. A
+separate completion manifest/crash protocol would be needed before relying on
+all-or-nothing batch behavior. No such protocol is enabled by this increment.
+Token-plus-generation-state, refresh, exact rollback, approval/journal writes,
+and common writers remain on their old paths. DS-04 remains PARTIAL.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, and 4E do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, and 4F do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.
