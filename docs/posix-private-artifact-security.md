@@ -307,9 +307,46 @@ A report with this stop code is not proof of an intact or recoverable token/stat
 pair. Controlled reconciliation, safe replacement, full POSIX Python 3.12 CI and
 all remaining DS-04 boundaries remain required. DS-04 remains PARTIAL.
 
+## DS-04 / Unit 4J: refresh pre-save input recheck, not conditional replacement
+
+After the existing refresh-result validation and before entering token persistence,
+refresh reloads generation state and the original token through the existing
+role-specific loaders. It compares each canonical UTF-8 serialization to the
+corresponding input originally loaded before refresh. Both comparisons must match;
+no credential text, digest, path or low-level exception is emitted. This check
+applies to Windows and POSIX and reuses their existing read/ACL policies.
+
+An observed content change, missing/unreadable/unsafe file, parse failure or other
+ordinary exception in this recheck stops with the fixed safe code
+`production_write_token_refresh_prewrite_unverified`, carried by
+`ProductionWriteTokenRefreshPrewriteError` (a RefreshError subclass). The error
+has `refresh_completed=True`, `persistence_attempted=False`, and
+`publication_possible=False`, solely because this call has not entered its save
+function. False is NOT proof of unchanged files, an intact pair, usable old tokens
+or unchanged provider credentials. Refresh has already returned, so the error
+always prohibits automatic retry, removal or restoration. No session is returned.
+The existing mock rehearsal records TOKEN_REFRESH_FAILED and the attempt counter
+before constructing a Calendar transport; no report schema or recovery manifest
+is added. Unit 4I still handles ordinary exceptions from the later save call.
+
+This is a best-effort content recheck, NOT compare-and-swap, a lock, a transaction,
+generation freshness, authentication or a safe replacement backend. The reads
+are sequential and their descriptors are not retained through persistence. A
+same-content replacement can pass, a change after its read can be missed, and
+existing overwrite=True can still overwrite a racing change after the check.
+ABA changes, hostile same-UID/privileged changes, cancellation, process death and
+provider-side rotation/recovery remain outside this guarantee. The check prevents
+only proceeding past a mismatch or failed read that it actually observes.
+
+Canonical formats, role/scope/evidence/identity/target/generation checks, current
+unexpired-token behavior, refresh invocation count, all writers, Windows ACLs,
+bundle rollback, common I/O and live hard-offs are unchanged. Reconciliation,
+conditional/serialized replacement, ancestry, ACL/mount policy, durability and
+complete POSIX Python 3.12 CI remain pending. DS-04 stays PARTIAL.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, and 4I do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, and 4J do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.

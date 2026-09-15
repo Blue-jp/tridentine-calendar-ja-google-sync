@@ -88,6 +88,23 @@ class ProductionWriteTokenRefreshPersistenceError(ProductionWriteTokenRefreshErr
         )
 
 
+class ProductionWriteTokenRefreshPrewriteError(ProductionWriteTokenRefreshError):
+    """Refresh completed, but reloaded inputs could not be matched before saving."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "production_write_token_refresh_prewrite_unverified",
+            "Production token/state inputs could not be reverified after refresh. "
+            "No persistence was attempted by this call; do not retry, remove, or restore "
+            "files automatically. Reconciliation is required.",
+        )
+        self.refresh_completed = True
+        self.persistence_attempted = False
+        # This is only evidence that this call did not enter its save function.
+        # It says nothing about changes made by the provider or another process.
+        self.publication_possible = False
+
+
 def _is_utc(value: datetime) -> bool:
     offset = value.utcoffset()
     return offset is not None and offset.total_seconds() == 0
@@ -665,6 +682,8 @@ def _load_production_write_credential_session(
         ProductionWriteTokenIOError,
         load_production_write_authorized_user_token,
         load_production_write_token_generation_state,
+        render_production_write_authorized_user_token_json,
+        render_production_write_token_generation_state_json,
         validate_production_write_token_path_set,
         write_production_write_authorized_user_token,
     )
@@ -745,6 +764,24 @@ def _load_production_write_credential_session(
         verify_production_write_authorized_user_token(refreshed_token, state, target)
     else:
         _verify_mock_production_write_authorized_user_token(refreshed_token, state, target)
+    # Re-read after refresh, through the existing role-specific loaders. This
+    # detects an observed changed/missing/unsafe pair, not an atomic snapshot or
+    # an inode/content-conditional replacement. The writer itself is unchanged.
+    try:
+        current_state = load_production_write_token_generation_state(generation_state_path)
+        current_token = load_production_write_authorized_user_token(production_write_token_path)
+        state_matches = hmac.compare_digest(
+            render_production_write_token_generation_state_json(current_state).encode("utf-8"),
+            render_production_write_token_generation_state_json(state).encode("utf-8"),
+        )
+        token_matches = hmac.compare_digest(
+            render_production_write_authorized_user_token_json(current_token).encode("utf-8"),
+            render_production_write_authorized_user_token_json(token).encode("utf-8"),
+        )
+        if not state_matches or not token_matches:
+            raise ProductionWriteTokenRefreshPrewriteError()
+    except Exception:
+        raise ProductionWriteTokenRefreshPrewriteError() from None
     try:
         write_production_write_authorized_user_token(
             refreshed_token,
@@ -835,6 +872,7 @@ __all__ = [
     "ProductionWriteTokenError",
     "ProductionWriteTokenRefreshError",
     "ProductionWriteTokenRefreshPersistenceError",
+    "ProductionWriteTokenRefreshPrewriteError",
     "authorize_production_write_token",
     "authorize_production_write_token_mock",
     "build_initial_production_write_token_generation_state",

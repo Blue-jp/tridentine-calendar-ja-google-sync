@@ -110,3 +110,17 @@ Calendar transport is built. Its report contains the safe code and existing
 refresh-attempt counter, not a new persisted token recovery record. A failure can
 leave old or new token material; manual/controlled reconciliation and the unresolved
 replacement boundary remain separate work. See [POSIX private-artifact security](posix-private-artifact-security.md).
+
+## Refresh pre-save input recheck (DS-04 / Unit 4J)
+
+Before saving a validated refresh result, both originally loaded token/state
+contents are reloaded and compared by canonical bytes using their existing
+role-specific readers. A mismatch or ordinary re-read/parse failure emits
+`production_write_token_refresh_prewrite_unverified`: no save call or session,
+no automatic retry, removal or restoration. Refresh has already completed, so
+this is not evidence that the old token remains usable. The unchanged rehearsal
+classifies it as TOKEN_REFRESH_FAILED before Calendar transport construction.
+This detects observed pre-save changes only: no atomic pair snapshot, lock,
+inode compare-and-swap, safe overwrite or durable recovery record is introduced.
+Changes after recheck remain possible. Unit 4I persistence failure behavior and
+all live hard-offs remain in force. See [POSIX private-artifact security](posix-private-artifact-security.md).
