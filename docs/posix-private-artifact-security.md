@@ -197,9 +197,38 @@ all-or-nothing batch behavior. No such protocol is enabled by this increment.
 Token-plus-generation-state, refresh, exact rollback, approval/journal writes,
 and common writers remain on their old paths. DS-04 remains PARTIAL.
 
+## DS-04 / Unit 4G: generation-state content read boundary
+
+`load_production_write_token_generation_state` now uses the strict private
+reader on POSIX. The old group/other-mode policy is retained, but is checked on
+the file descriptor used to read the bytes, not by a separate pathname stat.
+The effective owner, regular-file type, single-link count, bounded size and
+before/after content metadata are checked by the existing reader; no-follow
+traversal and nonblocking leaf open are also reused. There is no generic-reader
+fallback after a POSIX read error and no permission repair.
+
+Generation state remains non-secret operational metadata. On Windows this loader
+still calls the existing handle-bound integrity reader with
+`windows_integrity_acl=True`; broad read permission is not newly forbidden and
+private/protected secret-file ACL requirements are not imposed. The POSIX private
+mode requirement is existing policy, not a reclassification of metadata as a secret.
+
+Canonical JSON, generation hashes, role/target binding, predecessor transition
+rules and parsers are unchanged. Path failures keep the existing role-specific,
+path-free code; this increment does not claim new redaction for all parser errors.
+Load success is not proof that the file is the newest authorized generation, that
+it is signed, or that a matching token/state pair persists after the read.
+
+The token/state writers, bundle ordering and rollback, refresh replacement,
+reserved-path checks, common readers/writers, and the Unit 4C retained-directory
+component are not changed. The content reader does not gain retained-ancestor
+revalidation through this change. Those remaining boundaries, complete POSIX
+Python 3.12 CI, and Production eligibility still need independent review.
+DS-04 remains PARTIAL; no live adapter or Production authorization is enabled.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, and 4F do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, and 4G do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.

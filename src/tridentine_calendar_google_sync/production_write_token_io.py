@@ -357,14 +357,21 @@ def load_production_write_token_generation_state(
     try:
         validated = Path(path)
         _reject_repository_parent(validated)
-        _require_private_file_mode(validated)
-        return parse_production_write_token_generation_state_bytes(
-            read_sensitive_bytes(
+        # Generation state is non-secret metadata. Preserve Windows integrity
+        # ACL semantics; POSIX already requires private mode, now checked on
+        # the same opened file as the content rather than by a separate stat.
+        if os.name == "nt":
+            raw = read_sensitive_bytes(
                 validated,
                 max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
                 windows_integrity_acl=True,
             )
-        )
+        else:
+            raw = read_private_sensitive_bytes(
+                validated,
+                max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
+            )
+        return parse_production_write_token_generation_state_bytes(raw)
     except ProductionWriteTokenIOError:
         raise
     except SensitivePathError:
