@@ -366,6 +366,7 @@ def test_only_reviewed_callers_opt_in_and_common_writer_has_no_new_backend() -> 
         "production_single_update_plan_io.py",
         "production_single_update_run_spec_io.py",
         "production_write_token_rehearsal_io.py",
+        "production_write_token_io.py",
     }
     common = Path(sensitive_paths.__file__).read_text(encoding="utf-8")
     assert "_private_create_io" not in common and "_posix_private_create" not in common

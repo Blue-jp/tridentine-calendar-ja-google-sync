@@ -226,9 +226,50 @@ revalidation through this change. Those remaining boundaries, complete POSIX
 Python 3.12 CI, and Production eligibility still need independent review.
 DS-04 remains PARTIAL; no live adapter or Production authorization is enabled.
 
+## DS-04 / Unit 4H: POSIX token/state create-only persistence, no final rollback
+
+The Production token writer (only `overwrite=False`) and immutable generation-state
+writer now use the reviewed create-only adapter on POSIX. The existing repository
+and repository-parent exclusions, bounded canonical rendering, token scopes/roles
+and token/state cross-binding are retained. Their parent directories must already
+be effective-user-owned and exactly 0700; no permission repair, overwrite, legacy
+fallback, automatic retry, or final-output deletion is introduced.
+
+`write_production_write_token_bundle` retains state-first ordering, distinct-path
+preflight and rendering of both documents before any write. On POSIX a writer
+failure stops the pair without invoking the old content-check/path-unlink rollback.
+A first-writer failure may leave state; a second-writer failure may leave state and
+secret token material. An existing output, including a concurrently created file
+with matching bytes, is not a rollback target. Do not infer absence from failure.
+Private temporary cleanup internal to the publisher remains its existing policy.
+
+Write errors retain `publication_possible` (False/True/None) and bundle errors add
+`completed_output_count`, counting normally returned writer calls. If an earlier
+writer returned, the pair's flag is True even when the next writer reports False.
+Without earlier completion, the failed writer's flag is retained; an unspecified
+failure is None. False rules out only a final-name attempt by that call, not private
+temporary residue or another process's output. True is not proof of a complete
+pair; None is unknown. True/None public messages prohibit automatic retry/removal.
+Paths, credential values and low-level error chains are suppressed in these new
+write-error boundaries. Render, input-validation and read errors do not gain a new
+universal redaction/transaction guarantee; cancellation/BaseException is outside
+the ordinary-exception evidence contract.
+
+This is NOT a multi-file atomic commit, recovery manifest, generation-freshness
+proof or authorization to load a failed pair. No live adapter is enabled. Windows
+keeps its existing private token/state writers, protected-token ACL checks and
+bundle recovery path. Existing Windows generation-state broad-read integrity policy
+is unchanged. The explicit token `overwrite=True` path used by injected refresh
+also remains unchanged on every platform and is NOT upgraded by this increment.
+Readers, parsers, generation hashes, predecessor/target binding, common writers,
+refresh logic, exact-artifact cleanup and live OAuth/rehearsal hard-offs are not
+changed. Controlled reconciliation of residual files, safe replacement, ancestry,
+filesystem ACL/mount policy, durability and complete POSIX Python 3.12 CI remain
+required. DS-04 stays PARTIAL and Production operation remains BLOCKED.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, 4F, and 4G do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, and 4H do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.
