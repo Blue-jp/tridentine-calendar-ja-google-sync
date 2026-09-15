@@ -71,6 +71,23 @@ class ProductionWriteTokenRefreshError(ProductionWriteTokenError):
     """The one permitted mock refresh failed without browser fallback."""
 
 
+class ProductionWriteTokenRefreshPersistenceError(ProductionWriteTokenRefreshError):
+    """Validated refresh response could not be stored; no session or recovery approval."""
+
+    def __init__(self, *, publication_possible: bool | None = None) -> None:
+        super().__init__(
+            "production_write_token_refresh_persistence_failed",
+            "Refreshed Production write credentials could not be persisted safely. "
+            "Token state may require reconciliation; do not retry or remove files automatically.",
+        )
+        # These describe this ordinary-exception path, not durable provider/file state.
+        self.refresh_completed = True
+        self.persistence_attempted = True
+        self.publication_possible = (
+            publication_possible if type(publication_possible) is bool else None
+        )
+
+
 def _is_utc(value: datetime) -> bool:
     offset = value.utcoffset()
     return offset is not None and offset.total_seconds() == 0
@@ -645,6 +662,7 @@ def _load_production_write_credential_session(
     """Load an exact-role token and perform at most one injected fake refresh."""
 
     from tridentine_calendar_google_sync.production_write_token_io import (
+        ProductionWriteTokenIOError,
         load_production_write_authorized_user_token,
         load_production_write_token_generation_state,
         validate_production_write_token_path_set,
@@ -727,11 +745,22 @@ def _load_production_write_credential_session(
         verify_production_write_authorized_user_token(refreshed_token, state, target)
     else:
         _verify_mock_production_write_authorized_user_token(refreshed_token, state, target)
-    write_production_write_authorized_user_token(
-        refreshed_token,
-        production_write_token_path,
-        overwrite=True,
-    )
+    try:
+        write_production_write_authorized_user_token(
+            refreshed_token,
+            production_write_token_path,
+            overwrite=True,
+        )
+    except Exception as exc:
+        # A failed save cannot establish that the previous token still exists,
+        # or that a refreshed/rotated credential can safely be requested again.
+        # Preserve explicit writer evidence; unspecified failures stay unknown.
+        publication_possible = (
+            exc.publication_possible if isinstance(exc, ProductionWriteTokenIOError) else None
+        )
+        raise ProductionWriteTokenRefreshPersistenceError(
+            publication_possible=publication_possible
+        ) from None
     return ProductionWriteCredentialSession(
         token=refreshed_token,
         generation_state=state,
@@ -805,6 +834,7 @@ __all__ = [
     "ProductionWriteTokenConfigError",
     "ProductionWriteTokenError",
     "ProductionWriteTokenRefreshError",
+    "ProductionWriteTokenRefreshPersistenceError",
     "authorize_production_write_token",
     "authorize_production_write_token_mock",
     "build_initial_production_write_token_generation_state",

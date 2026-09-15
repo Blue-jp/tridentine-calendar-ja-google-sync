@@ -96,3 +96,17 @@ It excludes Calendar ID, full target fingerprint, raw UID, Summary, Description,
 Phase 6D operational work, in a separate user-authorized step, will first create the dedicated token and then perform a read-only rehearsal. It must use real repository-external operational inputs, exact challenges, and a fresh security review. Phase 6E remains the only phase that may consider one naturally occurring, eligible Description-only Production patch. Add remains Phase 6F and Delete remains an independent phase.
 
 Repository-wide Deep security scan required after merge and before Production OAuth. The Phase 6D.0 pull-request diff scan is necessary evidence for this code change, but it is not the final live-OAuth eligibility scan.
+
+## Refresh persistence failures (DS-04 / Unit 4I)
+
+The injected refresh path still uses the existing explicit token replacement
+writer; no live refresher or safer replacement protocol is enabled. Once refreshed
+credentials have passed validation, an ordinary save exception becomes
+`production_write_token_refresh_persistence_failed` and no credential session is
+returned. The safe exception retains conservative in-memory publication evidence
+and always warns against automatically retrying, deleting, or restoring files.
+The unchanged mock rehearsal classifies this as TOKEN_REFRESH_FAILED before any
+Calendar transport is built. Its report contains the safe code and existing
+refresh-attempt counter, not a new persisted token recovery record. A failure can
+leave old or new token material; manual/controlled reconciliation and the unresolved
+replacement boundary remain separate work. See [POSIX private-artifact security](posix-private-artifact-security.md).

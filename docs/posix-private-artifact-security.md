@@ -267,9 +267,49 @@ changed. Controlled reconciliation of residual files, safe replacement, ancestry
 filesystem ACL/mount policy, durability and complete POSIX Python 3.12 CI remain
 required. DS-04 stays PARTIAL and Production operation remains BLOCKED.
 
+## DS-04 / Unit 4I: refresh persistence failure evidence, not safe replacement
+
+After an injected refresh returns and the refreshed credentials pass the existing
+scope, evidence-origin, client identity and target/generation checks, persistence
+still uses the existing explicit `overwrite=True` writer. This increment does not
+replace that writer, make it conditional on an inode/content snapshot, or repair
+its POSIX ancestry/replacement/durability limitations. Windows writer/ACL behavior,
+new token/state creation, bundle ordering, read/parsing rules and generation state
+are unchanged. Live authorization and rehearsal remain hard-off.
+
+An ordinary exception from that one save call is now translated to
+`ProductionWriteTokenRefreshPersistenceError`, a `ProductionWriteTokenRefreshError`
+with the fixed safe code `production_write_token_refresh_persistence_failed`.
+No usable credential session is returned. The refresh is not repeated; the token
+and state are not removed, restored, reparsed for automatic recovery, or retried.
+Raw writer error text and displayed exception context are suppressed.
+
+The error has `refresh_completed=True` (the refresh result passed validation) and
+`persistence_attempted=True` (the save function was entered). Neither proves a
+particular remote provider state or a successful local replacement. Explicit
+writer `publication_possible` evidence is retained only as False, True or None;
+unspecified or invalid evidence remains None. The existing replacement writer
+usually reports None. No exception text, errno, file existence, file content or
+completed-output count is used to guess that replacement did not happen.
+
+Even False only rules out the failed writer's own final-name attempt; it does not
+establish that old credentials are still usable or that a provider did not rotate
+them. Every persistence error therefore warns against automatic retry/removal.
+These attributes are in-memory evidence, not a persistent reconciliation record.
+An ordinary read or refresh-request failure retains its existing error contract;
+BaseException/cancellation and process termination are not covered by this boundary.
+
+The existing mock rehearsal catches the RefreshError subclass, records the
+provider's existing attempt count, emits TOKEN_REFRESH_FAILED with the new safe
+code, and constructs no Calendar transport. No report schema/hash is changed, and
+its aggregate report does not newly serialize these in-memory evidence fields.
+A report with this stop code is not proof of an intact or recoverable token/state
+pair. Controlled reconciliation, safe replacement, full POSIX Python 3.12 CI and
+all remaining DS-04 boundaries remain required. DS-04 remains PARTIAL.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, and 4H do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, and 4I do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.
