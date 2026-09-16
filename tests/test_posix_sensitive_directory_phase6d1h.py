@@ -348,7 +348,7 @@ def test_windows_has_no_posix_open_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     assert captured.value.code == "posix_directory_binding_unavailable"
 
 
-def test_directory_foundation_only_has_the_reviewed_create_backend_consumer() -> None:
+def test_directory_foundation_only_has_the_reviewed_backend_consumers() -> None:
     source = Path(directory.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
     forbidden = {
@@ -372,7 +372,11 @@ def test_directory_foundation_only_has_the_reviewed_create_backend_consumer() ->
     }
     assert not (calls & forbidden)
     for module in Path(directory.__file__).parent.glob("*.py"):
-        if module.name in ("_posix_sensitive_directory.py", "_posix_private_create.py"):
+        if module.name in (
+            "_posix_sensitive_directory.py",
+            "_posix_private_create.py",
+            "_posix_private_replace.py",
+        ):
             continue
         other = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(other):
@@ -392,7 +396,11 @@ def test_directory_foundation_only_has_the_reviewed_create_backend_consumer() ->
         for node in ast.walk(backend_tree)
     )
     for module in Path(directory.__file__).parent.glob("*.py"):
-        if module.name in ("_posix_private_create.py", "_private_create_io.py"):
+        if module.name in (
+            "_posix_private_create.py",
+            "_private_create_io.py",
+            "_posix_private_replace.py",
+        ):
             continue
-        # Only the reviewed planning adapter may import the publisher.
+        # Only the reviewed adapter and independent replacement backend may import the publisher.
         assert "_posix_private_create" not in module.read_text(encoding="utf-8")

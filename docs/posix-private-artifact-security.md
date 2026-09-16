@@ -344,9 +344,57 @@ bundle rollback, common I/O and live hard-offs are unchanged. Reconciliation,
 conditional/serialized replacement, ancestry, ACL/mount policy, durability and
 complete POSIX Python 3.12 CI remain pending. DS-04 stays PARTIAL.
 
+## DS-04 / Unit 4K: independent retained-descriptor replacement, not yet integrated
+
+`_posix_private_replace.replace_posix_private_bytes` accepts bounded replacement
+bytes AND exact expected prior bytes. It requires an existing, effective-user-owned,
+single-link regular file with exact 0600 mode in an existing user-owned 0700 parent.
+It uses the retained directory binding from Unit 4C and existing byte/identity checks
+from Unit 4D. Root-to-parent descriptors and BOTH old/new leaf descriptors remain
+open through verification. Existing public writers, token refresh, loaders,
+parsers, Unit 4I/J errors, Windows ACLs and token/state bundle recovery do not use
+this function yet and are unchanged by Unit 4K. There is no live authorization.
+
+The prior file is opened read-only, no-follow and nonblocking. Expected content,
+identity, ownership, permissions, link count and metadata are checked before making
+a temporary and again before replace. A missing or mismatching destination is not
+created or repaired. The unpredictable temporary is exclusive-created relative to
+the retained parent, prepared as 0600 before content writes, fsynced and read back
+through its own descriptor. Short writes/reads and empty content are supported.
+Both final-name and temporary-name bindings and the ancestry are rechecked.
+
+Publication uses one `os.replace` call with two names relative to the retained
+parent. It is an overwriting syscall, NOT inode/content compare-and-swap. Expected
+bytes and metadata are observations, not a kernel condition on that syscall.
+Holding an old descriptor prevents its inode reuse while held, but does not lock
+its name or contents. A same-UID/privileged writer may still change a name AFTER
+inspection; such a change may be overwritten. Some post-checks detect races but
+cannot undo an already-visible rename. No hostile-same-UID or all-race guarantee,
+lock protocol, generation freshness or persistent pair consistency is claimed.
+
+After replace, the old descriptor must be unlinked and still contain expected
+bytes, and the final name must identify the new 0600 single-link file with exact
+new content. Parent fsync and a final recheck are required before success. An fsync
+result is not a universal durability/power-loss guarantee or an atomic pair commit.
+
+`PosixPrivateReplaceError.publication_possible` is False until the first replace
+attempt and True thereafter, even when the syscall raises. It never infers that
+old credentials remain usable or that files/provider state are unchanged. All
+ordinary failures suppress raw paths/content/OS exception text and prohibit
+automatic retry, removal or restoration. No automatic name cleanup occurs on
+failure: a private temporary, the old target, a new target or a competitor may
+remain. Successful rename consumes the temporary name; failures may leave it.
+Cancellation/BaseException and process death do not gain a recovery record.
+
+Integration into refresh, retained original-input identities across refresh,
+serialization/conditional replacement, controlled residue reconciliation,
+ACL/mount policy, ancestry assumptions and complete locked Python 3.12 Linux CI
+remain separate gates. DS-04 stays PARTIAL; Production remains BLOCKED. This
+independent backend must not be described as an upgrade to overwrite=True yet.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, and 4J do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, and 4K do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.
