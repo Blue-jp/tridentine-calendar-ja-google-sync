@@ -376,6 +376,7 @@ def test_directory_foundation_only_has_the_reviewed_backend_consumers() -> None:
             "_posix_sensitive_directory.py",
             "_posix_private_create.py",
             "_posix_private_replace.py",
+            "_posix_private_lock.py",
         ):
             continue
         other = ast.parse(module.read_text(encoding="utf-8"))

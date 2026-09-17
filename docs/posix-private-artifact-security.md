@@ -436,9 +436,57 @@ only an integrated POSIX token replacement path, not serialization, safe pair
 reconciliation, full ancestry/ACL/mount policy, general durability, or operational
 approval. All remaining DS-04 gates and locked Python 3.12 Linux CI remain required.
 
+## DS-04 / Unit 4M: independent nonblocking advisory directory lock
+
+`_posix_private_lock.acquire_posix_private_directory_lock` is a new independent
+component, NOT connected to token refresh, new token/state creation, writers,
+readers or reconciliation. Existing application source and operational entry points
+are unchanged. Passing this component's tests does not serialize any existing flow.
+
+This first backend is explicitly limited to Linux-native `fcntl.flock` semantics.
+It obtains a separate retained root-to-parent binding from Unit 4C, requires an
+existing effective-user-owned exact 0700 final directory, then makes ONE
+`LOCK_EX | LOCK_NB` request on that directory's open description. It revalidates
+the bound name, ownership, mode and Git markers before and after acquiring the lock.
+A conflict is a safe busy error, not a sleep/retry loop, success, or an unlocked
+fallback. Other ordinary failures and unsupported platforms stop path-free.
+Windows and other POSIX systems have no fallback in this independent backend.
+No lock file/PID file is created, read, deleted or repaired; nothing is stored in
+the token or state files. No existing directory permissions are changed.
+
+The returned context retains the directory descriptors and permits explicit
+revalidation. Context exit, acquisition failure and cancellation close this
+attempt's descriptors; closing is idempotent and never retries descriptor close.
+Nested use of the same context is rejected without unlocking its outer context.
+There is no explicit LOCK_UN, so a post-fork child closing its duplicate cannot
+unlock the parent's shared open description. Revalidation rejects a changed PID
+and closes the child's copies. Callers must NOT fork or duplicate descriptors
+while holding the lock: copies inherited before revalidation can extend lock
+lifetime, including after the original holder exits. No durable crash evidence or
+provider-state recovery guarantee follows from releasing a lock.
+
+This is advisory coordination for cooperating callers using the SAME directory
+inode and flock protocol, not access control or a leaf-content lock. Unrelated
+directories do not contend. Renaming/recreating a directory changes the lock key:
+revalidation can detect that, but does not make namespace operations atomic.
+A same-UID/privileged process that ignores the lock can still modify files, names,
+permissions or the directory itself. Tests explicitly demonstrate these limits.
+NFS/SMB/remote/special-mount semantics are not approved by a successful syscall;
+filesystem/mount qualification remains a separate gate. This Linux restriction
+avoids silently claiming portable process/thread lock semantics elsewhere.
+
+A later integration must acquire the lock BEFORE loading token/state or sending
+any refresh request, retain it through refresh, input rechecks and persistence,
+and coordinate every participating mutator with the same key and lock lifetime.
+Acquiring a lock only around the final replace would not serialize provider
+refresh. The exact integration and multi-directory policy are NOT introduced here.
+Original input identity, noncooperating mutation, interrupted-refresh residue,
+reconciliation, ACL/mount policy and locked Python 3.12 Linux CI remain pending.
+DS-04 remains PARTIAL; Production OAuth/Calendar operations remain BLOCKED.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, 4K, and 4L do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, 4K, 4L, and 4M do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.
