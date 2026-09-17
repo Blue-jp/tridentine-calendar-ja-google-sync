@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import errno
+import os
 import traceback
 from datetime import timedelta
 from pathlib import Path
@@ -115,8 +116,8 @@ def test_persistence_exception_preserves_evidence_without_session_retry_or_clean
     calls: list[int] = []
     retained: list[bytes] = []
 
-    def failed(token: Any, path: Path, *, overwrite: bool) -> Path:
-        assert path == paths["write"] and overwrite is True
+    def failed(token: Any, path: Path, *, expected_token: Any) -> Path:
+        assert path == paths["write"] and expected_token == _token
         calls.append(1)
         content = (
             token_before
@@ -136,7 +137,7 @@ def test_persistence_exception_preserves_evidence_without_session_retry_or_clean
             "PRIVATE_OS_MARKER", "PRIVATE_OS_MARKER", publication_possible=evidence
         )
 
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", failed)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", failed)
     monkeypatch.setattr(token_io, "_remove_exact_new_artifact", _forbidden)
     monkeypatch.setattr(tokens, "ProductionWriteCredentialSession", _forbidden)
     with pytest.raises(tokens.ProductionWriteTokenRefreshPersistenceError) as caught:
@@ -153,10 +154,11 @@ def test_persistence_exception_preserves_evidence_without_session_retry_or_clean
     _assert_safe(error, paths["write"].parent)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows retained legacy refresh writer")
 @pytest.mark.parametrize(
     "after_write", (False, True), ids=("before-replacement", "after-replacement")
 )
-def test_actual_legacy_writer_failure_stays_unknown_and_preserves_old_or_new_token(
+def test_windows_legacy_writer_failure_stays_unknown_and_preserves_old_or_new_token(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, after_write: bool
 ) -> None:
     target, _state, old_token, paths = _stored(tmp_path)
@@ -192,15 +194,15 @@ def test_success_still_returns_one_session_after_one_persistence_call(
 ) -> None:
     target, state, old_token, paths = _stored(tmp_path)
     state_before = paths["generation"].read_bytes()
-    native_writer = token_io.write_production_write_authorized_user_token
+    native_writer = token_io.persist_refreshed_production_write_token
     calls: list[int] = []
 
     def writer(*args: Any, **kwargs: Any) -> Path:
-        assert kwargs == {"overwrite": True}
+        assert kwargs == {"expected_token": old_token}
         calls.append(1)
         return native_writer(*args, **kwargs)
 
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", writer)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", writer)
     refresher = _refresher()
     session = _prepare(target, paths, refresher)
     assert calls == [1] and refresher.calls == session.refresh_count == 1
@@ -215,7 +217,7 @@ def test_unexpired_token_never_calls_refresher_or_persistence(
 ) -> None:
     target, _state, token, paths = _stored(tmp_path, expired=False)
     refresher = _refresher()
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     session = _prepare(target, paths, refresher)
     assert session.token == token and session.refresh_count == 0 and refresher.calls == 0
 
@@ -234,7 +236,7 @@ def test_invalid_refresh_result_is_rejected_before_new_persistence_boundary(
     }
     assert refresher.credentials is not None
     refresher.credentials = refresher.credentials.model_copy(update=updates[invalid])
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     with pytest.raises(tokens.ProductionWriteTokenError) as caught:
         _prepare(target, paths, refresher)
     assert not isinstance(caught.value, tokens.ProductionWriteTokenRefreshPersistenceError)
@@ -245,7 +247,7 @@ def test_refresh_request_failure_retains_its_existing_code_and_does_not_persist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target, _state, _token, paths = _stored(tmp_path)
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     with pytest.raises(tokens.ProductionWriteTokenRefreshError) as caught:
         _prepare(target, paths, FakeRefresher(None, fail=True))
     assert caught.value.code == "production_write_token_refresh_failed"
@@ -264,7 +266,7 @@ def test_mock_rehearsal_reports_refresh_persistence_failure_before_transport(
             "synthetic", "PRIVATE_OS_MARKER", publication_possible=evidence
         )
 
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", failed)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", failed)
     with pytest.raises(tokens.ProductionWriteTokenRefreshPersistenceError) as caught:
         _prepare(target, paths, refresher)
     provider = FakeProductionWriteCredentialSessionProvider(
@@ -303,7 +305,7 @@ def test_cancellation_is_not_mislabeled_as_an_ordinary_persistence_error(
     def interrupted(*_args: Any, **_kwargs: Any) -> Path:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", interrupted)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", interrupted)
     with pytest.raises(KeyboardInterrupt):
         _prepare(target, paths, _refresher())
 
@@ -322,7 +324,7 @@ def test_new_handler_has_no_retry_cleanup_or_new_mutation_capability() -> None:
         and any(
             isinstance(c, ast.Call)
             and isinstance(c.func, ast.Name)
-            and c.func.id == "write_production_write_authorized_user_token"
+            and c.func.id == "persist_refreshed_production_write_token"
             for c in ast.walk(ast.Module(body=n.body, type_ignores=[]))
         )
     ]

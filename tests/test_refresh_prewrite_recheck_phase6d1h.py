@@ -144,7 +144,7 @@ def test_changed_or_unreadable_during_refresh_stops_before_save_and_preserves_cu
         return result
 
     monkeypatch.setattr(refresher, "refresh", refresh)
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     monkeypatch.setattr(token_io, "_remove_exact_new_artifact", _forbidden)
     monkeypatch.setattr(tokens, "ProductionWriteCredentialSession", _forbidden)
     with pytest.raises(tokens.ProductionWriteTokenRefreshPrewriteError) as caught:
@@ -182,7 +182,7 @@ def test_reread_errors_are_suppressed_without_writer_fallback(
         raise sensitive_paths.SensitivePathError("synthetic", "PRIVATE_OS_MARKER")
 
     monkeypatch.setattr(token_io, name, load)
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     refresher = _refresher()
     with pytest.raises(tokens.ProductionWriteTokenRefreshPrewriteError) as caught:
         _prepare(target, paths, refresher)
@@ -198,14 +198,14 @@ def test_success_order_is_initial_pair_refresh_reloaded_pair_one_save(
     for name, label in (
         ("load_production_write_authorized_user_token", "token"),
         ("load_production_write_token_generation_state", "state"),
-        ("write_production_write_authorized_user_token", "save"),
+        ("persist_refreshed_production_write_token", "save"),
     ):
         native = getattr(token_io, name)
 
         def recorded(*args: Any, _native: Any = native, _label: str = label, **kwargs: Any) -> Any:
             calls.append(_label)
             if _label == "save":
-                assert kwargs == {"overwrite": True}
+                assert kwargs == {"expected_token": _token}
             return _native(*args, **kwargs)
 
         monkeypatch.setattr(token_io, name, recorded)
@@ -240,7 +240,7 @@ def test_unexpired_token_does_not_reread_refresh_or_save(
             return _native(path)
 
         monkeypatch.setattr(token_io, name, once)
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     refresher = _refresher()
     session = _prepare(target, paths, refresher)
     assert session.token == token and refresher.calls == 0 and len(calls) == 2
@@ -275,7 +275,7 @@ def test_invalid_refresh_does_not_enter_recheck_or_save(
             "expiry": {"expiry": NOW},
         }
         refresher.credentials = refresher.credentials.model_copy(update=updates[failure])
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     with pytest.raises(tokens.ProductionWriteTokenError) as caught:
         _prepare(target, paths, refresher)
     assert not isinstance(caught.value, tokens.ProductionWriteTokenRefreshPrewriteError)
@@ -302,7 +302,7 @@ def test_cancel_during_reread_is_not_an_ordinary_prewrite_failure(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(token_io, name, load)
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     with pytest.raises(KeyboardInterrupt):
         _prepare(target, paths, _refresher())
 
@@ -320,7 +320,7 @@ def test_mock_rehearsal_stops_before_calendar_and_keeps_report_schema(
         return value
 
     monkeypatch.setattr(refresher, "refresh", changed)
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     with pytest.raises(tokens.ProductionWriteTokenRefreshPrewriteError) as caught:
         _prepare(target, paths, refresher)
     provider = FakeProductionWriteCredentialSessionProvider(caught.value, refresh_attempt_count=1)
@@ -369,7 +369,7 @@ def test_posix_permissions_widened_during_refresh_refused_without_repair(
         return result
 
     monkeypatch.setattr(refresher, "refresh", change)
-    monkeypatch.setattr(token_io, "write_production_write_authorized_user_token", _forbidden)
+    monkeypatch.setattr(token_io, "persist_refreshed_production_write_token", _forbidden)
     with pytest.raises(tokens.ProductionWriteTokenRefreshPrewriteError) as caught:
         _prepare(target, paths, refresher)
     _safe(caught.value, path.parent)
@@ -442,7 +442,7 @@ def test_added_recheck_only_reads_renders_compares_and_raises() -> None:
         and any(
             isinstance(c, ast.Call)
             and isinstance(c.func, ast.Name)
-            and c.func.id == "write_production_write_authorized_user_token"
+            and c.func.id == "persist_refreshed_production_write_token"
             for c in ast.walk(ast.Module(body=n.body, type_ignores=[]))
         )
     )

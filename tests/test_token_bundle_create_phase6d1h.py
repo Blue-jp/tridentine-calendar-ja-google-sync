@@ -136,7 +136,7 @@ def test_exact_single_writer_platform_route_and_bytes(
 
 
 @pytest.mark.parametrize("platform", ("posix", "nt"))
-def test_explicit_refresh_overwrite_keeps_legacy_protected_writer(
+def test_generic_explicit_overwrite_keeps_legacy_protected_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str
 ) -> None:
     token, _ = _pair()

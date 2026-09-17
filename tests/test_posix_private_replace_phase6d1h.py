@@ -417,7 +417,7 @@ def test_non_posix_never_enters_filesystem_backend(monkeypatch: pytest.MonkeyPat
     )
 
 
-def test_backend_is_independent_and_has_no_cleanup_or_path_permission_repair() -> None:
+def test_backend_has_only_reviewed_token_io_consumer_and_no_cleanup_or_path_repair() -> None:
     tree = ast.parse(Path(replacement.__file__).read_text(encoding="utf-8"))
     calls = {
         n.func.attr
@@ -436,6 +436,10 @@ def test_backend_is_independent_and_has_no_cleanup_or_path_permission_repair() -
         "run",
         "Popen",
     }
-    for module in Path(replacement.__file__).parent.glob("*.py"):
-        if module.name != "_posix_private_replace.py":
-            assert "_posix_private_replace" not in module.read_text(encoding="utf-8")
+    consumers = {
+        module.name
+        for module in Path(replacement.__file__).parent.glob("*.py")
+        if module.name != "_posix_private_replace.py"
+        and "_posix_private_replace" in module.read_text(encoding="utf-8")
+    }
+    assert consumers == {"production_write_token_io.py"}

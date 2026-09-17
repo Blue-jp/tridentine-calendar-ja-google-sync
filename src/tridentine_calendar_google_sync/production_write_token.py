@@ -682,10 +682,10 @@ def _load_production_write_credential_session(
         ProductionWriteTokenIOError,
         load_production_write_authorized_user_token,
         load_production_write_token_generation_state,
+        persist_refreshed_production_write_token,
         render_production_write_authorized_user_token_json,
         render_production_write_token_generation_state_json,
         validate_production_write_token_path_set,
-        write_production_write_authorized_user_token,
     )
 
     if not _is_utc(now):
@@ -766,7 +766,7 @@ def _load_production_write_credential_session(
         _verify_mock_production_write_authorized_user_token(refreshed_token, state, target)
     # Re-read after refresh, through the existing role-specific loaders. This
     # detects an observed changed/missing/unsafe pair, not an atomic snapshot or
-    # an inode/content-conditional replacement. The writer itself is unchanged.
+    # an inode/content-conditional replacement. Unit 4L separately binds token replacement.
     try:
         current_state = load_production_write_token_generation_state(generation_state_path)
         current_token = load_production_write_authorized_user_token(production_write_token_path)
@@ -783,10 +783,10 @@ def _load_production_write_credential_session(
     except Exception:
         raise ProductionWriteTokenRefreshPrewriteError() from None
     try:
-        write_production_write_authorized_user_token(
+        persist_refreshed_production_write_token(
             refreshed_token,
             production_write_token_path,
-            overwrite=True,
+            expected_token=token,
         )
     except Exception as exc:
         # A failed save cannot establish that the previous token still exists,

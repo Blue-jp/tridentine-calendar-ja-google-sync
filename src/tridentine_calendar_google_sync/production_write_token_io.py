@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
+from tridentine_calendar_google_sync import _posix_private_replace as posix_replace
 from tridentine_calendar_google_sync._private_create_io import (
     PrivateCreateIOError,
     create_private_text,
@@ -340,6 +341,55 @@ def write_production_write_authorized_user_token(
         raise ProductionWriteTokenIOError(
             "production_write_token_write_failed",
             "Production write token could not be persisted safely",
+        ) from None
+
+
+def persist_refreshed_production_write_token(
+    token: ProductionWriteAuthorizedUserToken,
+    path: str | Path,
+    *,
+    expected_token: ProductionWriteAuthorizedUserToken,
+) -> Path:
+    """Persist an already-validated refresh using the original token as expected bytes.
+
+    The caller performs authorization and token/state binding, including Unit 4J.
+    This is not a new authorization API, pair transaction, lock, or compare-and-swap.
+    Windows keeps the existing protected writer. POSIX never falls back to it.
+    The generic overwrite API is unchanged and is not upgraded by this entry point.
+    """
+    if os.name == "nt":
+        return write_production_write_authorized_user_token(token, path, overwrite=True)
+    publication_possible: bool | None = False
+    try:
+        if (
+            os.name != "posix"
+            or not isinstance(token, ProductionWriteAuthorizedUserToken)
+            or not isinstance(expected_token, ProductionWriteAuthorizedUserToken)
+        ):
+            raise ValueError
+        content = render_production_write_authorized_user_token_json(token).encode("utf-8")
+        expected = render_production_write_authorized_user_token_json(expected_token).encode(
+            "utf-8"
+        )
+        if max(len(content), len(expected)) > MAX_PRODUCTION_WRITE_TOKEN_BYTES:
+            raise ValueError
+        validated = validate_sensitive_output_path(path, overwrite=True)
+        _reject_repository_parent(validated)
+        # The backend reopens and verifies the existing target against these
+        # original bytes. Never refresh the expected value from the current path.
+        publication_possible = None
+        posix_replace.replace_posix_private_bytes(validated, content, expected_content=expected)
+        return validated
+    except Exception as exc:
+        if isinstance(exc, posix_replace.PosixPrivateReplaceError):
+            publication_possible = (
+                exc.publication_possible if type(exc.publication_possible) is bool else None
+            )
+        raise ProductionWriteTokenIOError(
+            "production_write_token_refresh_replace_failed",
+            "Refreshed Production token replacement could not be verified. "
+            "Reconciliation is required; do not retry, remove, or restore files automatically.",
+            publication_possible=publication_possible,
         ) from None
 
 
@@ -733,6 +783,7 @@ __all__ = [
     "load_production_write_token_generation_state",
     "parse_production_write_authorized_user_token_bytes",
     "parse_production_write_token_generation_state_bytes",
+    "persist_refreshed_production_write_token",
     "private_production_write_authorized_user_token_data",
     "render_production_write_authorized_user_token_json",
     "render_production_write_token_generation_state_json",

@@ -392,9 +392,53 @@ ACL/mount policy, ancestry assumptions and complete locked Python 3.12 Linux CI
 remain separate gates. DS-04 stays PARTIAL; Production remains BLOCKED. This
 independent backend must not be described as an upgrade to overwrite=True yet.
 
+## DS-04 / Unit 4L: POSIX refresh persistence integration, not serialized replacement
+
+The existing credential-session refresh flow now calls
+`persist_refreshed_production_write_token` with the refreshed token AND the original
+pre-refresh token as required `expected_token`. Unit 4J first rechecks the token and
+generation state as before. The persistence entry point receives the original
+value, never a freshly adopted current target or a hash from external context.
+The existing canonical token parser requires exact canonical bytes, so rendering
+the original loaded token supplies the expected prior bytes without a new format.
+
+POSIX encodes and bounds both serializations, applies existing local-path and
+repository-parent exclusions, then uses Unit 4K's retained-directory/old-and-new
+leaf descriptor backend. Exact 0700 user-owned parent and existing exact 0600
+single-link user-owned regular target are required; no repair, missing-target
+creation, or fallback to the generic overwrite writer occurs on backend failure.
+An observed token change after the Unit 4J recheck but before/during Unit 4K checks
+stops without knowingly replacing that observed value. This is not a kernel CAS:
+same-content replacements and last-moment same-UID/privileged races can pass or be
+overwritten. Original descriptors are not retained across the refresh request;
+generation state is not locked or revalidated atomically with the token replace.
+
+Windows delegates to the unchanged `write_production_write_authorized_user_token`
+with `overwrite=True`, retaining its protected ACL and existing error behavior.
+The generic writer remains available with unchanged create/overwrite semantics on
+both platforms; only the selected refresh call site is rerouted. Token/state new
+creation, bundle recovery, common I/O, and Windows backend code are unchanged.
+
+POSIX errors use the safe `production_write_token_refresh_replace_failed` I/O code
+and conservative `publication_possible`: False until backend entry for preflight
+failures; exact False/True from a recognized backend error; None for unspecified
+or invalid backend evidence. Unit 4I converts that to its existing dedicated refresh
+persistence error without returning a usable session, repeating refresh, deleting
+residue, or restoring the previous token. False never means provider state or old
+credentials are unchanged. Mock rehearsal still records TOKEN_REFRESH_FAILED and
+stops before Calendar transport construction; report schema/hash remain unchanged.
+Cancellation/process death get no new durable recovery record. Private temporary
+or new target data may remain on failure and must not be automatically removed.
+
+Authorization/scope/evidence/client/target/generation checks, current unexpired
+credentials, Unit 4I/4J evidence, and all live hard-offs remain in force. This is
+only an integrated POSIX token replacement path, not serialization, safe pair
+reconciliation, full ancestry/ACL/mount policy, general durability, or operational
+approval. All remaining DS-04 gates and locked Python 3.12 Linux CI remain required.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, and 4K do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, 4K, and 4L do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.

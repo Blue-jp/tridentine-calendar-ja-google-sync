@@ -1,4 +1,4 @@
-"""Independent descriptor-bound POSIX replacement; not yet used by token refresh.
+"""Descriptor-bound POSIX replacement used by the validated refresh persistence entry point.
 
 The expected-content checks and rename are separate operations, NOT a lock or
 inode compare-and-swap. Same-UID/privileged races and filesystem ACL/mount rules
@@ -59,7 +59,7 @@ def replace_posix_private_bytes(path: Path, content: bytes, *, expected_content:
     Before replacement, both names and contents are rechecked. After an attempted
     rename, True evidence never promises the old or new bytes exist at that name.
     Failures may leave a private temporary; no failure cleanup touches any name.
-    Existing public writers/refresh are not routed to this function in Unit 4K.
+    Unit 4L routes validated POSIX token refresh here; generic writers remain unchanged.
     """
     if os.name != "posix":
         raise PosixPrivateReplaceError("posix_replace_unavailable")

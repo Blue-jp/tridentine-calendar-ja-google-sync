@@ -124,3 +124,17 @@ This detects observed pre-save changes only: no atomic pair snapshot, lock,
 inode compare-and-swap, safe overwrite or durable recovery record is introduced.
 Changes after recheck remain possible. Unit 4I persistence failure behavior and
 all live hard-offs remain in force. See [POSIX private-artifact security](posix-private-artifact-security.md).
+
+## POSIX refresh replacement integration (DS-04 / Unit 4L)
+
+After the unchanged Unit 4J token/state content recheck, refresh passes the original
+loaded token to the new persistence entry point as exact expected prior content.
+POSIX uses the retained-directory and old/new descriptor replacement backend;
+Windows keeps the prior protected writer. The generic overwrite API is unchanged.
+No authorization checks, schemas, live adapters or operational permission change.
+Unit 4I retains conservative replacement evidence and returns no usable session
+on failure. No automatic retry, residue deletion or restoration is performed.
+Observed changes can block a replacement, but checks and rename are not a lock or
+compare-and-swap; post-check races and generation-state changes remain possible.
+See [POSIX private-artifact security](posix-private-artifact-security.md) for the
+remaining reconciliation, serialization, ACL/mount and durability gates.
