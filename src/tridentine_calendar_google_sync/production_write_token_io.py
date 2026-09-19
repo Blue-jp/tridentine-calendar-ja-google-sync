@@ -19,6 +19,8 @@ from tridentine_calendar_google_sync._private_create_io import (
 )
 from tridentine_calendar_google_sync.production_write_token import (
     ProductionWriteTokenConfigError,
+    ProductionWriteTokenSessionLockError,
+    _production_write_session_lock,
     private_production_write_token_generation_state_data,
     validate_production_token_role,
     validate_production_write_scopes,
@@ -531,29 +533,57 @@ def _write_posix_token_bundle(
     state: ProductionWriteTokenGenerationState,
     state_path: Path,
 ) -> tuple[Path, Path]:
-    """Write a preflighted pair once; stop without final-output rollback on POSIX.
+    """Serialize new-pair publication with Linux sessions, not a pair transaction.
 
-    Both documents were rendered and cross-bound by the caller before entry.
-    Earlier success or uncertain publication must never be treated as absence.
+    Validation and rendering already happened in the public caller. Hold both
+    existing private parents before the first write through the final checkpoint.
+    Leaf writers do not acquire another lock; no lock-free or legacy fallback.
     """
     completed_output_count = 0
+    publication_possible: bool | None = False
     try:
-        write_production_write_token_generation_state(state, state_path)
-        completed_output_count = 1
-        write_production_write_authorized_user_token(token, token_path, overwrite=False)
+        with _production_write_session_lock(token_path, state_path) as checkpoint:
+            # The shared helper validates both acquisitions before yielding.
+            # Entering a writer makes unspecified failures uncertain, not False.
+            publication_possible = None
+            write_production_write_token_generation_state(state, state_path)
+            completed_output_count = 1
+            publication_possible = True
+            checkpoint()
+            write_production_write_authorized_user_token(token, token_path, overwrite=False)
+            completed_output_count = 2
+            checkpoint()
     except Exception as exc:
-        publication_possible = (
-            True
-            if completed_output_count
-            else exc.publication_possible
-            if isinstance(exc, ProductionWriteTokenIOError)
-            else None
-        )
-        message = "Production write-token bundle could not be completed safely."
+        code = "production_write_token_bundle_write_failed"
+        if isinstance(exc, ProductionWriteTokenSessionLockError):
+            code = (
+                "production_write_token_bundle_busy"
+                if exc.code == "production_write_token_session_busy"
+                else "production_write_token_bundle_lock_unverified"
+            )
+            # Acquisition failure occurs before our first writer. A failed
+            # checkpoint/exit after a completed writer cannot promise absence.
+            publication_possible = True if completed_output_count else publication_possible
+            message = (
+                "Production token/state publication could not retain its directory locks. "
+                "Do not proceed unlocked, retry, remove, or restore files automatically."
+            )
+        else:
+            publication_possible = (
+                True
+                if completed_output_count
+                else exc.publication_possible
+                if isinstance(exc, ProductionWriteTokenIOError)
+                else None
+            )
+            message = "Production write-token bundle could not be completed safely."
+        # Only strict bool evidence is accepted; malformed evidence stays unknown.
+        if type(publication_possible) is not bool:
+            publication_possible = None
         if publication_possible is not False:
             message += " Outputs may exist; do not retry or remove them automatically."
         raise ProductionWriteTokenIOError(
-            "production_write_token_bundle_write_failed",
+            code,
             message,
             publication_possible=publication_possible,
             completed_output_count=completed_output_count,

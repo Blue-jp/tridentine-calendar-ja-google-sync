@@ -151,3 +151,17 @@ Windows keeps its existing behavior and gains no new lock. Other non-Windows
 platforms cannot fall back to an unlocked load. Other artifact writers do not yet
 participate, no leaf compare-and-swap or durable recovery record is introduced,
 and all live hard-offs remain. See [POSIX private-artifact security](posix-private-artifact-security.md).
+
+## Linux new-pair publication serialization (DS-04 / Unit 4O)
+
+New token/state bundle publication now shares Unit 4N's parent-directory locks on
+Linux, from before state creation through token creation and the final checkpoint.
+This does not acquire a second lock inside leaf writers or change refresh locking.
+Busy/unverified locks stop; prior writes remain and their conservative publication
+flag/count are reported. A failure after two normally returned writers is still
+an error, never a completed transaction. Windows bundle recovery is unchanged.
+Authorizer/provider activity before this persistence call is not newly locked, and
+failed pairs gain no persistent recovery marker. Standalone writers, reconciliation,
+noncooperating changes, directory replacement and filesystem/durability boundaries
+remain separate work. DS-04 remains PARTIAL and all live hard-offs remain in force.
+See [POSIX private-artifact security](posix-private-artifact-security.md).

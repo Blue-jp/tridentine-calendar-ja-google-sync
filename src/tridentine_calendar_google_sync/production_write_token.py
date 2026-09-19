@@ -127,8 +127,8 @@ def _production_write_session_lock(
 ) -> Iterator[Callable[[], None]]:
     """Lock both existing parents before content reads; Windows retains its old path.
 
-    This serializes only cooperating session loaders on Linux. No claim covers
-    other writers, replaced directories, fork/dup, or post-check namespace changes.
+    Session loaders and new-pair publication share this Linux protocol. No claim
+    covers other writers, replaced directories, fork/dup, or post-check changes.
     The yielded checkpoint never catches exceptions from the caller's body.
     """
     if os.name == "nt":

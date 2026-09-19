@@ -531,9 +531,56 @@ other writers, original identities across refresh, supported-filesystem policy,
 crash recovery and complete locked Python 3.12 Linux CI remain separate gates.
 DS-04 remains PARTIAL and Production remains BLOCKED.
 
+## DS-04 / Unit 4O: new-pair publication joins Linux session locks
+
+The POSIX branch of `write_production_write_token_bundle` now enters the same
+`_production_write_session_lock` context as Unit 4N session preparation. Existing
+model, canonical-rendering, path and cross-binding preflight remain before lock
+acquisition. Both distinct token/state parents are acquired, in the existing
+sorted nonblocking order, before the first output writer. A shared parent is
+locked once. Linux requires existing effective-user-owned exact 0700 parents;
+other non-Windows POSIX platforms have no unlocked publication fallback.
+
+State is still written first. Both locks are held across its publication, a
+checkpoint, token publication, and a final checkpoint before success. Leaf writers
+are deliberately not locked again: a second independent flock on the same inode
+can conflict with this call's own lock. Busy or invalid acquisition stops before
+both writers; the first acquired context is closed if the second fails. Ordinary
+writer errors and cancellation unwind acquired contexts without retry, restoring
+files, or deleting final outputs. Windows does not enter this new wrapper and
+keeps its original writer/ACL/bundle recovery path unchanged.
+
+Lock failures become safe `ProductionWriteTokenIOError` codes
+`production_write_token_bundle_busy` or
+`production_write_token_bundle_lock_unverified`. Their publication flag is False
+only before a writer is entered by THIS call, None when uncertain, and True after
+any writer has returned normally. `completed_output_count` counts returned writer
+calls (0, 1, or 2), including a failed checkpoint after the second output. An error
+with count 2 is not pair success. Writer failures retain Unit 4H error codes and
+strict boolean publication evidence; unspecified/invalid evidence remains None.
+False is NOT proof of no file, no temporary residue, no external authorization,
+or no other actor's output. Every lock error prohibits unlocked continuation and
+automatic retry/removal/restoration. Existing native create-only temporary cleanup
+is unchanged; this wrapper never performs final-output rollback.
+
+This closes only the cooperative visibility window between these bundle writes
+and participating sessions/bundles on the same directory inodes. It does NOT make
+a pair atomic or implement failure reconciliation. A failure can release locks
+while one or both outputs remain. Future calls have no persistent incomplete-pair
+marker, and must not treat this increment as permission to reuse a failed pair.
+Authorization/client loading before bundle persistence is not newly locked; a
+provider may already have issued credentials before a busy publication error.
+Standalone state/token writes, generic overwrite, standalone refresh persistence,
+noncooperating actors and directory replacement are not newly serialized. No new
+claim protects hostile same-UID changes, leaf identity across provider calls,
+ACL/mount behavior, or crash durability. Unit 4I/J/L/N session behavior, schemas,
+Windows recovery and live hard-offs remain unchanged. DS-04 remains PARTIAL;
+locked Python 3.12 Linux CI, other-writer participation, reconciliation and the
+remaining security gates are still required.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, 4K, 4L, 4M, and 4N do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, 4K, 4L, 4M, 4N, and 4O do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.
