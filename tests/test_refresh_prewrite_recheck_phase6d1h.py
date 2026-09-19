@@ -401,9 +401,15 @@ def test_added_recheck_only_reads_renders_compares_and_raises() -> None:
         for n in tree.body
         if isinstance(n, ast.FunctionDef) and n.name == "_load_production_write_credential_session"
     )
+    guarded = [n for n in fn.body if isinstance(n, ast.With)]
+    assert len(guarded) == 1
+    guard = guarded[0].items[0].context_expr
+    assert isinstance(guard, ast.Call) and isinstance(guard.func, ast.Name)
+    assert guard.func.id == "_production_write_session_lock"
+    body = guarded[0].body
     blocks = [
         n
-        for n in fn.body
+        for n in body
         if isinstance(n, ast.Try)
         and any(
             isinstance(c, ast.Call)
@@ -437,7 +443,7 @@ def test_added_recheck_only_reads_renders_compares_and_raises() -> None:
     assert not any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(block))
     assert block.lineno < next(
         n.lineno
-        for n in fn.body
+        for n in body
         if isinstance(n, ast.Try)
         and any(
             isinstance(c, ast.Call)

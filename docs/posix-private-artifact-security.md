@@ -484,9 +484,56 @@ Original input identity, noncooperating mutation, interrupted-refresh residue,
 reconciliation, ACL/mount policy and locked Python 3.12 Linux CI remain pending.
 DS-04 remains PARTIAL; Production OAuth/Calendar operations remain BLOCKED.
 
+## DS-04 / Unit 4N: cooperative credential-session serialization on Linux
+
+The shared credential-session loader now holds Unit 4M directory locks before
+its first token/state content read, through unexpired-token validation or injected
+refresh, Unit 4J recheck, Unit 4L persistence, and the final checkpoint before
+return. Existing UTC and path-set metadata preflight remain before lock acquisition;
+role/scope/evidence/client/target/generation validation and confirmation precede or
+remain within their existing flow. Both provider-evidence and explicit mock session
+entry points use the shared loader. This does not enable a live refresher or CLI.
+
+One lock is acquired for each distinct token/state parent (one or two) in sorted
+lexical absolute-path order. There is one nonblocking attempt per parent; failure
+of the second releases the first and no content is loaded or refresh attempted.
+A same-parent pair acquires just one lock. No lock/PID files, stale-lock cleanup,
+permission repair, wait loop, automatic retry or unlocked fallback is introduced.
+Linux parents must already be effective-user-owned, exactly 0700, and pass the
+retained no-follow directory policy. This tightens even unexpired-token loading.
+Unsupported non-Windows platforms fail before token/state content reads. Windows
+bypasses this new Linux protocol and retains its existing readers/writers/ACL and
+session behavior; it does NOT gain cross-process serialization from this change.
+
+The held parents are revalidated after initial content reads, before refresh,
+after refresh-result validation, immediately before persistence, and before each
+normal session return. An observed directory replacement/policy failure prevents
+further progression; after a refresh or save it cannot undo provider/file changes.
+The safe RefreshError subclass uses production_write_token_session_busy for a
+recognized acquisition conflict, otherwise production_write_token_session_lock_unverified.
+It returns no usable session, exposes no path or raw lock exception, and prohibits
+automatic retry/removal/restoration. It makes no false refresh/publication-absence
+claim. Existing Unit 4I/4J error evidence is preserved: the context manager does not
+catch or replace their exceptions. Mock rehearsal still records TOKEN_REFRESH_FAILED
+and the existing refresh attempt count before building any Calendar transport.
+There is no new report field or durable recovery manifest. Contexts close on normal
+return, error or BaseException; fork/dup and process interruption retain Unit 4M limits.
+
+This protocol serializes ONLY loaders following this protocol on the same retained
+directory inodes. Generic writers, authorization/new-pair creation, standalone
+persistence functions and noncooperating processes are not newly locked. The lock
+ends when session preparation ends, not after future API use. It is not a leaf
+CAS, atomic token/state snapshot, or latest-generation proof. Same-UID/privileged
+writers and directory replacement can still evade or race observations; equal
+contents do not prove original leaf identity. No same-UID-adversary or universal
+mount/ACL/durability guarantee is added. Pair reconciliation, participation of
+other writers, original identities across refresh, supported-filesystem policy,
+crash recovery and complete locked Python 3.12 Linux CI remain separate gates.
+DS-04 remains PARTIAL and Production remains BLOCKED.
+
 ## Remaining DS-04 work (not closed by these increments)
 
-Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, 4K, 4L, and 4M do not complete POSIX writer hardening, refresh replacement, exact-artifact
+Units 4A, 4B, 4C, 4D, 4E, 4F, 4G, 4H, 4I, 4J, 4K, 4L, 4M, and 4N do not complete POSIX writer hardening, refresh replacement, exact-artifact
 cleanup, generation-state integrity, approval/evidence storage, directory ancestry
 binding, filesystem ACL/mount policy, or multi-artifact transactions. These increments do not claim
 that leaf checks alone protect against every concurrent ancestor substitution.

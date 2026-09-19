@@ -1,4 +1,4 @@
-"""Independent Linux advisory directory lock; no operational caller is connected.
+"""Linux advisory directory lock; credential-session loaders cooperate via Unit 4N.
 
 Only cooperating users of this same directory inode and flock protocol contend.
 This is not a file-content lock, compare-and-swap, or persistent recovery record.

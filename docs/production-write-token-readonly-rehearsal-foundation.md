@@ -138,3 +138,16 @@ Observed changes can block a replacement, but checks and rename are not a lock o
 compare-and-swap; post-check races and generation-state changes remain possible.
 See [POSIX private-artifact security](posix-private-artifact-security.md) for the
 remaining reconciliation, serialization, ACL/mount and durability gates.
+
+## Linux credential-session serialization (DS-04 / Unit 4N)
+
+The token/state parent directories are exclusively locked before content loading
+and held through validation, injected refresh, recheck and persistence. A busy or
+unverified lock stops without a usable session or automatic retry/cleanup. Parents
+may differ: each distinct parent is locked once with immediate failure on contention.
+Existing metadata path preflight remains first. This is Linux-only cooperative
+serialization for these session entry points, including unexpired credentials;
+Windows keeps its existing behavior and gains no new lock. Other non-Windows
+platforms cannot fall back to an unlocked load. Other artifact writers do not yet
+participate, no leaf compare-and-swap or durable recovery record is introduced,
+and all live hard-offs remain. See [POSIX private-artifact security](posix-private-artifact-security.md).
