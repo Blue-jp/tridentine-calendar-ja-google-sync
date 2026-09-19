@@ -588,3 +588,51 @@ that leaf checks alone protect against every concurrent ancestor substitution.
 DS-04 remains OPEN. Production OAuth, live rehearsal, and Calendar writes remain
 blocked. Historical Deep Security Scan is INCOMPLETE; the separate 47194b0 scan report
 remains FAIL. No existing scan decision or Production authorization is upgraded here.
+
+## DS-04 / Unit 4P: read-only pair observations, never recovery approval
+
+`production_write_token_pair_inspection.inspect_production_write_token_pair` is
+an independent local inspection entry point, not yet a CLI or session/bundle
+consumer. It performs the existing explicit role-path metadata preflight, then
+joins the same token/state parent-lock protocol as sessions and bundle publication.
+Linux holds both cooperative nonblocking locks through the last content check;
+Windows retains the existing private-token/integrity-state readers without new
+serialization. Other non-Windows platforms cannot fall back to unlocked reads.
+No new lock files, ACL repair, credential discovery or path scanning is introduced.
+
+The inspector reads state and token with existing role readers and invokes the
+existing provider-mode token/state/target validator. It then reads both again and
+compares canonical bytes in memory, followed by a final parent checkpoint. These
+are bounded sequential observations, not simultaneous snapshots, retained leaf
+identities, authentication of claimed provider-origin labels, or proof of the
+latest authorized generation. The supplied target and clock are local inputs,
+not new authority roots. Reserved read/Test-token paths receive metadata checks
+only; their contents and OAuth client credentials are not loaded.
+
+The frozen result contains only a fixed diagnostic state, `token_expired`
+(bool or None), and `reuse_authorized=False` for EVERY result. Even
+`local_contents_consistent_not_approved` with `token_expired=False` authorizes
+nothing: it does not establish that an earlier bundle/refresh call succeeded,
+that tokens remain usable at the provider, that a pair is durable or recoverable,
+or that prior incomplete-pair uncertainty has been cleared. Expiry compares a
+stored timestamp with caller-supplied UTC only. State/generation numbers, target
+identifiers, credential values, paths, bytes and digests are not returned/logged.
+
+Missing/unreadable/unsafe/noncanonical inputs yield `input_unverified`, not a
+claim of absence. Rejected cross-binding/evidence yields `pair_rejected`; observed
+between-sample changes yield `contents_changed`. Busy/unverified locks and other
+ordinary failures yield fixed stop labels, without raw exception text or chains.
+No credential session is produced, no refresh/provider/API call occurs, and no
+retry, deletion, restoration, replacement, permission repair or recovery record
+is performed. BaseException/cancellation unwinds acquired contexts and propagates;
+it does not manufacture an inspection result. Reads may update access metadata.
+
+The entry point does not consult prior failure reports or persistent failed-pair
+markers (none is added). It cannot distinguish a currently matching residual pair
+from one whose publication completed normally; tests explicitly preserve that
+limit. Same-content inode replacement, changes after a sample, nonparticipating
+writers and directory rebinding remain outside the guarantee. Existing callers,
+writers, schemas, live hard-offs and Windows recovery are unchanged. Controlled
+reconciliation decisions, durable failure tracking, original identities, wider
+writer participation, ACL/mount policy and locked Python 3.12 Linux CI remain
+pending. DS-04 remains PARTIAL; Production operation remains BLOCKED.
