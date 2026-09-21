@@ -408,7 +408,7 @@ def test_unsupported_platform_has_no_fallback_or_directory_open(
     assert caught.value.code == "posix_directory_lock_unavailable"
 
 
-def test_component_has_no_artifact_write_no_wait_loop_and_only_session_consumer() -> None:
+def test_component_has_no_artifact_write_no_wait_loop_and_only_approved_consumers() -> None:
     source_path = Path(locking.__file__)
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
     attributes = {
@@ -433,8 +433,12 @@ def test_component_has_no_artifact_write_no_wait_loop_and_only_session_consumer(
         "fork",
     }
     assert not any(isinstance(n, (ast.While, ast.For)) for n in ast.walk(tree))
+    allowed_consumers = {
+        "production_write_token.py",
+        "production_write_token_operation_record.py",
+    }
     for path in source_path.parent.glob("*.py"):
-        if path != source_path and path.name != "production_write_token.py":
+        if path != source_path and path.name not in allowed_consumers:
             assert "_posix_private_lock" not in path.read_text(encoding="utf-8")
 
 

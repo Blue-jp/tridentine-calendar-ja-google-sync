@@ -401,7 +401,9 @@ def test_directory_foundation_only_has_the_reviewed_backend_consumers() -> None:
             "_posix_private_create.py",
             "_private_create_io.py",
             "_posix_private_replace.py",
+            "production_write_token_operation_record.py",
         ):
             continue
-        # Only the reviewed adapter and independent replacement backend may import the publisher.
+        # Only the reviewed adapter, replacement backend, and standalone
+        # operation-record component may import the publisher.
         assert "_posix_private_create" not in module.read_text(encoding="utf-8")
