@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import ast
+import copy
+import inspect
 import json
 import os
+import pickle
 import stat
 import subprocess
 import sys
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, fields, replace
@@ -988,3 +992,970 @@ def test_unknown_input_hooks_are_not_invoked(location: str) -> None:
     if location != "raw":
         with pytest.raises(records._RecordFormatError):
             records._encode_start_record(binding, operation)
+
+
+class _SimulatedScopeBackend:
+    """In-memory backend fault injection, never evidence of Linux filesystem behavior."""
+
+    def __init__(self, binding: records.SyntheticBinding) -> None:
+        self.binding = binding
+        self.path = binding.directory / LEAF
+        self.raw: bytes | None = None
+        self.active = False
+        self.events: list[str] = []
+        self.failures: dict[str, BaseException] = {}
+        self.hooks: dict[str, Any] = {}
+        self.publisher_calls = 0
+        self.owner: Any = None
+
+    def event(self, stage: str) -> None:
+        self.events.append(stage)
+        if stage in self.hooks:
+            self.hooks[stage]()
+        if stage in self.failures:
+            raise self.failures[stage]
+
+    def acquire(self, path: Path) -> Any:
+        assert path == self.binding.directory
+        self.event("acquire")
+        return _SimulatedScopeLock(self)
+
+    def lstat(self, path: Path) -> Any:
+        assert path == self.path and self.active
+        self.event("lstat")
+        if self.raw is None:
+            raise FileNotFoundError("synthetic absent slot")
+        return SimpleNamespace()
+
+    def validate(self, path: Path, *, overwrite: bool) -> Path:
+        assert path == self.path and self.active and overwrite is False
+        self.event("validate")
+        return path
+
+    def publish(self, path: Path, raw: bytes) -> None:
+        assert path == self.path and self.active and self.raw is None
+        self.publisher_calls += 1
+        self.event("publish")
+        self.raw = raw
+        self.event("published")
+
+    def read(self, path: Path, *, max_size: int) -> bytes:
+        assert path == self.path and self.active and max_size == 4096
+        self.event("read")
+        if self.raw is None:
+            raise FileNotFoundError("synthetic absent slot")
+        return self.raw
+
+
+class _SimulatedScopeLock:
+    def __init__(self, backend: _SimulatedScopeBackend) -> None:
+        self.backend = backend
+
+    def __enter__(self) -> _SimulatedScopeLock:
+        assert not self.backend.active
+        self.backend.active = True
+        self.backend.event("enter")
+        return self
+
+    def revalidate(self) -> None:
+        assert self.backend.active
+        self.backend.event("checkpoint")
+
+    def __exit__(self, *_exception: object) -> None:
+        # The owner must invalidate its issued scope before delegating release.
+        if self.backend.owner is not None:
+            assert self.backend.owner._phase is records._ScopePhase.CLOSED
+        self.backend.active = False
+        self.backend.event("exit")
+
+
+@pytest.fixture
+def simulated_scope_backend(monkeypatch: pytest.MonkeyPatch) -> _SimulatedScopeBackend:
+    """Exercise scope contracts on any OS with all record/filesystem boundaries replaced."""
+    backend = _SimulatedScopeBackend(_binding())
+    monkeypatch.setattr(records, "_linux_storage_available", lambda: True)
+    monkeypatch.setattr(
+        records.private_lock, "acquire_posix_private_directory_lock", backend.acquire
+    )
+    monkeypatch.setattr(records.private_create, "create_posix_private_bytes", backend.publish)
+    monkeypatch.setattr(records, "read_private_sensitive_bytes", backend.read)
+    monkeypatch.setattr(records, "validate_sensitive_output_path", backend.validate)
+    monkeypatch.setattr(Path, "lstat", lambda path: backend.lstat(path))
+    return backend
+
+
+def _held_assert(
+    result: Any,
+    *,
+    checkpoint: Any = None,
+    refusal: records.RecordState | None = None,
+    publication: bool | None = False,
+) -> None:
+    assert result.checkpoint is checkpoint and result.refusal is refusal
+    assert result.publication_possible is publication and result.reuse_authorized is False
+    assert not isinstance(result, records.RecordResult)
+    assert {item.name for item in fields(result)} == {
+        "checkpoint",
+        "refusal",
+        "publication_possible",
+        "reuse_authorized",
+    }
+
+
+def test_scope_refactor_keeps_public_signatures_enums_and_wire_contract() -> None:
+    assert tuple(inspect.signature(records.create_start_record).parameters) == (
+        "binding",
+        "operation",
+    )
+    assert tuple(inspect.signature(records.read_start_record).parameters) == (
+        "binding",
+        "operation",
+    )
+    assert {item.value for item in S} == {
+        "start_confirmed",
+        "start_observed",
+        "slot_occupied",
+        "unverifiable",
+        "persistence_uncertain",
+        "lock_busy",
+        "lock_unavailable",
+        "unsupported_platform",
+    }
+    assert records._encode_start_record(_binding(), _operation()) == _wire(_data())
+    assert {item.value for item in K} == {"new_pair", "refresh"}
+
+
+@pytest.mark.parametrize("revision", (None, "revision-example"))
+def test_mock_scope_create_read_uses_one_lock_and_distinct_internal_results(
+    simulated_scope_backend: _SimulatedScopeBackend, revision: str | None
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation(), revision_ref=revision)
+    backend.owner = context
+    assert context._phase is records._ScopePhase.NEW and context._scope is None
+    with context as scope:
+        assert scope._owner is context and context._scope is scope
+        assert context._phase is records._ScopePhase.ACTIVE and backend.active
+        created = records._create_start_record_held(
+            scope, replace(backend.binding), _operation(), revision_ref=revision
+        )
+        _held_assert(
+            created, checkpoint=records._HeldCheckpoint.HELD_START_CHECKPOINT, publication=True
+        )
+        assert backend.active and "exit" not in backend.events
+        observed = records._read_start_record_held(
+            scope, backend.binding, _operation(), revision_ref=revision
+        )
+        _held_assert(observed, checkpoint=records._HeldCheckpoint.HELD_START_OBSERVED)
+        assert context._creation_publication is True and backend.active
+        assert backend.raw == _wire(_data()) and set(json.loads(backend.raw)) == set(KEYS)
+        with pytest.raises(FrozenInstanceError):
+            created.reuse_authorized = True
+    assert context._phase is records._ScopePhase.CLOSED and not backend.active
+    assert backend.events.count("acquire") == backend.events.count("exit") == 1
+    assert backend.publisher_calls == 1 and context._cancellation is None
+
+
+@pytest.mark.parametrize("create", (False, True))
+def test_mock_scope_public_wrappers_use_shared_held_path_and_success_after_exit(
+    simulated_scope_backend: _SimulatedScopeBackend, monkeypatch: pytest.MonkeyPatch, create: bool
+) -> None:
+    backend = simulated_scope_backend
+    if not create:
+        backend.raw = _wire(_data())
+    name = "_create_start_record_held" if create else "_read_start_record_held"
+    original = getattr(records, name)
+    original_result = records.RecordResult
+    calls: list[int] = []
+
+    def held(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        assert backend.active
+        return original(*args, **kwargs)
+
+    def result(state: records.RecordState, publication_possible: bool | None = False) -> Any:
+        if state in {S.START_CONFIRMED, S.START_OBSERVED}:
+            assert not backend.active and backend.events[-1] == "exit"
+        return original_result(state, publication_possible)
+
+    monkeypatch.setattr(records, name, held)
+    monkeypatch.setattr(records, "RecordResult", result)
+    operation = records.create_start_record if create else records.read_start_record
+    _assert_result(
+        operation(backend.binding, _operation()),
+        S.START_CONFIRMED if create else S.START_OBSERVED,
+        create,
+    )
+    assert calls == [1] and backend.events.count("acquire") == 1
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    (
+        "directory",
+        "storage_ref",
+        "pair_ref",
+        "token_slot",
+        "state_slot",
+        "operation_id",
+        "predecessor_id",
+        "kind",
+        "revision",
+        "no-revision",
+    ),
+)
+def test_mock_scope_mismatch_precedes_checkpoint_without_poisoning_owner(
+    simulated_scope_backend: _SimulatedScopeBackend, mismatch: str
+) -> None:
+    backend = simulated_scope_backend
+    backend.raw = _wire(_data(K.REFRESH))
+    binding, operation, revision = backend.binding, _operation(K.REFRESH), "revision-example"
+    context = records._record_scope(binding, operation, revision_ref=revision)
+    with context as scope:
+        expected_binding, expected_operation, expected_revision = binding, operation, revision
+        if mismatch == "directory":
+            expected_binding = replace(binding, directory=binding.directory / "other")
+        elif mismatch in {"storage_ref", "pair_ref", "token_slot", "state_slot"}:
+            expected_binding = replace(binding, **{mismatch: "other"})
+        elif mismatch in {"operation_id", "predecessor_id"}:
+            expected_operation = replace(operation, **{mismatch: "other"})
+        elif mismatch == "kind":
+            expected_operation = _operation()
+        else:
+            expected_revision = None if mismatch == "no-revision" else "other"
+        before = list(backend.events)
+        with pytest.raises(records._ScopeUseError, match=r"^Invalid operation-record scope$"):
+            records._read_start_record_held(
+                scope, expected_binding, expected_operation, revision_ref=expected_revision
+            )
+        assert backend.events == before and context._phase is records._ScopePhase.ACTIVE
+        _held_assert(
+            records._read_start_record_held(scope, binding, operation, revision_ref=revision),
+            checkpoint=records._HeldCheckpoint.HELD_START_OBSERVED,
+        )
+
+
+def test_mock_scope_preentry_nested_entry_and_postexit_use_are_rejected(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    backend.raw = _wire(_data())
+    context = records._record_scope(backend.binding, _operation())
+    with pytest.raises(records._ScopeUseError):
+        records._read_start_record_held(context._scope, backend.binding, _operation())
+    assert backend.events == [] and context._phase is records._ScopePhase.NEW
+    with context as scope:
+        before = list(backend.events)
+        with pytest.raises(records._ScopeUseError):
+            context.__enter__()
+        assert backend.events == before and backend.active
+        _held_assert(
+            records._read_start_record_held(scope, backend.binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_OBSERVED,
+        )
+    before = list(backend.events)
+    with pytest.raises(records._ScopeUseError):
+        records._read_start_record_held(scope, backend.binding, _operation())
+    with pytest.raises(records._ScopeUseError):
+        context.__enter__()
+    assert backend.events == before and context._phase is records._ScopePhase.CLOSED
+
+
+@pytest.mark.parametrize(
+    "method", (copy.copy, copy.deepcopy, pickle.dumps), ids=("copy", "deepcopy", "pickle")
+)
+def test_mock_scope_and_owner_cannot_be_copied_or_serialized(
+    simulated_scope_backend: _SimulatedScopeBackend, method: Any
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    with context as scope:
+        before = list(backend.events)
+        for value in (context, scope):
+            with pytest.raises(records._ScopeUseError, match=r"^Invalid operation-record scope$"):
+                method(value)
+        assert backend.events == before and backend.active
+
+
+@pytest.mark.parametrize("forged", ("unknown", "uninitialized", "wrong-owner", "direct"))
+def test_mock_scope_requires_factory_issued_mutual_identity(
+    simulated_scope_backend: _SimulatedScopeBackend, forged: str
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    with context as scope:
+        before = list(backend.events)
+        if forged == "direct":
+            with pytest.raises(records._ScopeUseError):
+                records._HeldRecordScope()
+            with pytest.raises(records._ScopeUseError):
+                records._RecordScopeContext()
+        else:
+            value = _Poison() if forged == "unknown" else object.__new__(records._HeldRecordScope)
+            if forged == "wrong-owner":
+                object.__setattr__(value, "_owner", context)
+            with pytest.raises(records._ScopeUseError):
+                records._read_start_record_held(value, backend.binding, _operation())
+        assert scope._owner is context and context._scope is scope
+        assert backend.events == before and backend.active
+
+
+def test_mock_scope_reentrant_operation_and_second_create_do_not_reenter_io(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    with records._record_scope(backend.binding, _operation()) as scope:
+
+        def reenter() -> None:
+            before = list(backend.events)
+            with pytest.raises(records._ScopeUseError):
+                records._read_start_record_held(scope, backend.binding, _operation())
+            assert backend.events == before
+
+        backend.hooks["publish"] = reenter
+        _held_assert(
+            records._create_start_record_held(scope, backend.binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_CHECKPOINT,
+            publication=True,
+        )
+        before = list(backend.events)
+        with pytest.raises(records._ScopeUseError):
+            records._create_start_record_held(scope, backend.binding, _operation())
+        assert backend.events == before and backend.publisher_calls == 1
+
+
+def test_mock_scope_changed_process_is_rejected_before_io_or_owner_release(
+    simulated_scope_backend: _SimulatedScopeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    process = os.getpid()
+    with context as scope:
+        before = list(backend.events)
+        with monkeypatch.context() as changed:
+            changed.setattr(
+                records, "os", SimpleNamespace(name=os.name, getpid=lambda: process + 1)
+            )
+            with pytest.raises(records._ScopeUseError):
+                records._read_start_record_held(scope, backend.binding, _operation())
+            with pytest.raises(records._ScopeUseError):
+                context.__exit__(None, None, None)
+        assert backend.events == before and backend.active
+        assert context._phase is records._ScopePhase.ACTIVE
+
+
+def test_mock_scope_real_other_thread_cannot_use_or_close_the_owner(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    backend.raw = _wire(_data())
+    context = records._record_scope(backend.binding, _operation())
+    outcomes: list[str] = []
+    with context as scope:
+        before = list(backend.events)
+
+        def worker() -> None:
+            for action in (
+                lambda: records._read_start_record_held(scope, backend.binding, _operation()),
+                lambda: context.__exit__(None, None, None),
+            ):
+                try:
+                    action()
+                except records._ScopeUseError:
+                    outcomes.append("refused")
+                else:
+                    outcomes.append("unexpected")
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive() and outcomes == ["refused", "refused"]
+        assert backend.events == before and backend.active
+        _held_assert(
+            records._read_start_record_held(scope, backend.binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_OBSERVED,
+        )
+
+
+@pytest.mark.parametrize("evidence", (False, True, None, 0, "invalid"))
+def test_mock_scope_failure_poisoning_keeps_first_formal_publication_evidence(
+    simulated_scope_backend: _SimulatedScopeBackend, evidence: object
+) -> None:
+    backend = simulated_scope_backend
+    failure = records.private_create.PosixPrivateCreateError("synthetic")
+    failure.publication_possible = evidence
+    backend.failures["publish"] = failure
+    backend.failures["exit"] = OSError("SYNTHETIC_PRIVATE_CLEANUP")
+    context = records._record_scope(backend.binding, _operation())
+    expected = evidence if type(evidence) is bool else None
+    with pytest.raises(records._ScopeFailure) as caught, context as scope:
+        result = records._create_start_record_held(scope, backend.binding, _operation())
+        _held_assert(result, refusal=S.PERSISTENCE_UNCERTAIN, publication=expected)
+        assert context._phase is records._ScopePhase.FAILED
+        assert context._create_attempted and context._creation_publication is expected
+        first = context._first_failure
+        before = list(backend.events)
+        for action in (records._create_start_record_held, records._read_start_record_held):
+            with pytest.raises(records._ScopeUseError):
+                action(scope, backend.binding, _operation())
+        assert backend.events == before and context._first_failure is first
+    _assert_result(caught.value.result, S.PERSISTENCE_UNCERTAIN, expected)
+    assert context._phase is records._ScopePhase.CLOSED and backend.publisher_calls == 1
+
+
+def test_mock_scope_read_failure_preserves_prior_create_without_mixing_call_local_flags(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    with pytest.raises(records._ScopeFailure) as caught, context as scope:
+        _held_assert(
+            records._create_start_record_held(scope, backend.binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_CHECKPOINT,
+            publication=True,
+        )
+        backend.failures["read"] = OSError("SYNTHETIC_PRIVATE_READ")
+        _held_assert(
+            records._read_start_record_held(scope, backend.binding, _operation()),
+            refusal=S.UNVERIFIABLE,
+        )
+        assert (
+            context._creation_publication is True and context._phase is records._ScopePhase.FAILED
+        )
+    _assert_result(caught.value.result, S.UNVERIFIABLE)
+    assert backend.raw == _wire(_data()) and backend.publisher_calls == 1
+
+
+@pytest.mark.parametrize("stage", ("validate", "published", "read", "checkpoint", "exit"))
+def test_mock_scope_failure_points_never_return_success_or_remove_record(
+    simulated_scope_backend: _SimulatedScopeBackend, stage: str
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    if stage == "checkpoint":
+
+        def checkpoint() -> None:
+            if "read" in backend.events:
+                raise records.private_lock.PosixPrivateLockError("posix_directory_lock_unverified")
+
+        backend.hooks["checkpoint"] = checkpoint
+    else:
+        backend.failures[stage] = OSError("SYNTHETIC_PRIVATE_FAILURE")
+    expected_state = S.UNVERIFIABLE if stage == "validate" else S.PERSISTENCE_UNCERTAIN
+    publication = False if stage == "validate" else None if stage == "published" else True
+    with pytest.raises(records._ScopeFailure) as caught, context as scope:
+        result = records._create_start_record_held(scope, backend.binding, _operation())
+        if stage != "exit":
+            _held_assert(result, refusal=expected_state, publication=publication)
+    _assert_result(caught.value.result, expected_state, publication)
+    assert (backend.raw is not None) is (stage != "validate")
+    assert context._phase is records._ScopePhase.CLOSED
+
+
+@pytest.mark.parametrize("busy", (False, True))
+def test_mock_scope_failed_acquisition_is_terminal_without_record_io(
+    simulated_scope_backend: _SimulatedScopeBackend, busy: bool
+) -> None:
+    backend = simulated_scope_backend
+    backend.failures["acquire"] = records.private_lock.PosixPrivateLockError(
+        "posix_directory_lock_busy" if busy else "posix_directory_lock_unavailable"
+    )
+    context = records._record_scope(backend.binding, _operation())
+    with pytest.raises(records._ScopeFailure) as caught, context:
+        pytest.fail("failed lock must not issue a scope")
+    _assert_result(caught.value.result, S.LOCK_BUSY if busy else S.LOCK_UNAVAILABLE)
+    assert backend.events == ["acquire"] and context._phase is records._ScopePhase.FAILED
+    with pytest.raises(records._ScopeUseError):
+        context.__enter__()
+
+
+@pytest.mark.parametrize("stage", ("publish", "read", "body"))
+@pytest.mark.parametrize("cleanup_failure", (False, True))
+def test_mock_scope_cancellation_survives_later_ordinary_cleanup_failure(
+    simulated_scope_backend: _SimulatedScopeBackend, stage: str, cleanup_failure: bool
+) -> None:
+    backend = simulated_scope_backend
+    problem = KeyboardInterrupt()
+    if stage != "body":
+        backend.failures[stage] = problem
+    if cleanup_failure:
+        backend.failures["exit"] = OSError("SYNTHETIC_PRIVATE_CLEANUP")
+    context = records._record_scope(backend.binding, _operation())
+    with pytest.raises(KeyboardInterrupt) as caught, context as scope:
+        records._create_start_record_held(scope, backend.binding, _operation())
+        if stage == "body":
+            raise problem
+    assert caught.value is problem and context._phase is records._ScopePhase.CLOSED
+    assert context._cancellation is None and not backend.active
+    assert (backend.raw is not None) is (stage != "publish")
+
+
+def test_mock_scope_occupied_identical_record_fails_without_publication(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    backend.raw = _wire(_data())
+    context = records._record_scope(backend.binding, _operation())
+    with pytest.raises(records._ScopeFailure) as caught, context as scope:
+        _held_assert(
+            records._create_start_record_held(scope, backend.binding, _operation()),
+            refusal=S.SLOT_OCCUPIED,
+        )
+        assert context._phase is records._ScopePhase.FAILED
+    _assert_result(caught.value.result, S.SLOT_OCCUPIED)
+    assert backend.raw == _wire(_data()) and backend.publisher_calls == 0
+
+
+@pytest.mark.parametrize("platform", ("win32", "darwin", "freebsd14"))
+def test_scope_unsupported_stops_before_binding_lock_or_record_inspection(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    monkeypatch.setattr(records, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(records, "_valid_binding", _deny)
+    monkeypatch.setattr(records.private_lock, "acquire_posix_private_directory_lock", _deny)
+    monkeypatch.setattr(records, "read_private_sensitive_bytes", _deny)
+    monkeypatch.setattr(records.private_create, "create_posix_private_bytes", _deny)
+    with (
+        pytest.raises(records._ScopeFailure) as caught,
+        records._record_scope(_Poison(), _Poison()),
+    ):
+        pytest.fail("unsupported platform must not issue a scope")
+    _assert_result(caught.value.result, S.UNSUPPORTED_PLATFORM)
+
+
+def test_mock_scope_private_reprs_errors_and_revision_never_expose_inputs(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    revision = "SYNTHETIC_PRIVATE_REVISION"
+    context = records._record_scope(backend.binding, _operation(), revision_ref=revision)
+    with context as scope:
+        result = records._create_start_record_held(
+            scope, backend.binding, _operation(), revision_ref=revision
+        )
+        with pytest.raises(records._ScopeUseError) as caught:
+            records._read_start_record_held(
+                scope, backend.binding, _operation(), revision_ref="different"
+            )
+        rendered = repr(context) + repr(scope) + repr(result) + repr(caught.value)
+        for forbidden in (revision, str(backend.binding.directory), "store-example", "operation-b"):
+            assert forbidden not in rendered
+        assert backend.raw is not None and revision.encode() not in backend.raw
+        assert set(json.loads(backend.raw)) == set(KEYS)
+
+
+@LINUX_ONLY
+def test_real_linux_held_scope_create_read_retains_one_lock_and_record(tmp_path: Path) -> None:
+    binding = _private(tmp_path)
+    context = records._record_scope(binding, _operation(), revision_ref="revision-example")
+    with context as scope:
+        _held_assert(
+            records._create_start_record_held(
+                scope, binding, _operation(), revision_ref="revision-example"
+            ),
+            checkpoint=records._HeldCheckpoint.HELD_START_CHECKPOINT,
+            publication=True,
+        )
+        _assert_result(records.read_start_record(binding, _operation()), S.LOCK_BUSY)
+        _held_assert(
+            records._read_start_record_held(
+                scope, binding, _operation(), revision_ref="revision-example"
+            ),
+            checkpoint=records._HeldCheckpoint.HELD_START_OBSERVED,
+        )
+        assert context._creation_publication is True
+    assert (binding.directory / LEAF).read_bytes() == _wire(_data())
+    _assert_result(records.read_start_record(binding, _operation()), S.START_OBSERVED)
+    _assert_result(records.create_start_record(binding, _operation()), S.SLOT_OCCUPIED)
+
+
+@LINUX_ONLY
+def test_real_linux_held_scope_failure_stays_retained_without_sentinel_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binding = _private(tmp_path)
+    sentinels = {binding.directory / binding.token_slot, binding.directory / binding.state_slot}
+    for path in sentinels:
+        path.write_bytes(b"synthetic scope sentinel")
+    before = {path: path.stat() for path in sentinels}
+    native_open = os.open
+
+    def opened(path: Any, *args: Any, **kwargs: Any) -> int:
+        assert str(path) not in {binding.token_slot, binding.state_slot} and path not in sentinels
+        return native_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", opened)
+    with (
+        pytest.raises(records._ScopeFailure),
+        records._record_scope(binding, _operation()) as scope,
+    ):
+        _held_assert(
+            records._create_start_record_held(scope, binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_CHECKPOINT,
+            publication=True,
+        )
+        raise OSError("synthetic downstream scope failure")
+    assert (binding.directory / LEAF).read_bytes() == _wire(_data())
+    for path in sentinels:
+        assert path.stat() == before[path]
+    _assert_result(records.read_start_record(binding, _operation()), S.START_OBSERVED)
+
+
+@pytest.mark.parametrize(
+    "revision",
+    ("", "bad/revision", True, "poison-input"),
+    ids=("empty", "slash", "boolean", "poison"),
+)
+def test_mock_scope_invalid_revision_is_terminal_before_lock(
+    simulated_scope_backend: _SimulatedScopeBackend, revision: object
+) -> None:
+    backend = simulated_scope_backend
+    if revision == "poison-input":
+        revision = _Poison()
+    context = records._record_scope(backend.binding, _operation(), revision_ref=revision)
+    with pytest.raises(records._ScopeFailure) as caught, context:
+        pytest.fail("invalid revision must not issue a scope")
+    _assert_result(caught.value.result, S.UNVERIFIABLE)
+    assert backend.events == [] and context._phase is records._ScopePhase.FAILED
+    with pytest.raises(records._ScopeUseError):
+        context.__enter__()
+
+
+@pytest.mark.parametrize("change", ("same-numeric-id", "not-live"))
+def test_mock_scope_requires_original_live_thread_object(
+    simulated_scope_backend: _SimulatedScopeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    with context as scope:
+        before = list(backend.events)
+        with monkeypatch.context() as injected:
+            if change == "same-numeric-id":
+                other = SimpleNamespace(ident=threading.get_ident(), is_alive=lambda: True)
+                injected.setattr(
+                    records, "threading", SimpleNamespace(current_thread=lambda: other)
+                )
+            else:
+                injected.setattr(context._thread, "is_alive", lambda: False)
+            with pytest.raises(records._ScopeUseError):
+                records._read_start_record_held(scope, backend.binding, _operation())
+        assert backend.events == before and backend.active
+        assert context._phase is records._ScopePhase.ACTIVE
+
+
+def test_mock_scope_successful_read_cannot_erase_creation_before_later_body_failure(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    with pytest.raises(records._ScopeFailure) as caught, context as scope:
+        _held_assert(
+            records._create_start_record_held(scope, backend.binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_CHECKPOINT,
+            publication=True,
+        )
+        _held_assert(
+            records._read_start_record_held(scope, backend.binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_OBSERVED,
+        )
+        assert context._creation_publication is True
+        raise OSError("synthetic later stage failure")
+    _assert_result(caught.value.result, S.PERSISTENCE_UNCERTAIN, True)
+    assert backend.raw == _wire(_data())
+
+
+def test_mock_scope_caught_cancellation_cannot_allow_normal_context_exit(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    problem = KeyboardInterrupt()
+    backend.failures["read"] = problem
+    context = records._record_scope(backend.binding, _operation())
+    with pytest.raises(KeyboardInterrupt) as caught, context as scope:
+        with pytest.raises(KeyboardInterrupt):
+            records._create_start_record_held(scope, backend.binding, _operation())
+        assert context._phase is records._ScopePhase.FAILED
+        before = list(backend.events)
+        with pytest.raises(records._ScopeUseError):
+            records._read_start_record_held(scope, backend.binding, _operation())
+        assert backend.events == before
+    assert caught.value is problem and context._cancellation is None
+    assert context._phase is records._ScopePhase.CLOSED and backend.raw == _wire(_data())
+
+
+def test_private_held_results_cannot_take_public_success_or_authorization() -> None:
+    with pytest.raises(ValueError, match=r"^Invalid held-record result$"):
+        records._HeldResult(refusal=S.START_CONFIRMED)
+    with pytest.raises(TypeError):
+        records._HeldResult(
+            checkpoint=records._HeldCheckpoint.HELD_START_CHECKPOINT, reuse_authorized=True
+        )
+
+
+@LINUX_ONLY
+def test_real_linux_foreign_thread_cannot_release_active_scope_lock(tmp_path: Path) -> None:
+    binding = _private(tmp_path)
+    outcomes: list[str] = []
+    with records._record_scope(binding, _operation()) as scope:
+        records._create_start_record_held(scope, binding, _operation())
+
+        def worker() -> None:
+            try:
+                records._read_start_record_held(scope, binding, _operation())
+            except records._ScopeUseError:
+                outcomes.append("refused")
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        thread.join(timeout=5)
+        assert not thread.is_alive() and outcomes == ["refused"]
+        _assert_result(records.read_start_record(binding, _operation()), S.LOCK_BUSY)
+        _held_assert(
+            records._read_start_record_held(scope, binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_OBSERVED,
+        )
+    _assert_result(records.read_start_record(binding, _operation()), S.START_OBSERVED)
+
+
+def test_mock_scope_public_fallback_retains_publication_after_unexpected_exit_error(
+    simulated_scope_backend: _SimulatedScopeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = simulated_scope_backend
+    original_exit = records._RecordScopeContext.__exit__
+
+    def unexpected_exit(context: Any, *exception: Any) -> Any:
+        original_exit(context, *exception)
+        raise OSError("synthetic unexpected exit wrapper failure")
+
+    monkeypatch.setattr(records._RecordScopeContext, "__exit__", unexpected_exit)
+    _assert_result(
+        records.create_start_record(backend.binding, _operation()), S.PERSISTENCE_UNCERTAIN, True
+    )
+    assert backend.raw == _wire(_data()) and not backend.active
+
+
+def test_mock_scope_public_fallback_preserves_pending_cancellation(
+    simulated_scope_backend: _SimulatedScopeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = simulated_scope_backend
+    problem = KeyboardInterrupt()
+    backend.failures["read"] = problem
+    original_exit = records._RecordScopeContext.__exit__
+    owners: list[Any] = []
+
+    def failed_exit(context: Any, *_exception: Any) -> Any:
+        owners.append(context)
+        raise OSError("synthetic early exit failure")
+
+    monkeypatch.setattr(records._RecordScopeContext, "__exit__", failed_exit)
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            records.create_start_record(backend.binding, _operation())
+        assert caught.value is problem and len(owners) == 1
+    finally:
+        # Only the legitimate test owner closes its synthetic backend after fault injection.
+        if owners:
+            with pytest.raises(KeyboardInterrupt):
+                original_exit(owners[0], None, None, None)
+    assert not backend.active and owners[0]._cancellation is None
+
+
+@pytest.mark.parametrize("stage", ("acquire", "enter"))
+def test_mock_scope_entry_in_progress_cannot_acquire_twice_or_release(
+    simulated_scope_backend: _SimulatedScopeBackend, stage: str
+) -> None:
+    backend = simulated_scope_backend
+    backend.raw = _wire(_data())
+    context = records._record_scope(backend.binding, _operation())
+
+    def reenter() -> None:
+        before = list(backend.events)
+        assert context._entering
+        with pytest.raises(records._ScopeUseError):
+            context.__enter__()
+        with pytest.raises(records._ScopeUseError):
+            context.__exit__(None, None, None)
+        assert backend.events == before and context._first_failure is None
+
+    backend.hooks[stage] = reenter
+    with context as scope:
+        assert not context._entering and context._phase is records._ScopePhase.ACTIVE
+        _held_assert(
+            records._read_start_record_held(scope, backend.binding, _operation()),
+            checkpoint=records._HeldCheckpoint.HELD_START_OBSERVED,
+        )
+    assert backend.events.count("acquire") == backend.events.count("exit") == 1
+    assert not context._entering and context._phase is records._ScopePhase.CLOSED
+
+
+def test_mock_scope_reconstructed_owner_does_not_inherit_factory_identity(
+    simulated_scope_backend: _SimulatedScopeBackend,
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    reconstructed = object.__new__(records._RecordScopeContext)
+    for item in fields(context):
+        object.__setattr__(reconstructed, item.name, getattr(context, item.name))
+    with pytest.raises(records._ScopeUseError):
+        reconstructed.__enter__()
+    assert backend.events == [] and context._phase is records._ScopePhase.NEW
+    with context:
+        assert backend.active
+    assert backend.events.count("acquire") == 1
+
+
+@pytest.mark.parametrize("boundary", ("encode", "platform", "binding-snapshot", "exit-stack"))
+@pytest.mark.parametrize(
+    "fault_type",
+    (KeyboardInterrupt, RuntimeError, MemoryError),
+    ids=("keyboard-interrupt", "runtime-error", "raised-memory-error"),
+)
+def test_initial_entry_fault_is_terminal_after_injection_is_removed(
+    simulated_scope_backend: _SimulatedScopeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    boundary: str,
+    fault_type: type[BaseException],
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    marker = "SYNTHETIC_INITIAL_ENTRY_DETAIL"
+    problem = KeyboardInterrupt() if fault_type is KeyboardInterrupt else fault_type(marker)
+    event_names = ("acquire", "enter", "publish", "read", "lstat", "validate", "checkpoint", "exit")
+
+    def fail(*_args: Any, **_kwargs: Any) -> Any:
+        raise problem
+
+    with (
+        pytest.raises(
+            (KeyboardInterrupt, RuntimeError, MemoryError, records._ScopeFailure)
+        ) as caught,
+        monkeypatch.context() as injected,
+    ):
+        if boundary == "encode":
+            injected.setattr(records, "_encode_start_record", fail)
+        elif boundary == "platform":
+            injected.setattr(records, "_linux_storage_available", fail)
+        elif boundary == "exit-stack":
+            injected.setattr(records, "ExitStack", fail)
+        else:
+            original_encode = records._encode_start_record
+
+            def encode_then_fail_snapshot(binding: object, operation: object) -> bytes:
+                encoded = original_encode(binding, operation)
+                injected.setattr(records, "SyntheticBinding", fail)
+                return encoded
+
+            injected.setattr(records, "_encode_start_record", encode_then_fail_snapshot)
+        context.__enter__()
+
+    first_phase = context._phase
+    first_entering = context._entering
+    first_scope = context._scope
+    first_cancellation = context._cancellation
+    initial_counts = {name: backend.events.count(name) for name in event_names}
+    initial_publisher_calls = backend.publisher_calls
+    retry_refused = False
+    retry_checkpoint = False
+    # The injection is gone. The unfixed implementation can actually acquire
+    # and publish here; any resulting artifact is only this simulated backend.
+    try:
+        with context as retried:
+            result = records._create_start_record_held(retried, backend.binding, _operation())
+            retry_checkpoint = result.checkpoint is records._HeldCheckpoint.HELD_START_CHECKPOINT
+    except records._ScopeUseError:
+        retry_refused = True
+    retry_counts = {name: backend.events.count(name) - initial_counts[name] for name in event_names}
+    request.node.user_properties.append(
+        (
+            "entry_observation",
+            {
+                "boundary": boundary,
+                "fault": fault_type.__name__,
+                "initial_phase": first_phase.value,
+                "initial_entering": first_entering,
+                "initial_scope_issued": first_scope is not None,
+                "initial_counts": initial_counts,
+                "retry_refused": retry_refused,
+                "retry_checkpoint": retry_checkpoint,
+                "retry_counts": retry_counts,
+            },
+        )
+    )
+
+    assert first_phase is records._ScopePhase.FAILED
+    assert first_entering is False and first_scope is None and first_cancellation is None
+    assert initial_publisher_calls == 0 and all(count == 0 for count in initial_counts.values())
+    assert (
+        retry_refused
+        and not retry_checkpoint
+        and all(count == 0 for count in retry_counts.values())
+    )
+    assert context._phase is records._ScopePhase.FAILED and not context._entering
+    assert context._scope is None and context._held is None and context._stack is None
+    assert context._cancellation is None
+    if fault_type is KeyboardInterrupt:
+        assert caught.value is problem
+    else:
+        assert isinstance(caught.value, records._ScopeFailure)
+        _assert_result(caught.value.result, S.UNVERIFIABLE)
+        assert marker not in repr(caught.value) and str(backend.binding.directory) not in str(
+            caught.value
+        )
+    assert marker not in repr(context) and str(backend.binding.directory) not in repr(context)
+
+    # A separate synthetic context can still enter; this is not retry approval.
+    independent = records._record_scope(
+        backend.binding, replace(_operation(), operation_id="independent-operation")
+    )
+    with independent:
+        assert independent._phase is records._ScopePhase.ACTIVE and backend.active
+    assert independent._phase is records._ScopePhase.CLOSED
+
+
+@pytest.mark.parametrize(
+    "fault_type",
+    (KeyboardInterrupt, RuntimeError, MemoryError),
+    ids=("keyboard-interrupt", "runtime-error", "raised-memory-error"),
+)
+@pytest.mark.parametrize("cleanup_failure", (False, True))
+def test_entry_scope_issuance_fault_unwinds_once_and_stays_terminal(
+    simulated_scope_backend: _SimulatedScopeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    fault_type: type[BaseException],
+    cleanup_failure: bool,
+) -> None:
+    backend = simulated_scope_backend
+    context = records._record_scope(backend.binding, _operation())
+    problem = fault_type()
+    if cleanup_failure:
+        backend.failures["exit"] = OSError("SYNTHETIC_ENTRY_CLEANUP")
+
+    def fail_allocation(_scope_type: object) -> Any:
+        raise problem
+
+    # Context construction is already complete. Only the subsequently
+    # issued scope allocation is replaced; no runtime hook is added.
+    with (
+        pytest.raises((KeyboardInterrupt, records._ScopeFailure)) as caught,
+        monkeypatch.context() as injected,
+    ):
+        injected.setattr(records, "object", SimpleNamespace(__new__=fail_allocation), raising=False)
+        context.__enter__()
+
+    assert backend.events == ["acquire", "enter", "exit"] and not backend.active
+    assert backend.publisher_calls == 0 and backend.raw is None
+    assert context._phase is records._ScopePhase.FAILED and not context._entering
+    assert context._scope is None and context._held is None and context._stack is None
+    assert context._cancellation is None
+    if fault_type is KeyboardInterrupt:
+        assert caught.value is problem
+    else:
+        assert isinstance(caught.value, records._ScopeFailure)
+        _assert_result(caught.value.result, S.UNVERIFIABLE)
+    before = list(backend.events)
+    with pytest.raises(records._ScopeUseError):
+        context.__enter__()
+    assert backend.events == before
