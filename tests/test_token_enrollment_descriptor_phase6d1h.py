@@ -570,7 +570,7 @@ def test_validation_calls_do_not_read_files_or_print(monkeypatch: pytest.MonkeyP
         _check(RAW, _Poison(), S.EXPECTATION_UNVERIFIABLE)
 
 
-def test_only_pure_standard_library_dependencies_and_no_runtime_consumer() -> None:
+def test_only_pure_standard_library_dependencies_and_only_approved_runtime_consumer() -> None:
     """Source reads belong to tests, never to the validator's runtime."""
     source = Path(inspect.getfile(model))
     tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -613,9 +613,12 @@ def test_only_pure_standard_library_dependencies_and_no_runtime_consumer() -> No
                 "acquire",
             }
         assert not isinstance(node, (ast.Global, ast.Nonlocal, ast.AsyncFunctionDef))
-    for other in source.parent.rglob("*.py"):
-        if other != source:
-            assert source.stem not in other.read_text(encoding="utf-8")
+    consumers = {
+        other.relative_to(source.parent).as_posix()
+        for other in source.parent.rglob("*.py")
+        if other != source and source.stem in other.read_text(encoding="utf-8")
+    }
+    assert consumers == {"production_write_token_enrollment_preparation.py"}
 
 
 @pytest.mark.parametrize("base", ("COM", "LPT"))

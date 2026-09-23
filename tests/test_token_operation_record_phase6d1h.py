@@ -392,11 +392,16 @@ def _imports(tree: ast.AST) -> set[str]:
 def test_only_exact_reviewed_modules_directly_import_lock_and_publisher() -> None:
     parent = Path(records.__file__).parent
     expected = {
-        "_posix_private_lock": {"production_write_token.py", Path(records.__file__).name},
+        "_posix_private_lock": {
+            "production_write_token.py",
+            Path(records.__file__).name,
+            "production_write_token_enrollment_preparation.py",
+        },
         "_posix_private_create": {
             "_private_create_io.py",
             "_posix_private_replace.py",
             Path(records.__file__).name,
+            "production_write_token_enrollment_preparation.py",
         },
     }
     for dependency, allowed in expected.items():

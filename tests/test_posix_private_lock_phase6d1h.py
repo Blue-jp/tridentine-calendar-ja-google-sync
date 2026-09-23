@@ -436,6 +436,7 @@ def test_component_has_no_artifact_write_no_wait_loop_and_only_approved_consumer
     allowed_consumers = {
         "production_write_token.py",
         "production_write_token_operation_record.py",
+        "production_write_token_enrollment_preparation.py",
     }
     for path in source_path.parent.glob("*.py"):
         if path != source_path and path.name not in allowed_consumers:
