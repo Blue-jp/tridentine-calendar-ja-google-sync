@@ -618,7 +618,10 @@ def test_only_pure_standard_library_dependencies_and_only_approved_runtime_consu
         for other in source.parent.rglob("*.py")
         if other != source and source.stem in other.read_text(encoding="utf-8")
     }
-    assert consumers == {"production_write_token_enrollment_preparation.py"}
+    assert consumers == {
+        "production_write_token_enrollment_preparation.py",
+        "production_write_token_disabled_bootstrap_inputs.py",
+    }
 
 
 @pytest.mark.parametrize("base", ("COM", "LPT"))
