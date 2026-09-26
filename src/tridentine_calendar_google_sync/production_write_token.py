@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from collections.abc import Sequence
+import os
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, NoReturn
@@ -69,6 +71,111 @@ class ProductionWriteTokenAuthorizationError(ProductionWriteTokenError):
 
 class ProductionWriteTokenRefreshError(ProductionWriteTokenError):
     """The one permitted mock refresh failed without browser fallback."""
+
+
+class ProductionWriteTokenRefreshPersistenceError(ProductionWriteTokenRefreshError):
+    """Validated refresh response could not be stored; no session or recovery approval."""
+
+    def __init__(self, *, publication_possible: bool | None = None) -> None:
+        super().__init__(
+            "production_write_token_refresh_persistence_failed",
+            "Refreshed Production write credentials could not be persisted safely. "
+            "Token state may require reconciliation; do not retry or remove files automatically.",
+        )
+        # These describe this ordinary-exception path, not durable provider/file state.
+        self.refresh_completed = True
+        self.persistence_attempted = True
+        self.publication_possible = (
+            publication_possible if type(publication_possible) is bool else None
+        )
+
+
+class ProductionWriteTokenRefreshPrewriteError(ProductionWriteTokenRefreshError):
+    """Refresh completed, but reloaded inputs could not be matched before saving."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "production_write_token_refresh_prewrite_unverified",
+            "Production token/state inputs could not be reverified after refresh. "
+            "No persistence was attempted by this call; do not retry, remove, or restore "
+            "files automatically. Reconciliation is required.",
+        )
+        self.refresh_completed = True
+        self.persistence_attempted = False
+        # This is only evidence that this call did not enter its save function.
+        # It says nothing about changes made by the provider or another process.
+        self.publication_possible = False
+
+
+class ProductionWriteTokenSessionLockError(ProductionWriteTokenRefreshError):
+    """No session after a lock failure; files/provider state may already have changed."""
+
+    def __init__(self, *, busy: bool = False) -> None:
+        super().__init__(
+            "production_write_token_session_busy"
+            if busy
+            else "production_write_token_session_lock_unverified",
+            "Production credential session could not retain its directory locks. "
+            "Do not proceed unlocked, retry, remove, or restore files automatically. "
+            "A refresh or persistence may already have occurred; reconciliation may be required.",
+        )
+
+
+@contextmanager
+def _production_write_session_lock(
+    token_path: str | Path, state_path: str | Path
+) -> Iterator[Callable[[], None]]:
+    """Lock both existing parents before content reads; Windows retains its old path.
+
+    Session loaders and new-pair publication share this Linux protocol. No claim
+    covers other writers, replaced directories, fork/dup, or post-check changes.
+    The yielded checkpoint never catches exceptions from the caller's body.
+    """
+    if os.name == "nt":
+        yield lambda: None
+
+    else:
+        from tridentine_calendar_google_sync._posix_private_lock import (
+            PosixPrivateLockError,
+            _PrivateDirectoryLock,
+            acquire_posix_private_directory_lock,
+        )
+
+        with ExitStack() as stack:
+            held: list[_PrivateDirectoryLock] = []
+            try:
+                paths = (Path(token_path), Path(state_path))
+                if any(
+                    not path.is_absolute()
+                    or path.anchor == "//"
+                    or ".." in path.parts
+                    or "\x00" in str(path)
+                    for path in paths
+                ):
+                    raise ValueError
+                # One acquisition per distinct lexical parent, at most two. No wait
+                # or retry; aliases of an already-locked inode fail rather than skip.
+                for parent in sorted({path.parent for path in paths}, key=os.fspath):
+                    held.append(stack.enter_context(acquire_posix_private_directory_lock(parent)))
+            except Exception as exc:
+                busy = (
+                    isinstance(exc, PosixPrivateLockError)
+                    and exc.code == "posix_directory_lock_busy"
+                )
+                raise ProductionWriteTokenSessionLockError(busy=busy) from None
+
+            def revalidate() -> None:
+                try:
+                    for lock in held:
+                        lock.revalidate()
+                except Exception:
+                    raise ProductionWriteTokenSessionLockError() from None
+
+            revalidate()
+            yield revalidate
+            # No extra exit-time check here: it could mask Unit 4I/4J failures. The
+            # session function checks before every normal return. ExitStack closes
+            # all acquired contexts on return, ordinary error or cancellation.
 
 
 def _is_utc(value: datetime) -> bool:
@@ -645,10 +752,13 @@ def _load_production_write_credential_session(
     """Load an exact-role token and perform at most one injected fake refresh."""
 
     from tridentine_calendar_google_sync.production_write_token_io import (
+        ProductionWriteTokenIOError,
         load_production_write_authorized_user_token,
         load_production_write_token_generation_state,
+        persist_refreshed_production_write_token,
+        render_production_write_authorized_user_token_json,
+        render_production_write_token_generation_state_json,
         validate_production_write_token_path_set,
-        write_production_write_authorized_user_token,
     )
 
     if not _is_utc(now):
@@ -665,78 +775,116 @@ def _load_production_write_credential_session(
         write_token_exists=True,
         generation_state_exists=True,
     )
-    state = load_production_write_token_generation_state(generation_state_path)
-    token = load_production_write_authorized_user_token(production_write_token_path)
-    if evidence_mode == "provider":
-        verify_production_write_authorized_user_token(token, state, target)
-    else:
-        _verify_mock_production_write_authorized_user_token(token, state, target)
-    if token.expiry > now:
+    with _production_write_session_lock(
+        production_write_token_path, generation_state_path
+    ) as revalidate_session_lock:
+        state = load_production_write_token_generation_state(generation_state_path)
+        token = load_production_write_authorized_user_token(production_write_token_path)
+        revalidate_session_lock()
+        if evidence_mode == "provider":
+            verify_production_write_authorized_user_token(token, state, target)
+        else:
+            _verify_mock_production_write_authorized_user_token(token, state, target)
+        if token.expiry > now:
+            revalidate_session_lock()
+            return ProductionWriteCredentialSession(
+                token=token,
+                generation_state=state,
+                refresh_count=0,
+            )
+        if refresher is None:
+            raise ProductionWriteTokenRefreshError(
+                "production_write_token_refresh_unavailable",
+                "Expired Production write credentials cannot be refreshed",
+            )
+        if (
+            getattr(refresher, "mock_only", None) is not True
+            or getattr(refresher, "live_capable", None) is not False
+            or getattr(refresher, "browser_fallback_count", None) != 0
+        ):
+            raise ProductionWriteTokenRefreshError(
+                "production_write_token_refresh_adapter_unsafe",
+                "Production write-token refresh adapter is unsafe",
+            )
+        revalidate_session_lock()
+        try:
+            refreshed = refresher.refresh(token, PRODUCTION_WRITE_SCOPES)
+        except Exception as exc:
+            raise ProductionWriteTokenRefreshError(
+                "production_write_token_refresh_failed",
+                "Production write-token refresh failed without browser fallback",
+            ) from exc
+        if refresher.refresh_attempt_count != 1 or refresher.calendar_api_call_count != 0:
+            raise ProductionWriteTokenRefreshError(
+                "production_write_token_refresh_accounting_invalid",
+                "Production write-token refresh accounting is invalid",
+            )
+        required_refresh_origin = (
+            ProductionWriteGrantEvidenceOrigin.FRESH_REFRESH_RESPONSE
+            if evidence_mode == "provider"
+            else ProductionWriteGrantEvidenceOrigin.TEST_FIXTURE_REFRESH_RESPONSE
+        )
+        _validate_oauth_credentials(
+            refreshed,
+            now=now,
+            required_evidence_origin=required_refresh_origin,
+        )
+        if not (
+            hmac.compare_digest(refreshed.client_id, token.client_id)
+            and hmac.compare_digest(refreshed.client_secret, token.client_secret)
+            and refreshed.token_uri == token.token_uri
+        ):
+            raise ProductionWriteTokenRefreshError(
+                "production_write_token_refresh_identity_mismatch",
+                "Refreshed Production write credentials changed authorization identity",
+            )
+        refreshed_token = _token_from_credentials(refreshed, state)
+        if evidence_mode == "provider":
+            verify_production_write_authorized_user_token(refreshed_token, state, target)
+        else:
+            _verify_mock_production_write_authorized_user_token(refreshed_token, state, target)
+        revalidate_session_lock()
+        # Re-read after refresh, through the existing role-specific loaders. This
+        # detects an observed changed/missing/unsafe pair, not an atomic snapshot or
+        # an inode/content-conditional replacement. Unit 4L separately binds token replacement.
+        try:
+            current_state = load_production_write_token_generation_state(generation_state_path)
+            current_token = load_production_write_authorized_user_token(production_write_token_path)
+            state_matches = hmac.compare_digest(
+                render_production_write_token_generation_state_json(current_state).encode("utf-8"),
+                render_production_write_token_generation_state_json(state).encode("utf-8"),
+            )
+            token_matches = hmac.compare_digest(
+                render_production_write_authorized_user_token_json(current_token).encode("utf-8"),
+                render_production_write_authorized_user_token_json(token).encode("utf-8"),
+            )
+            if not state_matches or not token_matches:
+                raise ProductionWriteTokenRefreshPrewriteError()
+        except Exception:
+            raise ProductionWriteTokenRefreshPrewriteError() from None
+        revalidate_session_lock()
+        try:
+            persist_refreshed_production_write_token(
+                refreshed_token,
+                production_write_token_path,
+                expected_token=token,
+            )
+        except Exception as exc:
+            # A failed save cannot establish that the previous token still exists,
+            # or that a refreshed/rotated credential can safely be requested again.
+            # Preserve explicit writer evidence; unspecified failures stay unknown.
+            publication_possible = (
+                exc.publication_possible if isinstance(exc, ProductionWriteTokenIOError) else None
+            )
+            raise ProductionWriteTokenRefreshPersistenceError(
+                publication_possible=publication_possible
+            ) from None
+        revalidate_session_lock()
         return ProductionWriteCredentialSession(
-            token=token,
+            token=refreshed_token,
             generation_state=state,
-            refresh_count=0,
+            refresh_count=1,
         )
-    if refresher is None:
-        raise ProductionWriteTokenRefreshError(
-            "production_write_token_refresh_unavailable",
-            "Expired Production write credentials cannot be refreshed",
-        )
-    if (
-        getattr(refresher, "mock_only", None) is not True
-        or getattr(refresher, "live_capable", None) is not False
-        or getattr(refresher, "browser_fallback_count", None) != 0
-    ):
-        raise ProductionWriteTokenRefreshError(
-            "production_write_token_refresh_adapter_unsafe",
-            "Production write-token refresh adapter is unsafe",
-        )
-    try:
-        refreshed = refresher.refresh(token, PRODUCTION_WRITE_SCOPES)
-    except Exception as exc:
-        raise ProductionWriteTokenRefreshError(
-            "production_write_token_refresh_failed",
-            "Production write-token refresh failed without browser fallback",
-        ) from exc
-    if refresher.refresh_attempt_count != 1 or refresher.calendar_api_call_count != 0:
-        raise ProductionWriteTokenRefreshError(
-            "production_write_token_refresh_accounting_invalid",
-            "Production write-token refresh accounting is invalid",
-        )
-    required_refresh_origin = (
-        ProductionWriteGrantEvidenceOrigin.FRESH_REFRESH_RESPONSE
-        if evidence_mode == "provider"
-        else ProductionWriteGrantEvidenceOrigin.TEST_FIXTURE_REFRESH_RESPONSE
-    )
-    _validate_oauth_credentials(
-        refreshed,
-        now=now,
-        required_evidence_origin=required_refresh_origin,
-    )
-    if not (
-        hmac.compare_digest(refreshed.client_id, token.client_id)
-        and hmac.compare_digest(refreshed.client_secret, token.client_secret)
-        and refreshed.token_uri == token.token_uri
-    ):
-        raise ProductionWriteTokenRefreshError(
-            "production_write_token_refresh_identity_mismatch",
-            "Refreshed Production write credentials changed authorization identity",
-        )
-    refreshed_token = _token_from_credentials(refreshed, state)
-    if evidence_mode == "provider":
-        verify_production_write_authorized_user_token(refreshed_token, state, target)
-    else:
-        _verify_mock_production_write_authorized_user_token(refreshed_token, state, target)
-    write_production_write_authorized_user_token(
-        refreshed_token,
-        production_write_token_path,
-        overwrite=True,
-    )
-    return ProductionWriteCredentialSession(
-        token=refreshed_token,
-        generation_state=state,
-        refresh_count=1,
-    )
 
 
 def prepare_production_write_rehearsal_credential_session(
@@ -805,6 +953,9 @@ __all__ = [
     "ProductionWriteTokenConfigError",
     "ProductionWriteTokenError",
     "ProductionWriteTokenRefreshError",
+    "ProductionWriteTokenRefreshPersistenceError",
+    "ProductionWriteTokenRefreshPrewriteError",
+    "ProductionWriteTokenSessionLockError",
     "authorize_production_write_token",
     "authorize_production_write_token_mock",
     "build_initial_production_write_token_generation_state",

@@ -246,7 +246,6 @@ def _verify_manifest_source(
         expected = build_accepted_production_source_manifest(
             profile,
             source,
-            repository_identity=manifest.repository_identity,
         )
     except Exception as exc:
         raise ProductionWriteTokenRehearsalError(

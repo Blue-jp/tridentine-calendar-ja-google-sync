@@ -12,8 +12,15 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
+from tridentine_calendar_google_sync import _posix_private_replace as posix_replace
+from tridentine_calendar_google_sync._private_create_io import (
+    PrivateCreateIOError,
+    create_private_text,
+)
 from tridentine_calendar_google_sync.production_write_token import (
     ProductionWriteTokenConfigError,
+    ProductionWriteTokenSessionLockError,
+    _production_write_session_lock,
     private_production_write_token_generation_state_data,
     validate_production_token_role,
     validate_production_write_scopes,
@@ -29,6 +36,7 @@ from tridentine_calendar_google_sync.production_write_token_models import (
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     atomic_write_private_text,
+    read_private_sensitive_bytes,
     read_sensitive_bytes,
     remove_sensitive_file_if_matches,
     sensitive_path_identity,
@@ -41,7 +49,19 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ProductionWriteTokenIOError(ProductionWriteTokenConfigError):
-    """A path-free token or generation-state I/O failure."""
+    """Safe I/O error; write evidence is not a persistent transaction record."""
+
+    def __init__(
+        self,
+        code: str,
+        public_message: str,
+        *,
+        publication_possible: bool | None = None,
+        completed_output_count: int = 0,
+    ) -> None:
+        super().__init__(code, public_message)
+        self.publication_possible = publication_possible
+        self.completed_output_count = completed_output_count
 
 
 class _DuplicateJsonKey(ValueError):
@@ -255,13 +275,10 @@ def load_production_write_authorized_user_token(
     try:
         validated = Path(path)
         _reject_repository_parent(validated)
-        _require_private_file_mode(validated)
         return parse_production_write_authorized_user_token_bytes(
-            read_sensitive_bytes(
+            read_private_sensitive_bytes(
                 validated,
                 max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
-                windows_private_acl=True,
-                windows_require_protected_acl=True,
             )
         )
     except ProductionWriteTokenIOError:
@@ -273,14 +290,40 @@ def load_production_write_authorized_user_token(
         ) from None
 
 
+def _create_posix_token_artifact(path: str | Path, text: str, *, code: str, message: str) -> Path:
+    """Create one token/state file, preserving uncertain publication and never deleting it."""
+    publication_possible: bool | None = False
+    try:
+        validated = validate_sensitive_output_path(path, overwrite=False)
+        _reject_repository_parent(validated)
+        publication_possible = None
+        create_private_text(validated, text, max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES)
+        return validated
+    except Exception as exc:
+        if isinstance(exc, PrivateCreateIOError):
+            publication_possible = exc.publication_possible
+        if publication_possible is not False:
+            message += " Outputs may exist; do not retry or remove them automatically."
+        raise ProductionWriteTokenIOError(
+            code, message, publication_possible=publication_possible
+        ) from None
+
+
 def write_production_write_authorized_user_token(
     token: ProductionWriteAuthorizedUserToken,
     path: str | Path,
     *,
     overwrite: bool = False,
 ) -> Path:
-    """Atomically persist one private token with no overwrite by default."""
+    """Create a token; Windows and explicit refresh replacement retain their old path."""
 
+    if os.name == "posix" and not overwrite:
+        return _create_posix_token_artifact(
+            path,
+            render_production_write_authorized_user_token_json(token),
+            code="production_write_token_write_failed",
+            message="Production write token could not be persisted safely.",
+        )
     try:
         validated = validate_sensitive_output_path(
             path,
@@ -300,6 +343,55 @@ def write_production_write_authorized_user_token(
         raise ProductionWriteTokenIOError(
             "production_write_token_write_failed",
             "Production write token could not be persisted safely",
+        ) from None
+
+
+def persist_refreshed_production_write_token(
+    token: ProductionWriteAuthorizedUserToken,
+    path: str | Path,
+    *,
+    expected_token: ProductionWriteAuthorizedUserToken,
+) -> Path:
+    """Persist an already-validated refresh using the original token as expected bytes.
+
+    The caller performs authorization and token/state binding, including Unit 4J.
+    This is not a new authorization API, pair transaction, lock, or compare-and-swap.
+    Windows keeps the existing protected writer. POSIX never falls back to it.
+    The generic overwrite API is unchanged and is not upgraded by this entry point.
+    """
+    if os.name == "nt":
+        return write_production_write_authorized_user_token(token, path, overwrite=True)
+    publication_possible: bool | None = False
+    try:
+        if (
+            os.name != "posix"
+            or not isinstance(token, ProductionWriteAuthorizedUserToken)
+            or not isinstance(expected_token, ProductionWriteAuthorizedUserToken)
+        ):
+            raise ValueError
+        content = render_production_write_authorized_user_token_json(token).encode("utf-8")
+        expected = render_production_write_authorized_user_token_json(expected_token).encode(
+            "utf-8"
+        )
+        if max(len(content), len(expected)) > MAX_PRODUCTION_WRITE_TOKEN_BYTES:
+            raise ValueError
+        validated = validate_sensitive_output_path(path, overwrite=True)
+        _reject_repository_parent(validated)
+        # The backend reopens and verifies the existing target against these
+        # original bytes. Never refresh the expected value from the current path.
+        publication_possible = None
+        posix_replace.replace_posix_private_bytes(validated, content, expected_content=expected)
+        return validated
+    except Exception as exc:
+        if isinstance(exc, posix_replace.PosixPrivateReplaceError):
+            publication_possible = (
+                exc.publication_possible if type(exc.publication_possible) is bool else None
+            )
+        raise ProductionWriteTokenIOError(
+            "production_write_token_refresh_replace_failed",
+            "Refreshed Production token replacement could not be verified. "
+            "Reconciliation is required; do not retry, remove, or restore files automatically.",
+            publication_possible=publication_possible,
         ) from None
 
 
@@ -359,14 +451,21 @@ def load_production_write_token_generation_state(
     try:
         validated = Path(path)
         _reject_repository_parent(validated)
-        _require_private_file_mode(validated)
-        return parse_production_write_token_generation_state_bytes(
-            read_sensitive_bytes(
+        # Generation state is non-secret metadata. Preserve Windows integrity
+        # ACL semantics; POSIX already requires private mode, now checked on
+        # the same opened file as the content rather than by a separate stat.
+        if os.name == "nt":
+            raw = read_sensitive_bytes(
                 validated,
                 max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
                 windows_integrity_acl=True,
             )
-        )
+        else:
+            raw = read_private_sensitive_bytes(
+                validated,
+                max_size=MAX_PRODUCTION_WRITE_TOKEN_BYTES,
+            )
+        return parse_production_write_token_generation_state_bytes(raw)
     except ProductionWriteTokenIOError:
         raise
     except SensitivePathError:
@@ -380,8 +479,15 @@ def write_production_write_token_generation_state(
     state: ProductionWriteTokenGenerationState,
     path: str | Path,
 ) -> Path:
-    """Atomically create immutable generation state; overwrite is never accepted."""
+    """Create immutable generation state; POSIX uses the retained-directory publisher."""
 
+    if os.name == "posix":
+        return _create_posix_token_artifact(
+            path,
+            render_production_write_token_generation_state_json(state),
+            code="production_write_token_generation_write_failed",
+            message="Production write-token generation state could not be written safely.",
+        )
     try:
         validated = validate_sensitive_output_path(path, overwrite=False)
         _reject_repository_parent(validated)
@@ -421,17 +527,81 @@ def _remove_exact_new_artifact(
         return False
 
 
+def _write_posix_token_bundle(
+    token: ProductionWriteAuthorizedUserToken,
+    token_path: Path,
+    state: ProductionWriteTokenGenerationState,
+    state_path: Path,
+) -> tuple[Path, Path]:
+    """Serialize new-pair publication with Linux sessions, not a pair transaction.
+
+    Validation and rendering already happened in the public caller. Hold both
+    existing private parents before the first write through the final checkpoint.
+    Leaf writers do not acquire another lock; no lock-free or legacy fallback.
+    """
+    completed_output_count = 0
+    publication_possible: bool | None = False
+    try:
+        with _production_write_session_lock(token_path, state_path) as checkpoint:
+            # The shared helper validates both acquisitions before yielding.
+            # Entering a writer makes unspecified failures uncertain, not False.
+            publication_possible = None
+            write_production_write_token_generation_state(state, state_path)
+            completed_output_count = 1
+            publication_possible = True
+            checkpoint()
+            write_production_write_authorized_user_token(token, token_path, overwrite=False)
+            completed_output_count = 2
+            checkpoint()
+    except Exception as exc:
+        code = "production_write_token_bundle_write_failed"
+        if isinstance(exc, ProductionWriteTokenSessionLockError):
+            code = (
+                "production_write_token_bundle_busy"
+                if exc.code == "production_write_token_session_busy"
+                else "production_write_token_bundle_lock_unverified"
+            )
+            # Acquisition failure occurs before our first writer. A failed
+            # checkpoint/exit after a completed writer cannot promise absence.
+            publication_possible = True if completed_output_count else publication_possible
+            message = (
+                "Production token/state publication could not retain its directory locks. "
+                "Do not proceed unlocked, retry, remove, or restore files automatically."
+            )
+        else:
+            publication_possible = (
+                True
+                if completed_output_count
+                else exc.publication_possible
+                if isinstance(exc, ProductionWriteTokenIOError)
+                else None
+            )
+            message = "Production write-token bundle could not be completed safely."
+        # Only strict bool evidence is accepted; malformed evidence stays unknown.
+        if type(publication_possible) is not bool:
+            publication_possible = None
+        if publication_possible is not False:
+            message += " Outputs may exist; do not retry or remove them automatically."
+        raise ProductionWriteTokenIOError(
+            code,
+            message,
+            publication_possible=publication_possible,
+            completed_output_count=completed_output_count,
+        ) from None
+    return token_path, state_path
+
+
 def write_production_write_token_bundle(
     token: ProductionWriteAuthorizedUserToken,
     token_path: str | Path,
     state: ProductionWriteTokenGenerationState,
     generation_state_path: str | Path,
 ) -> tuple[Path, Path]:
-    """Create token and generation state as a coordinated no-overwrite pair.
+    """Create generation state first, then token; this is not an atomic pair commit.
 
-    Generation state is published first so a second-write failure never requires
-    retaining newly issued token material.  On an ordinary exception, only exact
-    artifacts absent at preflight and matching this invocation are removed.
+    POSIX stops without final-output deletion after any writer failure and retains
+    conservative publication evidence. Windows keeps the existing exact-artifact
+    recovery path. Neither branch is a new crash-recovery or refresh protocol.
     """
 
     token_output = Path(token_path)
@@ -473,6 +643,8 @@ def write_production_write_token_bundle(
 
     state_bytes = render_production_write_token_generation_state_json(state).encode("utf-8")
     token_bytes = render_production_write_authorized_user_token_json(token).encode("utf-8")
+    if os.name == "posix":
+        return _write_posix_token_bundle(token, validated_token, state, validated_state)
     state_created = False
     token_attempted = False
     try:
@@ -641,6 +813,7 @@ __all__ = [
     "load_production_write_token_generation_state",
     "parse_production_write_authorized_user_token_bytes",
     "parse_production_write_token_generation_state_bytes",
+    "persist_refreshed_production_write_token",
     "private_production_write_authorized_user_token_data",
     "render_production_write_authorized_user_token_json",
     "render_production_write_token_generation_state_json",

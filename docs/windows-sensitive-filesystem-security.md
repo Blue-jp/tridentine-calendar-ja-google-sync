@@ -98,8 +98,8 @@ can therefore remain broadly readable without becoming broadly mutable.
 
 ## Artifact classification
 
-- Production write token and OAuth client credentials are secrets and require private
-  file ACL validation.
+- Production write token, OAuth client credentials, and Production target config are
+  private operational inputs and require private file ACL validation.
 - `ProductionWriteTokenGenerationState` is non-secret operational metadata. It retains
   handle-based integrity ACL, safe-parent, path-identity, reparse, and
   repository-exclusion controls. Broad read is permitted, but non-administrator write or
@@ -112,6 +112,21 @@ can therefore remain broadly readable without becoming broadly mutable.
 
 No Calendar ID, raw UID, Event ID, ETag, SID, user name, credential, token, or absolute
 private path is included in public error text.
+
+## Cross-platform Git worktree exclusion
+
+Sensitive-path preflight rejects any `.git` marker in the candidate directory or
+its ancestors. This includes ordinary directories, gitfiles used by linked
+worktrees or submodules, empty or malformed markers, and dangling symbolic links.
+It uses no-follow metadata inspection (`lstat`) without reading marker contents
+or starting Git. A missing Git executable, an unborn or invalid HEAD, a timeout,
+or a nonzero Git exit code therefore cannot turn rejection into acceptance.
+Only a missing marker permits the scan to continue; other filesystem inspection
+errors stop with a path-free error. The package repository itself remains blocked.
+
+This is a conservative marker-based guard, not a new claim about all possible Git
+layouts or concurrent marker creation/removal. Existing handle/fd, ACL, symlink,
+and private-artifact checks remain separate and are not relaxed by this change.
 
 ## Cross-platform behavior
 
