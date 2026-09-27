@@ -621,6 +621,7 @@ def test_only_pure_standard_library_dependencies_and_only_approved_runtime_consu
     assert consumers == {
         "production_write_token_enrollment_preparation.py",
         "production_write_token_disabled_bootstrap_inputs.py",
+        "production_write_token_disabled_bootstrap_inspection.py",
     }
 
 

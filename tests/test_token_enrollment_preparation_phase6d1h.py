@@ -1173,9 +1173,12 @@ def test_component_imports_exact_public_boundaries_and_has_no_runtime_consumer()
         "sensitive_paths",
         "production_write_token_enrollment_descriptor",
     }
-    for other in source.parent.rglob("*.py"):
-        if other != source:
-            assert source.stem not in other.read_text(encoding="utf-8")
+    consumers = {
+        other.relative_to(source.parent).as_posix()
+        for other in source.parent.rglob("*.py")
+        if other != source and source.stem in other.read_text(encoding="utf-8")
+    }
+    assert consumers == {"production_write_token_disabled_bootstrap_inspection.py"}
 
 
 @pytest.mark.parametrize(

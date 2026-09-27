@@ -888,7 +888,7 @@ def test_closed_public_dependencies_no_effects_and_exact_consumers() -> None:
         other.relative_to(package).as_posix()
         for other in package.rglob("*.py")
         if other != source and source.stem in other.read_text(encoding="utf-8")
-    } == set()
+    } == {"production_write_token_disabled_bootstrap_inspection.py"}
     descriptor_source = Path(inspect.getfile(descriptor))
     assert {
         other.relative_to(package).as_posix()
@@ -898,6 +898,7 @@ def test_closed_public_dependencies_no_effects_and_exact_consumers() -> None:
     } == {
         "production_write_token_enrollment_preparation.py",
         "production_write_token_disabled_bootstrap_inputs.py",
+        "production_write_token_disabled_bootstrap_inspection.py",
     }
 
 
