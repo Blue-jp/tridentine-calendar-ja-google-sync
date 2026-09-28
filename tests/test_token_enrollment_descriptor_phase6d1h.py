@@ -622,6 +622,7 @@ def test_only_pure_standard_library_dependencies_and_only_approved_runtime_consu
         "production_write_token_enrollment_preparation.py",
         "production_write_token_disabled_bootstrap_inputs.py",
         "production_write_token_disabled_bootstrap_inspection.py",
+        "production_write_token_disabled_bootstrap_source_loading.py",
     }
 
 
