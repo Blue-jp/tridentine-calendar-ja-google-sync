@@ -1454,7 +1454,10 @@ def test_closed_adapter_calls_cover_helpers_constructors_and_no_external_consume
         other.relative_to(source.parent).as_posix()
         for other in source.parent.rglob("*.py")
         if other != source and source.stem in other.read_text(encoding="utf-8")
-    } == {"production_write_token_disabled_bootstrap_source_loading.py"}
+    } == {
+        "production_write_token_disabled_bootstrap_source_loading.py",
+        "production_write_token_disabled_bootstrap_entry.py",
+    }
 
 
 @pytest.mark.parametrize(

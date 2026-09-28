@@ -900,6 +900,7 @@ def test_closed_public_dependencies_no_effects_and_exact_consumers() -> None:
         "production_write_token_disabled_bootstrap_inputs.py",
         "production_write_token_disabled_bootstrap_inspection.py",
         "production_write_token_disabled_bootstrap_source_loading.py",
+        "production_write_token_disabled_bootstrap_entry.py",
     }
 
 

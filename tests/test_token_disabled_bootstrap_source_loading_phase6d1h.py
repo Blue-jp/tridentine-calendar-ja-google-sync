@@ -1827,7 +1827,7 @@ def test_closed_loader_dependencies_effect_arguments_receivers_and_external_cons
             )
         )
     }
-    assert consumers == set()
+    assert consumers == {"production_write_token_disabled_bootstrap_entry.py"}
 
 
 def _source_with_statement(statement: str) -> str:
