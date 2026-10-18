@@ -315,11 +315,14 @@ def test_new_handler_has_no_retry_cleanup_or_new_mutation_capability() -> None:
     fn = next(
         n
         for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_load_production_write_credential_session"
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "_load_production_write_credential_session_held"
     )
+    owned = [n for n in fn.body if isinstance(n, ast.Try)]
+    assert len(owned) == 1 and not owned[0].handlers and not owned[0].orelse
     wrapped = [
         n
-        for n in ast.walk(fn)
+        for n in owned[0].body
         if isinstance(n, ast.Try)
         and any(
             isinstance(c, ast.Call)

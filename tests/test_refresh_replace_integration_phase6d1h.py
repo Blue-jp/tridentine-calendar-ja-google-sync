@@ -369,7 +369,8 @@ def test_refresh_passes_original_input_and_has_no_legacy_save_at_call_site() -> 
     fn = next(
         n
         for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_load_production_write_credential_session"
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "_load_production_write_credential_session_held"
     )
     calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
     save = [n for n in calls if n.func.id == "persist_refreshed_production_write_token"]
@@ -378,6 +379,24 @@ def test_refresh_passes_original_input_and_has_no_legacy_save_at_call_site() -> 
     assert isinstance(save[0].keywords[0].value, ast.Name)
     assert save[0].keywords[0].value.id == "token"
     assert not any(n.func.id == "write_production_write_authorized_user_token" for n in calls)
+    original = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "token" for t in n.targets)
+    ]
+    assert len(original) == 1 and original[0].lineno < save[0].lineno
+    read = original[0].value
+    assert isinstance(read, ast.Call) and isinstance(read.func, ast.Name)
+    assert read.func.id == "load_production_write_authorized_user_token"
+    assert len(read.args) == 1 and isinstance(read.args[0], ast.Name)
+    assert read.args[0].id == "production_write_token_path" and not read.keywords
+    assert not any(
+        isinstance(n, (ast.AnnAssign, ast.AugAssign))
+        and isinstance(n.target, ast.Name)
+        and n.target.id == "token"
+        for n in ast.walk(fn)
+    )
     io_tree = ast.parse(Path(token_io.__file__).read_text(encoding="utf-8"))
     entry = next(
         n

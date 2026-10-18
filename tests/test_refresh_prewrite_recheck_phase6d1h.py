@@ -396,17 +396,32 @@ def test_identical_content_rewritten_during_refresh_is_not_claimed_as_identity_c
 
 def test_added_recheck_only_reads_renders_compares_and_raises() -> None:
     tree = ast.parse(Path(tokens.__file__).read_text(encoding="utf-8"))
-    fn = next(
+    loader = next(
         n
         for n in tree.body
         if isinstance(n, ast.FunctionDef) and n.name == "_load_production_write_credential_session"
     )
-    guarded = [n for n in fn.body if isinstance(n, ast.With)]
+    guarded = [n for n in loader.body if isinstance(n, ast.With)]
     assert len(guarded) == 1
-    guard = guarded[0].items[0].context_expr
-    assert isinstance(guard, ast.Call) and isinstance(guard.func, ast.Name)
-    assert guard.func.id == "_production_write_session_lock"
-    body = guarded[0].body
+    assert len(guarded[0].items) == 1
+    guard = guarded[0].items[0]
+    assert isinstance(guard.context_expr, ast.Name) and guard.context_expr.id == "context"
+    assert isinstance(guard.optional_vars, ast.Name) and guard.optional_vars.id == "owner"
+    assert len(guarded[0].body) == 1 and isinstance(guarded[0].body[0], ast.Return)
+    call = guarded[0].body[0].value
+    assert isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    assert call.func.id == "_load_production_write_credential_session_held"
+    assert [ast.unparse(arg) for arg in call.args] == ["owner", "context._request"]
+    assert not call.keywords
+    fn = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef)
+        and n.name == "_load_production_write_credential_session_held"
+    )
+    owned = [n for n in fn.body if isinstance(n, ast.Try)]
+    assert len(owned) == 1 and not owned[0].handlers and not owned[0].orelse
+    body = owned[0].body
     blocks = [
         n
         for n in body
@@ -441,8 +456,52 @@ def test_added_recheck_only_reads_renders_compares_and_raises() -> None:
     }
     assert attrs == {"encode", "compare_digest"}
     assert not any(isinstance(n, (ast.For, ast.While)) for n in ast.walk(block))
-    assert block.lineno < next(
-        n.lineno
+    named_calls = [
+        n for n in ast.walk(block) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    ]
+    for name, expected in (
+        ("load_production_write_token_generation_state", ["generation_state_path"]),
+        ("load_production_write_authorized_user_token", ["production_write_token_path"]),
+        ("render_production_write_token_generation_state_json", ["current_state", "state"]),
+        ("render_production_write_authorized_user_token_json", ["current_token", "token"]),
+    ):
+        matched = [n for n in named_calls if n.func.id == name]
+        assert [ast.unparse(n.args[0]) for n in matched] == expected
+        assert all(len(n.args) == 1 and not n.keywords for n in matched)
+    encodes = [
+        n
+        for n in ast.walk(block)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "encode"
+    ]
+    assert len(encodes) == 4
+    assert all(
+        len(n.args) == 1
+        and isinstance(n.args[0], ast.Constant)
+        and n.args[0].value == "utf-8"
+        and not n.keywords
+        for n in encodes
+    )
+    comparisons = [
+        n
+        for n in ast.walk(block)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "compare_digest"
+    ]
+    assert len(comparisons) == 2
+    assert all(
+        isinstance(n.func.value, ast.Name)
+        and n.func.value.id == "hmac"
+        and len(n.args) == 2
+        and not n.keywords
+        for n in comparisons
+    )
+    checks = [n for n in block.body if isinstance(n, ast.If)]
+    assert len(checks) == 1
+    assert ast.unparse(checks[0].test) == "not state_matches or not token_matches"
+    assert len(checks[0].body) == 1 and isinstance(checks[0].body[0], ast.Raise)
+    save_blocks = [
+        n
         for n in body
         if isinstance(n, ast.Try)
         and any(
@@ -451,4 +510,6 @@ def test_added_recheck_only_reads_renders_compares_and_raises() -> None:
             and c.func.id == "persist_refreshed_production_write_token"
             for c in ast.walk(ast.Module(body=n.body, type_ignores=[]))
         )
-    )
+    ]
+    assert len(save_blocks) == 1
+    assert block.end_lineno is not None and block.end_lineno < save_blocks[0].lineno

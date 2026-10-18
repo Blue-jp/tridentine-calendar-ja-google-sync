@@ -482,17 +482,109 @@ def test_confirmation_failure_precedes_lock_and_content_access(
 
 def test_loader_lexically_holds_locks_over_reads_refresh_save_and_both_returns() -> None:
     tree = ast.parse(Path(tokens.__file__).read_text(encoding="utf-8"))
-    fn = next(
+    functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    fn = functions["_load_production_write_credential_session"]
+    guarded = [n for n in fn.body if isinstance(n, ast.With)]
+    assert len(guarded) == 1 and len(guarded[0].items) == 1
+    assert not any(isinstance(n, ast.Return) for n in fn.body)
+    loader_calls = [
+        n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    ]
+    assert [n.func.id for n in loader_calls] == [
+        "_credential_session_scope",
+        "_load_production_write_credential_session_held",
+    ]
+    assert not any(
+        isinstance(n, ast.Call) and not isinstance(n.func, ast.Name) for n in ast.walk(fn)
+    )
+    bindings = [n for n in fn.body if isinstance(n, ast.Assign)]
+    assert len(bindings) == 1
+    assert len(bindings[0].targets) == 1
+    assert isinstance(bindings[0].targets[0], ast.Name)
+    assert bindings[0].targets[0].id == "context" and bindings[0].value is loader_calls[0]
+    assert bindings[0].lineno < guarded[0].lineno
+    assert [ast.unparse(n) for n in loader_calls[0].args] == [
+        "production_write_token_path",
+        "generation_state_path",
+        "production_read_token_path",
+        "test_write_token_path",
+        "target",
+    ]
+    assert [(n.arg, ast.unparse(n.value)) for n in loader_calls[0].keywords] == [
+        ("now", "now"),
+        ("evidence_mode", "evidence_mode"),
+        ("refresher", "refresher"),
+    ]
+    item = guarded[0].items[0]
+    assert isinstance(item.context_expr, ast.Name) and item.context_expr.id == "context"
+    assert isinstance(item.optional_vars, ast.Name) and item.optional_vars.id == "owner"
+    assert len(guarded[0].body) == 1 and isinstance(guarded[0].body[0], ast.Return)
+    assert guarded[0].body[0].value is loader_calls[1]
+    assert [ast.unparse(n) for n in loader_calls[1].args] == ["owner", "context._request"]
+    assert not loader_calls[1].keywords
+
+    factory = functions["_credential_session_scope"]
+    factory_calls = [n for n in ast.walk(factory) if isinstance(n, ast.Call)]
+    utc = [n for n in factory_calls if isinstance(n.func, ast.Name) and n.func.id == "_is_utc"]
+    path_checks = [
+        n
+        for n in factory_calls
+        if isinstance(n.func, ast.Name) and n.func.id == "validate_production_write_token_path_set"
+    ]
+    issuance = [
+        n for n in factory_calls if isinstance(n.func, ast.Attribute) and n.func.attr == "__new__"
+    ]
+    assert len(utc) == len(path_checks) == 1 and len(issuance) == 2
+    assert utc[0].lineno < path_checks[0].lineno < min(n.lineno for n in issuance)
+    assert [ast.unparse(n.args[0]) for n in issuance] == [
+        "_CredentialSessionRequest",
+        "_CredentialSessionScopeContext",
+    ]
+    scope = next(
         n
         for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_load_production_write_credential_session"
+        if isinstance(n, ast.ClassDef) and n.name == "_CredentialSessionScopeContext"
     )
-    guarded = [n for n in fn.body if isinstance(n, ast.With)]
-    assert len(guarded) == 1
-    assert not any(isinstance(n, ast.Return) for n in fn.body)
+    entry = next(n for n in scope.body if isinstance(n, ast.FunctionDef) and n.name == "__enter__")
+    entry_calls = [n for n in ast.walk(entry) if isinstance(n, ast.Call)]
+    acquired = [
+        n
+        for n in entry_calls
+        if isinstance(n.func, ast.Name) and n.func.id == "_production_write_session_lock"
+    ]
+    entered = [
+        n for n in entry_calls if isinstance(n.func, ast.Attribute) and n.func.attr == "__enter__"
+    ]
+    issued = [
+        n
+        for n in entry_calls
+        if isinstance(n.func, ast.Name) and n.func.id == "_issue_credential_session_owner"
+    ]
+    assert len(acquired) == len(entered) == len(issued) == 1
+    assert acquired[0].lineno < entered[0].lineno < issued[0].lineno
+    assert [ast.unparse(n) for n in acquired[0].args] == [
+        "self._request.production_write_token_path",
+        "self._request.generation_state_path",
+    ]
+    assert ast.unparse(entered[0].func.value) == "lock_context"
+    assert [ast.unparse(n) for n in issued[0].args] == ["self"]
+
+    held = functions["_load_production_write_credential_session_held"]
+    statements = [
+        n
+        for n in held.body
+        if not (
+            isinstance(n, ast.Expr)
+            and isinstance(n.value, ast.Constant)
+            and isinstance(n.value.value, str)
+        )
+    ]
+    assert ast.unparse(statements[0]) == "scope = _require_session_owner(owner, request)"
+    owned = [n for n in held.body if isinstance(n, ast.Try)]
+    assert len(owned) == 1 and not owned[0].handlers and not owned[0].orelse
     calls = {
         n.func.id
-        for n in ast.walk(guarded[0])
+        for n in ast.walk(owned[0])
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
     }
     assert {
@@ -501,12 +593,23 @@ def test_loader_lexically_holds_locks_over_reads_refresh_save_and_both_returns()
         "persist_refreshed_production_write_token",
         "revalidate_session_lock",
     } <= calls
-    assert sum(isinstance(n, ast.Return) for n in ast.walk(guarded[0])) == 2
-    helper = next(
-        n
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "_production_write_session_lock"
+    returns = [n for n in ast.walk(held) if isinstance(n, ast.Return)]
+    assert len(returns) == 2
+    assert all(n in list(ast.walk(owned[0])) for n in returns)
+    assert all(
+        isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name)
+        and n.value.func.id == "ProductionWriteCredentialSession"
+        for n in returns
     )
+    checkpoints = [
+        n
+        for n in held.body
+        if isinstance(n, ast.FunctionDef) and n.name == "revalidate_session_lock"
+    ]
+    assert len(checkpoints) == 1 and len(checkpoints[0].body) == 1
+    assert ast.unparse(checkpoints[0].body[0]) == "scope._revalidate(owner, request)"
+    helper = functions["_production_write_session_lock"]
     attrs = {
         n.func.attr
         for n in ast.walk(helper)
