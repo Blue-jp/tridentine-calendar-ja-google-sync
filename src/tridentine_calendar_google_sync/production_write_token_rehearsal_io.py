@@ -1,10 +1,15 @@
-"""Atomic repository-external output for Phase 6D.0 rehearsal evidence."""
+"""Create-only rehearsal evidence; a batch is not an atomic transaction."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
+from tridentine_calendar_google_sync._private_create_io import (
+    PrivateCreateIOError,
+    create_integrity_text,
+    create_private_text,
+)
 from tridentine_calendar_google_sync.production_write_token_rehearsal_models import (
     ProductionWriteTokenRehearsalReport,
     ProductionWriteTokenRehearsalSnapshot,
@@ -16,8 +21,6 @@ from tridentine_calendar_google_sync.production_write_token_rehearsal_report imp
 )
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
-    atomic_write_integrity_text,
-    atomic_write_private_text,
     validate_sensitive_output_path,
 )
 
@@ -30,9 +33,19 @@ MAX_PRODUCTION_REHEARSAL_OUTPUT_BYTES = 4 * 1024 * 1024
 class ProductionWriteTokenRehearsalIOError(ValueError):
     """A content- and path-free rehearsal output failure."""
 
-    def __init__(self, code: str, public_message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        public_message: str,
+        *,
+        publication_possible: bool | None = None,
+        completed_output_count: int = 0,
+    ) -> None:
         self.code = code
         self.public_message = public_message
+        self.publication_possible = publication_possible
+        # Count of writer calls that returned, not a persistent transaction record.
+        self.completed_output_count = completed_output_count
         super().__init__(public_message)
 
 
@@ -55,6 +68,7 @@ def _output_paths(
         raise ProductionWriteTokenRehearsalIOError(
             "relative_production_rehearsal_output_directory",
             "Production rehearsal output directory must be an explicit absolute path",
+            publication_possible=False,
         )
     paths = ProductionWriteTokenRehearsalOutputPaths(
         snapshot=(path / PRODUCTION_REHEARSAL_SNAPSHOT_FILENAME if include_snapshot else None),
@@ -71,11 +85,12 @@ def _output_paths(
                 overwrite=False,
                 windows_private_acl=(paths.snapshot is not None and output == paths.snapshot),
             )
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise ProductionWriteTokenRehearsalIOError(
             "unsafe_production_rehearsal_output",
             "Production rehearsal output directory is unsafe or unavailable",
-        ) from exc
+            publication_possible=False,
+        ) from None
     return paths
 
 
@@ -84,7 +99,12 @@ def write_production_write_token_rehearsal_outputs(
     snapshot: ProductionWriteTokenRehearsalSnapshot | None,
     report: ProductionWriteTokenRehearsalReport,
 ) -> ProductionWriteTokenRehearsalOutputPaths:
-    """Atomically create reports and, on success, exact snapshot evidence."""
+    """Create each evidence file once, stopping on error without batch rollback.
+
+    All outputs are rendered before any writer runs. A later write failure does
+    not erase earlier outputs or imply that the failed output is absent. A success
+    return is not a three-file atomic commit or a crash-recovery protocol.
+    """
 
     paths = _output_paths(directory, include_snapshot=snapshot is not None)
     payloads: tuple[tuple[Path, str], ...] = (
@@ -106,24 +126,37 @@ def write_production_write_token_rehearsal_outputs(
             ),
             *payloads,
         )
+    completed_output_count = 0
     try:
         for path, text in payloads:
             writer = (
-                atomic_write_private_text
+                create_private_text
                 if paths.snapshot is not None and path == paths.snapshot
-                else atomic_write_integrity_text
+                else create_integrity_text
             )
             writer(
                 path,
                 text,
-                overwrite=False,
                 max_size=MAX_PRODUCTION_REHEARSAL_OUTPUT_BYTES,
             )
-    except SensitivePathError as exc:
+            completed_output_count += 1
+    except Exception as exc:
+        publication_possible = (
+            True
+            if completed_output_count
+            else exc.publication_possible
+            if isinstance(exc, PrivateCreateIOError)
+            else None
+        )
+        message = "Production rehearsal output could not be written safely."
+        if publication_possible is not False:
+            message += " Outputs may exist; do not retry or remove them automatically."
         raise ProductionWriteTokenRehearsalIOError(
             "production_rehearsal_output_write_failed",
-            "Production rehearsal output could not be written safely",
-        ) from exc
+            message,
+            publication_possible=publication_possible,
+            completed_output_count=completed_output_count,
+        ) from None
     return paths
 
 

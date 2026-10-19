@@ -403,7 +403,7 @@ def test_private_files_are_atomic_private_and_public_report_is_redacted(
     )
 
 
-def test_second_bundle_write_failure_removes_only_new_outputs(
+def test_second_bundle_write_failure_retains_platform_recovery_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -437,10 +437,16 @@ def test_second_bundle_write_failure_removes_only_new_outputs(
             test_authorizer=authorizer,
             issued_at=ISSUED_AT,
         )
-    assert captured.value.code == "injected_second_write_failure"
     assert authorizer.calls == 1
     assert not paths["write"].exists()
-    assert not paths["generation"].exists()
+    if os.name == "posix":
+        assert captured.value.code == "production_write_token_bundle_write_failed"
+        assert captured.value.publication_possible is True
+        assert captured.value.completed_output_count == 1
+        assert paths["generation"].is_file()
+    else:
+        assert captured.value.code == "injected_second_write_failure"
+        assert not paths["generation"].exists()
 
 
 @pytest.mark.parametrize(

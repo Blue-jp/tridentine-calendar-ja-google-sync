@@ -87,7 +87,7 @@ def _stored_test_token(
     ProductionWriteTargetConfig,
     ProductionWriteTokenGenerationState,
 ]:
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths = artifact_paths(root)
     target = production_target()
     state = build_initial_production_write_token_generation_state(target, issued_at=ISSUED_AT)

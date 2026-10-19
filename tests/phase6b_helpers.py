@@ -39,10 +39,10 @@ from tridentine_calendar_google_sync.models import (
 from tridentine_calendar_google_sync.production_write_target import (
     ProductionWriteTargetConfig,
 )
+from tridentine_calendar_google_sync.sensitive_paths import atomic_write_private_text
 from tridentine_calendar_google_sync.source_ics import inspect_source
 
 PRODUCTION_LIKE_PROFILE_ID = "accepted-20990101"
-PRODUCTION_LIKE_REPOSITORY = "calendar-owner/calendar-source"
 PRODUCTION_LIKE_CALENDAR_ID = "phase6b-production@calendar.example"
 PRODUCTION_LIKE_SUMMARY = "Phase 6B Production Calendar"
 PRODUCTION_LIKE_TIME_ZONE = "Asia/Tokyo"
@@ -317,7 +317,6 @@ def build_production_planning_inputs(
     manifest = build_accepted_production_source_manifest(
         desired.profile,
         desired.source,
-        repository_identity=PRODUCTION_LIKE_REPOSITORY,
     )
     return ProductionPlanningInputs(
         current=current,
@@ -367,22 +366,19 @@ event_x_property_count = {expected.event_x_property_count}
 
 
 def write_production_target_config(target: ProductionWriteTargetConfig, path: Path) -> Path:
-    path.write_text(
-        "\n".join(
-            (
-                f"schema_version = {target.schema_version}",
-                f'target_environment = "{target.target_environment}"',
-                f'target_label = "{target.target_label}"',
-                f'target_purpose = "{target.target_purpose}"',
-                f'calendar_id = "{target.calendar_id}"',
-                f'expected_target_fingerprint = "{target.expected_target_fingerprint}"',
-                f'expected_summary = "{target.expected_summary}"',
-                f'expected_access_role = "{target.expected_access_role}"',
-                f'expected_time_zone = "{target.expected_time_zone}"',
-                "",
-            )
-        ),
-        encoding="utf-8",
-        newline="\n",
+    text = "\n".join(
+        (
+            f"schema_version = {target.schema_version}",
+            f'target_environment = "{target.target_environment}"',
+            f'target_label = "{target.target_label}"',
+            f'target_purpose = "{target.target_purpose}"',
+            f'calendar_id = "{target.calendar_id}"',
+            f'expected_target_fingerprint = "{target.expected_target_fingerprint}"',
+            f'expected_summary = "{target.expected_summary}"',
+            f'expected_access_role = "{target.expected_access_role}"',
+            f'expected_time_zone = "{target.expected_time_zone}"',
+            "",
+        )
     )
+    atomic_write_private_text(path, text)
     return path

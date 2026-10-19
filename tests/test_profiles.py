@@ -6,8 +6,13 @@ import pytest
 from conftest import PROFILES_DIR
 from pydantic import ValidationError
 
+from tridentine_calendar_google_sync import profiles
 from tridentine_calendar_google_sync.models import AcceptedSourceProfile
-from tridentine_calendar_google_sync.profiles import ProfileError, load_profile
+from tridentine_calendar_google_sync.profiles import (
+    ProfileError,
+    load_accepted_production_profile,
+    load_profile,
+)
 
 
 def test_load_accepted_profile_contains_pinned_public_provenance() -> None:
@@ -34,6 +39,31 @@ def test_load_accepted_profile_contains_pinned_public_provenance() -> None:
     assert profile.expected.dtend_present_count == 0
     assert profile.expected.rrule_count == 0
     assert profile.expected.recurrence_id_count == 0
+
+
+def test_load_accepted_production_profile_uses_reviewed_package_pin() -> None:
+    profile = load_accepted_production_profile("accepted-20260814")
+
+    assert profile.profile_id == "accepted-20260814"
+    assert profile.source.accepted_commit == "c0dedd86257df2ff1a95097bcf3824b2b95fce66"
+
+
+def test_accepted_production_profile_rejects_unpinned_or_replaced_resource(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ProfileError) as unpinned:
+        load_accepted_production_profile("accepted-20990101")
+    assert unpinned.value.code == "accepted_production_profile_not_pinned"
+
+    original = profiles._default_profile_bytes("accepted-20260814")
+    monkeypatch.setattr(
+        profiles,
+        "_default_profile_bytes",
+        lambda _profile_id: original + b"\n# replaced\n",
+    )
+    with pytest.raises(ProfileError) as replaced:
+        load_accepted_production_profile("accepted-20260814")
+    assert replaced.value.code == "accepted_production_profile_package_mismatch"
 
 
 def test_profile_models_are_frozen() -> None:

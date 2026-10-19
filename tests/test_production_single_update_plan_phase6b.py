@@ -11,7 +11,6 @@ import pytest
 from conftest import REPOSITORY_ROOT, set_phase6d1g_active_accepted_baseline_pin
 from phase5a_helpers import make_test_target_config
 from phase6b_helpers import (
-    PRODUCTION_LIKE_REPOSITORY,
     PRODUCTION_LIKE_START_DATE,
     PRODUCTION_LIKE_UPDATED_COMMIT,
     PRODUCTION_LIKE_UPDATED_TAG,
@@ -277,7 +276,6 @@ def _build_variant_manifest(fixture: Any) -> Any:
     return build_accepted_production_source_manifest(
         fixture.profile,
         fixture.source,
-        repository_identity=PRODUCTION_LIKE_REPOSITORY,
     )
 
 

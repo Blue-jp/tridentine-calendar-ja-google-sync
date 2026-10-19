@@ -19,7 +19,7 @@ from tridentine_calendar_google_sync.google_target import (
 from tridentine_calendar_google_sync.models import StrictFrozenModel
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
-    read_sensitive_bytes,
+    read_private_sensitive_bytes,
 )
 
 PRODUCTION_WRITE_TARGET_PURPOSE = "production_calendar_single_update"
@@ -151,23 +151,23 @@ def load_production_write_target_config(path: str | Path) -> ProductionWriteTarg
     """Load one strict repository-external Production target TOML document."""
 
     try:
-        raw = read_sensitive_bytes(path)
+        raw = read_private_sensitive_bytes(path)
         value: Mapping[str, object] = tomllib.loads(raw.decode("utf-8", errors="strict"))
         config = ProductionWriteTargetConfig.model_validate(value, strict=True)
         validate_production_write_target_config(config)
         return config
     except ProductionWriteTargetError:
         raise
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise ProductionWriteTargetConfigError(
             "unsafe_production_write_target_path",
             "Production write target path is unsafe or unavailable",
-        ) from exc
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError) as exc:
+        ) from None
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValidationError):
         raise ProductionWriteTargetConfigError(
             "invalid_production_write_target_config",
             "Production write target configuration is invalid",
-        ) from exc
+        ) from None
 
 
 __all__ = [

@@ -30,7 +30,7 @@ The operational authorization entry point accepts no caller-injected authorizer 
 
 ## Repository-external token and credential handling
 
-The credential input, token output, and nonsecret token-generation state are explicit, distinct, absolute repository-external paths. Relative or URL-like paths, repository or repository-parent paths, symlinks, overwrite, and path collisions are rejected. Credential content is read-only and is never copied or rewritten. Token writes are atomic, no-overwrite, fsynced where supported, and use private local permissions supported by the standard library.
+The credential input, token output, and nonsecret token-generation state are explicit, distinct, absolute repository-external paths. Relative or URL-like paths, repository or repository-parent paths, symlinks, overwrite, and path collisions are rejected. Credential content is read-only and is never copied or rewritten. Token creation is no-overwrite and uses private local permissions. On POSIX, token and generation-state creation now use the retained-directory publisher and require an existing effective-user-owned 0700 parent. The state-first pair is not an atomic transaction: a persistence failure may leave state and/or token material, and the POSIX bundle does not automatically delete final outputs or retry. Its safe error preserves publication uncertainty and the count of completed writer calls. Windows keeps its existing writer/ACL/recovery behavior. Explicit token replacement during refresh is unchanged and remains a separate unresolved boundary. See [POSIX private-artifact security](posix-private-artifact-security.md).
 
 Raw access tokens, refresh tokens, client secrets, full client IDs, Authorization headers, token hashes, credential hashes, Calendar IDs, Event IDs, ETags, and absolute paths are never written to stdout, stderr, generation state, public reports, or Git.
 
@@ -96,3 +96,72 @@ It excludes Calendar ID, full target fingerprint, raw UID, Summary, Description,
 Phase 6D operational work, in a separate user-authorized step, will first create the dedicated token and then perform a read-only rehearsal. It must use real repository-external operational inputs, exact challenges, and a fresh security review. Phase 6E remains the only phase that may consider one naturally occurring, eligible Description-only Production patch. Add remains Phase 6F and Delete remains an independent phase.
 
 Repository-wide Deep security scan required after merge and before Production OAuth. The Phase 6D.0 pull-request diff scan is necessary evidence for this code change, but it is not the final live-OAuth eligibility scan.
+
+## Refresh persistence failures (DS-04 / Unit 4I)
+
+The injected refresh path still uses the existing explicit token replacement
+writer; no live refresher or safer replacement protocol is enabled. Once refreshed
+credentials have passed validation, an ordinary save exception becomes
+`production_write_token_refresh_persistence_failed` and no credential session is
+returned. The safe exception retains conservative in-memory publication evidence
+and always warns against automatically retrying, deleting, or restoring files.
+The unchanged mock rehearsal classifies this as TOKEN_REFRESH_FAILED before any
+Calendar transport is built. Its report contains the safe code and existing
+refresh-attempt counter, not a new persisted token recovery record. A failure can
+leave old or new token material; manual/controlled reconciliation and the unresolved
+replacement boundary remain separate work. See [POSIX private-artifact security](posix-private-artifact-security.md).
+
+## Refresh pre-save input recheck (DS-04 / Unit 4J)
+
+Before saving a validated refresh result, both originally loaded token/state
+contents are reloaded and compared by canonical bytes using their existing
+role-specific readers. A mismatch or ordinary re-read/parse failure emits
+`production_write_token_refresh_prewrite_unverified`: no save call or session,
+no automatic retry, removal or restoration. Refresh has already completed, so
+this is not evidence that the old token remains usable. The unchanged rehearsal
+classifies it as TOKEN_REFRESH_FAILED before Calendar transport construction.
+This detects observed pre-save changes only: no atomic pair snapshot, lock,
+inode compare-and-swap, safe overwrite or durable recovery record is introduced.
+Changes after recheck remain possible. Unit 4I persistence failure behavior and
+all live hard-offs remain in force. See [POSIX private-artifact security](posix-private-artifact-security.md).
+
+## POSIX refresh replacement integration (DS-04 / Unit 4L)
+
+After the unchanged Unit 4J token/state content recheck, refresh passes the original
+loaded token to the new persistence entry point as exact expected prior content.
+POSIX uses the retained-directory and old/new descriptor replacement backend;
+Windows keeps the prior protected writer. The generic overwrite API is unchanged.
+No authorization checks, schemas, live adapters or operational permission change.
+Unit 4I retains conservative replacement evidence and returns no usable session
+on failure. No automatic retry, residue deletion or restoration is performed.
+Observed changes can block a replacement, but checks and rename are not a lock or
+compare-and-swap; post-check races and generation-state changes remain possible.
+See [POSIX private-artifact security](posix-private-artifact-security.md) for the
+remaining reconciliation, serialization, ACL/mount and durability gates.
+
+## Linux credential-session serialization (DS-04 / Unit 4N)
+
+The token/state parent directories are exclusively locked before content loading
+and held through validation, injected refresh, recheck and persistence. A busy or
+unverified lock stops without a usable session or automatic retry/cleanup. Parents
+may differ: each distinct parent is locked once with immediate failure on contention.
+Existing metadata path preflight remains first. This is Linux-only cooperative
+serialization for these session entry points, including unexpired credentials;
+Windows keeps its existing behavior and gains no new lock. Other non-Windows
+platforms cannot fall back to an unlocked load. Other artifact writers do not yet
+participate, no leaf compare-and-swap or durable recovery record is introduced,
+and all live hard-offs remain. See [POSIX private-artifact security](posix-private-artifact-security.md).
+
+## Linux new-pair publication serialization (DS-04 / Unit 4O)
+
+New token/state bundle publication now shares Unit 4N's parent-directory locks on
+Linux, from before state creation through token creation and the final checkpoint.
+This does not acquire a second lock inside leaf writers or change refresh locking.
+Busy/unverified locks stop; prior writes remain and their conservative publication
+flag/count are reported. A failure after two normally returned writers is still
+an error, never a completed transaction. Windows bundle recovery is unchanged.
+Authorizer/provider activity before this persistence call is not newly locked, and
+failed pairs gain no persistent recovery marker. Standalone writers, reconciliation,
+noncooperating changes, directory replacement and filesystem/durability boundaries
+remain separate work. DS-04 remains PARTIAL and all live hard-offs remain in force.
+See [POSIX private-artifact security](posix-private-artifact-security.md).
