@@ -580,10 +580,10 @@ def _held_record_io(
     current_binding, current_operation, held = owner._binding, owner._operation, owner._held
     if current_binding is None or current_operation is None or held is None:
         raise _ScopeUseError()
-    owner._busy = True
     publisher_entered = False
     publication_possible: bool | None = False
     try:
+        owner._busy = True
         held.revalidate()
         record_path = current_binding.directory / RECORD_LEAF
         if create:
