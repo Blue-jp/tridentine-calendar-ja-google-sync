@@ -170,7 +170,11 @@ from tridentine_calendar_google_sync.production_write_target import (
     ProductionWriteTargetError,
     load_production_write_target_config,
 )
-from tridentine_calendar_google_sync.profiles import ProfileError, load_profile
+from tridentine_calendar_google_sync.profiles import (
+    ProfileError,
+    load_accepted_production_profile,
+    load_profile,
+)
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     atomic_write_private_text,
@@ -1152,7 +1156,6 @@ def build_parser() -> argparse.ArgumentParser:
     build_production_plan.add_argument("--manifest", required=True)
     build_production_plan.add_argument("--source", required=True)
     build_production_plan.add_argument("--profile", required=True)
-    build_production_plan.add_argument("--profiles-dir", required=True)
     build_production_plan.add_argument("--google-snapshot", required=True)
     build_production_plan.add_argument("--trusted-baseline", required=True)
     build_production_plan.add_argument("--target-config", required=True)
@@ -1182,7 +1185,6 @@ def build_parser() -> argparse.ArgumentParser:
     build_production_run_spec.add_argument("--manifest", required=True)
     build_production_run_spec.add_argument("--source", required=True)
     build_production_run_spec.add_argument("--profile", required=True)
-    build_production_run_spec.add_argument("--profiles-dir", required=True)
     build_production_run_spec.add_argument("--google-snapshot", required=True)
     build_production_run_spec.add_argument("--production-plan", required=True)
     build_production_run_spec.add_argument("--trusted-baseline", required=True)
@@ -1254,7 +1256,6 @@ def build_parser() -> argparse.ArgumentParser:
     rehearse_production_write_token.add_argument("--manifest", required=True)
     rehearse_production_write_token.add_argument("--source", required=True)
     rehearse_production_write_token.add_argument("--profile", required=True)
-    rehearse_production_write_token.add_argument("--profiles-dir", required=True)
     rehearse_production_write_token.add_argument("--trusted-baseline", required=True)
     rehearse_production_write_token.add_argument("--output-directory", required=True)
     rehearse_production_write_token.add_argument("--confirmation", required=True)
@@ -1599,7 +1600,7 @@ def _build_production_single_update_plan_command(args: argparse.Namespace) -> in
 
     load_active_accepted_production_baseline_pin()
     manifest = load_accepted_production_source_manifest(args.manifest)
-    profile = load_profile(args.profile, args.profiles_dir)
+    profile = load_accepted_production_profile(args.profile)
     source = inspect_source(args.source, profile)
     snapshot = load_google_snapshot(args.google_snapshot)
     baseline = load_production_trusted_baseline(args.trusted_baseline)
@@ -1644,7 +1645,7 @@ def _build_production_single_update_run_spec_command(args: argparse.Namespace) -
 
     load_active_accepted_production_baseline_pin()
     manifest = load_accepted_production_source_manifest(args.manifest)
-    profile = load_profile(args.profile, args.profiles_dir)
+    profile = load_accepted_production_profile(args.profile)
     source = inspect_source(args.source, profile)
     snapshot = load_google_snapshot(args.google_snapshot)
     plan = load_production_single_update_plan(args.production_plan)

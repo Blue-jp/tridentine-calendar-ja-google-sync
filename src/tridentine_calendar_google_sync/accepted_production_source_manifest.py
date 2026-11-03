@@ -5,12 +5,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import re
 from collections.abc import Mapping
 
 from pydantic import ValidationError
 
 from tridentine_calendar_google_sync.accepted_production_source_manifest_models import (
+    ACCEPTED_PRODUCTION_SOURCE_REPOSITORY,
     AcceptedProductionSourceManifest,
 )
 from tridentine_calendar_google_sync.models import (
@@ -23,7 +23,6 @@ from tridentine_calendar_google_sync.safe_refs import safe_uid_ref
 _MANIFEST_HASH_DOMAIN = (
     b"tridentine-calendar-google-sync:accepted-production-source-manifest:v1\x00"
 )
-_REPOSITORY_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 _FORBIDDEN_MARKERS = ("test", "synthetic", "テスト")
 
 
@@ -130,26 +129,6 @@ def verify_accepted_production_source_manifest(
             "accepted_production_source_manifest_hash_mismatch",
             "Accepted Production source manifest integrity verification failed",
         )
-
-
-def _validate_repository_identity(repository_identity: str) -> None:
-    _guard(
-        isinstance(repository_identity, str)
-        and _REPOSITORY_IDENTITY_PATTERN.fullmatch(repository_identity) is not None,
-        "accepted_production_source_repository_invalid",
-        "Accepted Production source repository identity is invalid",
-    )
-    parts = repository_identity.split("/", 1)
-    _guard(
-        not any(part in {".", ".."} or part.casefold().endswith(".git") for part in parts),
-        "accepted_production_source_repository_invalid",
-        "Accepted Production source repository identity is invalid",
-    )
-    _guard(
-        not _contains_forbidden_marker(repository_identity),
-        "accepted_production_source_marker_forbidden",
-        "Accepted Production source contains a Test or synthetic marker",
-    )
 
 
 def _validate_profile(profile: AcceptedSourceProfile) -> None:
@@ -272,18 +251,15 @@ def _validate_source(
 def build_accepted_production_source_manifest(
     profile: AcceptedSourceProfile,
     source: SourceCalendarInspection,
-    *,
-    repository_identity: str,
 ) -> AcceptedProductionSourceManifest:
-    """Build one pin-agnostic manifest from an exact clean offline inspection."""
+    """Build one manifest rooted in the fixed reviewed source repository."""
 
-    _validate_repository_identity(repository_identity)
     _validate_profile(profile)
     recurring_event_count = _validate_source(profile, source)
     assert source.first_date is not None and source.last_date is not None
     try:
         provisional = AcceptedProductionSourceManifest(
-            repository_identity=repository_identity,
+            repository_identity=ACCEPTED_PRODUCTION_SOURCE_REPOSITORY,
             repository_tag=profile.accepted_tag,
             repository_commit=profile.accepted_commit,
             ics_sha256=source.raw_sha256,

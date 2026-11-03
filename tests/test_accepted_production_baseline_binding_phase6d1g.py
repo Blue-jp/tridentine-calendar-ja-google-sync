@@ -140,7 +140,7 @@ def test_cli_empty_packaged_registry_stops_before_private_inputs(
         raise AssertionError("private Production input was read before active pin")
 
     monkeypatch.setattr(cli, "load_accepted_production_source_manifest", forbidden)
-    monkeypatch.setattr(cli, "load_profile", forbidden)
+    monkeypatch.setattr(cli, "load_accepted_production_profile", forbidden)
     monkeypatch.setattr(cli, "inspect_source", forbidden)
     monkeypatch.setattr(cli, "load_google_snapshot", forbidden)
     monkeypatch.setattr(cli, "load_baseline", forbidden)
@@ -155,8 +155,6 @@ def test_cli_empty_packaged_registry_stops_before_private_inputs(
             "private-source.ics",
             "--profile",
             "accepted-20990101",
-            "--profiles-dir",
-            "private-profiles",
             "--google-snapshot",
             "private-snapshot.json",
             "--trusted-baseline",

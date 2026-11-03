@@ -153,7 +153,7 @@ def test_refresh_failure_returns_safe_stop_without_client_or_api(tmp_path: Path)
     assert artifacts.transport.call_log == ()
 
     output = tmp_path / "failure-output"
-    output.mkdir()
+    output.mkdir(mode=0o700)
     paths = write_production_write_token_rehearsal_outputs(
         output,
         None,
@@ -475,7 +475,7 @@ def test_report_snapshot_and_output_are_redacted_atomic_and_no_overwrite(
         if json_text is not None:
             json.loads(json_text)
     output = tmp_path / "external-output"
-    output.mkdir()
+    output.mkdir(mode=0o700)
     paths = write_production_write_token_rehearsal_outputs(
         output,
         outcome.snapshot,

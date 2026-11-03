@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 import tomllib
 from copy import deepcopy
@@ -16,6 +18,9 @@ from tridentine_calendar_google_sync.models import AcceptedSourceProfile
 
 _PROFILE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _PROFILE_SIZE_LIMIT = 1024 * 1024
+_ACCEPTED_PRODUCTION_PROFILE_RAW_SHA256 = {
+    "accepted-20260814": "439df2bc5d17c4830ba0c4d181bb084f8a09c3d26525f7b57e869c08e83c4bed",
+}
 
 
 class ProfileError(ValueError):
@@ -97,6 +102,32 @@ def _default_profile_bytes(profile_id: str) -> bytes:
     raise ProfileError("profile_not_found", "requested profile is unavailable")
 
 
+def load_accepted_production_profile(profile_id: str) -> AcceptedSourceProfile:
+    """Load one repository/package-pinned profile for Production authority.
+
+    Production planning never accepts an external profile directory.  The raw
+    packaged/repository TOML is pinned here so a replaced resource cannot become
+    Production source authority without a reviewed code change.
+    """
+
+    if not _PROFILE_ID_PATTERN.fullmatch(profile_id):
+        raise ProfileError("invalid_profile_id", "profile identifier is invalid")
+    expected_hash = _ACCEPTED_PRODUCTION_PROFILE_RAW_SHA256.get(profile_id)
+    if expected_hash is None:
+        raise ProfileError(
+            "accepted_production_profile_not_pinned",
+            "Accepted Production profile is not pinned by this package",
+        )
+    raw = _default_profile_bytes(profile_id)
+    actual_hash = hashlib.sha256(raw).hexdigest()
+    if not hmac.compare_digest(actual_hash, expected_hash):
+        raise ProfileError(
+            "accepted_production_profile_package_mismatch",
+            "Accepted Production profile does not match the reviewed package pin",
+        )
+    return _parse_profile(raw, profile_id)
+
+
 def load_profile(
     profile_id: str,
     profiles_dir: str | Path | None = None,
@@ -128,4 +159,4 @@ def load_profile(
     return _parse_profile(raw, profile_id)
 
 
-__all__ = ["ProfileError", "load_profile"]
+__all__ = ["ProfileError", "load_accepted_production_profile", "load_profile"]
