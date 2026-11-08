@@ -480,11 +480,12 @@ def test_component_has_no_runtime_consumer_or_dynamic_import_and_no_mutation_esc
     assert not any(
         isinstance(node, (ast.Global, ast.Nonlocal, ast.While)) for node in ast.walk(tree)
     )
-    for module in path.parent.glob("*.py"):
-        if module != path:
-            assert "production_write_token_operation_record" not in module.read_text(
-                encoding="utf-8"
-            )
+    assert {
+        module.name
+        for module in path.parent.glob("*.py")
+        if module != path
+        and "production_write_token_operation_record" in module.read_text(encoding="utf-8")
+    } == {"production_write_token.py"}
 
 
 def _private(tmp_path: Path) -> records.SyntheticBinding:

@@ -13,7 +13,7 @@ import os
 import sys
 import threading
 from contextlib import AbstractContextManager, ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
@@ -348,6 +348,7 @@ class _RecordScopeContext(_NoScopeCopy, AbstractContextManager[_HeldRecordScope]
     _creation_publication: bool | None
     _first_failure: RecordResult | None
     _cancellation: BaseException | None
+    _link: _SharedStartSessionContext | None
 
     def _check_owner(self) -> None:
         if type(self) is not _RecordScopeContext:
@@ -463,6 +464,8 @@ class _RecordScopeContext(_NoScopeCopy, AbstractContextManager[_HeldRecordScope]
         traceback: TracebackType | None,
     ) -> Literal[False]:
         self._check_owner()
+        if self._link is not None:
+            raise _ScopeUseError()
         if (
             self._phase not in {_ScopePhase.ACTIVE, _ScopePhase.FAILED}
             or self._stack is None
@@ -541,11 +544,12 @@ def _record_scope(
     owner._creation_publication = False
     owner._first_failure = None
     owner._cancellation = None
+    owner._link = None
     return owner
 
 
 def _require_scope(
-    scope: object, binding: object, operation: object, revision_ref: object
+    scope: object, binding: object, operation: object, revision_ref: object, *, create: bool = False
 ) -> _RecordScopeContext:
     if type(scope) is not _HeldRecordScope:
         raise _ScopeUseError()
@@ -565,6 +569,15 @@ def _require_scope(
             or revision_ref != owner._revision
         ):
             raise _ScopeUseError()
+        link = owner._link
+        if link is not None and (
+            not create
+            or type(link) is not _SharedStartSessionContext
+            or link._record is not owner
+            or link._phase is not _LinkedPhase.RECORD_HELD
+            or not link._creating
+        ):
+            raise _ScopeUseError()
         return owner
     except AttributeError:
         raise _ScopeUseError() from None
@@ -573,7 +586,7 @@ def _require_scope(
 def _held_record_io(
     scope: object, binding: object, operation: object, *, revision_ref: object, create: bool
 ) -> _HeldResult:
-    owner = _require_scope(scope, binding, operation, revision_ref)
+    owner = _require_scope(scope, binding, operation, revision_ref, create=create)
     if create and owner._create_attempted:
         raise _ScopeUseError()
     # Use the validated immutable snapshots, not caller-owned mutable state.
@@ -618,7 +631,10 @@ def _held_record_io(
         checkpoint = (
             _HeldCheckpoint.HELD_START_CHECKPOINT if create else _HeldCheckpoint.HELD_START_OBSERVED
         )
-        return _HeldResult(checkpoint=checkpoint, publication_possible=publication_possible)
+        result = _HeldResult(checkpoint=checkpoint, publication_possible=publication_possible)
+        if create and owner._link is not None:
+            owner._link._start_latch = result
+        return result
     except Exception as error:
         failure = _failure_result(
             error, publisher_entered=publisher_entered, publication_possible=publication_possible
@@ -697,3 +713,910 @@ def read_start_record(binding: object, operation: object) -> RecordResult:
     """Observe one expected incomplete record; absence is never permission."""
 
     return _storage_call(binding, operation, create=False)
+
+
+class _LinkedPhase(StrEnum):
+    NEW = "new"
+    ENTERING = "entering"
+    RECORD_HELD = "record_held"
+    START_READY = "start_ready"
+    SESSION_RUNNING = "session_running"
+    CONSUMED = "consumed"
+    FAILED = "failed"
+    EXITING = "exiting"
+    CLOSED = "closed"
+
+
+class _SessionFailureClass(StrEnum):
+    SESSION_OTHER = "session_other"
+    PERSISTENCE = "persistence"
+    PREWRITE = "prewrite"
+    LOCK = "lock"
+    REFRESH = "refresh"
+
+
+class _LinkedCheckpointFailure(ValueError):
+    def __init__(self) -> None:
+        super().__init__("START-linked final checkpoint failed")
+
+
+class _LinkedDiagnosticIncompleteFailure(ValueError):
+    def __init__(self) -> None:
+        super().__init__("START-linked diagnostics are incomplete")
+
+
+_LinkedTriple = tuple[type[BaseException] | None, BaseException | None, TracebackType | None]
+_FailureKind = Literal["ordinary", "cancellation"]
+_FailureDomain = Literal[
+    "record", "session", "phase_exit", "final_checkpoint", "exit", "diagnostic"
+]
+_CancelPhase = Literal[
+    "record",
+    "session",
+    "phase_exit",
+    "final_checkpoint",
+    "writer",
+    "annotation",
+    "exit",
+    "snapshot",
+]
+_DiagnosticStep = Literal[
+    "initial",
+    "classification",
+    "refinement",
+    "pre_writer",
+    "writer_raised",
+    "writer_returned",
+    "snapshot",
+    "phase_exit",
+    "candidate",
+]
+_WriterPhase = Literal["not_called", "call_started", "raised", "returned"]
+_Outcome = Literal["return_path_selected", "failure", "cancellation"]
+
+
+@dataclass(frozen=True, repr=False, slots=True)
+class _LinkedExpected:
+    binding: SyntheticBinding
+    operation: RecordOperation
+    checked_token_path: Path
+    checked_state_path: Path
+
+
+@dataclass(slots=True)
+class _LinkedCoreFacts:
+    record_observation: RecordState | _HeldCheckpoint | None = None
+    record_publication: bool | None = False
+    logical_save_called: bool = False
+    writer_phase: _WriterPhase = "not_called"
+    writer_failure_kind: _FailureKind | None = None
+    credential_publication: bool | None = False
+    candidate_constructed: bool = False
+    delivery: Literal["withheld", "return_path_selected"] = "withheld"
+    first_ordinary_domain: _FailureDomain | None = None
+    session_failure: _SessionFailureClass | None = None
+    selected_outcome: _Outcome = "failure"
+    first_cancel_phase: _CancelPhase | None = None
+    phase_exit_failure: _FailureKind | None = None
+    cleanup_failure: _FailureKind | None = None
+    diagnostic_status: Literal["complete", "incomplete"] = "complete"
+    first_diagnostic_step: _DiagnosticStep | None = None
+    first_diagnostic_kind: _FailureKind | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LinkedAnnotations:
+    session_failure: _SessionFailureClass | None = None
+    publication: tuple[_WriterPhase, bool | None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LinkedDiagnosticsSnapshot:
+    record_observation: RecordState | _HeldCheckpoint | None
+    record_publication: bool | None
+    logical_save_called: bool
+    writer_phase: _WriterPhase
+    writer_failure_kind: _FailureKind | None
+    credential_publication: bool | None
+    candidate_constructed: bool
+    delivery: Literal["withheld", "return_path_selected"]
+    first_ordinary_domain: _FailureDomain | None
+    session_failure: _SessionFailureClass | None
+    selected_outcome: _Outcome
+    first_cancel_phase: _CancelPhase | None
+    phase_exit_failure: _FailureKind | None
+    cleanup_failure: _FailureKind | None
+    diagnostic_status: Literal["complete", "incomplete"]
+    first_diagnostic_step: _DiagnosticStep | None
+    first_diagnostic_kind: _FailureKind | None
+    annotations: _LinkedAnnotations
+
+
+_LINKED_FACT_FIELDS = tuple(item.name for item in fields(_LinkedCoreFacts))
+_EMPTY_LINKED_ANNOTATIONS = _LinkedAnnotations()
+
+
+@dataclass(repr=False, eq=False, slots=True)
+class _LinkedAttemptState:
+    parent: _SharedStartSessionContext
+    request: object
+    facts: _LinkedCoreFacts = field(default_factory=_LinkedCoreFacts)
+    notes: _LinkedAnnotations = field(default_factory=_LinkedAnnotations)
+    primary: Exception | None = None
+    first_cancel: BaseException | None = None
+    session_body_triple: _LinkedTriple | None = None
+    phase_exit_triple: _LinkedTriple | None = None
+    record_exit_triple: _LinkedTriple | None = None
+    writer_error: BaseException | None = None
+    writer_diagnostic: Exception | None = None
+    fallback: _LinkedDiagnosticsSnapshot = field(
+        default_factory=lambda: object.__new__(_LinkedDiagnosticsSnapshot)
+    )
+    incomplete_failure: _LinkedDiagnosticIncompleteFailure | None = field(
+        default_factory=_LinkedDiagnosticIncompleteFailure
+    )
+
+
+@dataclass(init=False, repr=False, eq=False, slots=True)
+class _LinkedSessionChild(_NoScopeCopy):
+    _factory_identity: _LinkedSessionChild
+    _parent: _SharedStartSessionContext
+    _active: bool
+
+
+@dataclass(init=False, repr=False, eq=False, slots=True)
+class _SharedStartSessionContext(
+    _NoScopeCopy, AbstractContextManager["_SharedStartSessionContext"]
+):
+    _factory_identity: _SharedStartSessionContext
+    _request: object
+    _expected: _LinkedExpected
+    _record: _RecordScopeContext
+    _attempt: _LinkedAttemptState
+    _phase: _LinkedPhase
+    _creating: bool
+    _issuing: bool
+    _start_latch: _HeldResult | None
+    _current_child: _LinkedSessionChild | None
+    _candidate_noted: bool
+    _final_checking: bool
+    _final_checked: bool
+    _diagnostics: _LinkedDiagnosticsSnapshot | None
+
+    def __enter__(self) -> _SharedStartSessionContext:
+        _check_linked_actor(self)
+        _verify_linked_parent_binding(self, self._request, expected=self._expected)
+        try:
+            self._phase = _LinkedPhase.ENTERING
+            self._record.__enter__()
+            self._phase = _LinkedPhase.RECORD_HELD
+            _require_linked_record(
+                self, self._request, expected_parent=self, expected=self._expected
+            )
+            return self
+        except BaseException as error:
+            # The legacy entry already unwinds an unsuccessful acquisition.
+            self._phase = _LinkedPhase.FAILED
+            _finalize_linked_scope(self, type(error), error, error.__traceback__)
+            raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        return _finalize_linked_scope(self, exc_type, exc, traceback)
+
+
+def _check_linked_actor(parent: object) -> _SharedStartSessionContext:
+    if type(parent) is not _SharedStartSessionContext:
+        raise _ScopeUseError()
+    try:
+        record = parent._record
+        attempt = parent._attempt
+        valid = (
+            parent._factory_identity is parent
+            and type(record) is _RecordScopeContext
+            and record._link is parent
+            and type(attempt) is _LinkedAttemptState
+            and attempt.parent is parent
+            and attempt.request is parent._request
+            and type(parent._phase) is _LinkedPhase
+        )
+        if not valid:
+            raise _ScopeUseError()
+        record._check_owner()
+    except AttributeError:
+        raise _ScopeUseError() from None
+    return parent
+
+
+def _valid_linked_layout(expected: _LinkedExpected) -> bool:
+    binding, operation = expected.binding, expected.operation
+    token, state = expected.checked_token_path, expected.checked_state_path
+    return (
+        _valid_binding(binding)
+        and _valid_operation(operation)
+        and operation.kind is OperationKind.REFRESH
+        and _valid_ref(operation.predecessor_id)
+        and type(token) is type(Path())
+        and type(state) is type(Path())
+        and token.parent == state.parent == binding.directory
+        and token.name == binding.token_slot
+        and state.name == binding.state_slot
+    )
+
+
+def _shared_start_session_scope(
+    binding: SyntheticBinding,
+    operation: RecordOperation,
+    request_key: object,
+    *,
+    token_path: Path,
+    state_path: Path,
+) -> _SharedStartSessionContext:
+    if not _valid_binding(binding) or not _valid_operation(operation):
+        raise _ScopeUseError()
+    binding_snapshot = SyntheticBinding(
+        binding.directory,
+        binding.storage_ref,
+        binding.pair_ref,
+        binding.token_slot,
+        binding.state_slot,
+    )
+    operation_snapshot = RecordOperation(
+        operation.operation_id, operation.predecessor_id, operation.kind
+    )
+    expected = _LinkedExpected(binding_snapshot, operation_snapshot, token_path, state_path)
+    if not _valid_linked_layout(expected):
+        raise _ScopeUseError()
+    parent = object.__new__(_SharedStartSessionContext)
+    parent._factory_identity = parent
+    parent._request = request_key
+    parent._expected = expected
+    parent._record = _record_scope(binding_snapshot, operation_snapshot)
+    parent._record._link = parent
+    parent._attempt = _LinkedAttemptState(parent, request_key)
+    parent._phase = _LinkedPhase.NEW
+    parent._creating = False
+    parent._issuing = False
+    parent._start_latch = None
+    parent._current_child = None
+    parent._candidate_noted = False
+    parent._final_checking = False
+    parent._final_checked = False
+    parent._diagnostics = None
+    return parent
+
+
+def _check_linked_binding(
+    parent: object, request_key: object, *, expected_parent: object, expected: _LinkedExpected
+) -> _SharedStartSessionContext:
+    if parent is not expected_parent or type(expected) is not _LinkedExpected:
+        raise _ScopeUseError()
+    bound = _check_linked_actor(parent)
+    try:
+        record = bound._record
+        valid = (
+            bound._request is request_key
+            and _valid_linked_layout(expected)
+            and bound._expected == expected
+            and record._binding_input == expected.binding
+            and record._operation_input == expected.operation
+            and record._revision_input is None
+            and (
+                bound._phase in {_LinkedPhase.NEW, _LinkedPhase.CLOSED}
+                or (
+                    record._binding == expected.binding
+                    and record._operation == expected.operation
+                    and record._revision is None
+                )
+            )
+        )
+    except AttributeError:
+        raise _ScopeUseError() from None
+    if not valid:
+        raise _ScopeUseError()
+    return bound
+
+
+def _verify_linked_parent_binding(
+    parent: object, request_key: object, *, expected: _LinkedExpected
+) -> None:
+    bound = _check_linked_binding(parent, request_key, expected_parent=parent, expected=expected)
+    record = bound._record
+    if (
+        bound._phase is not _LinkedPhase.NEW
+        or record._phase is not _ScopePhase.NEW
+        or record._scope is not None
+        or record._held is not None
+        or record._stack is not None
+        or record._busy
+        or record._entering
+        or bound._current_child is not None
+        or bound._start_latch is not None
+    ):
+        raise _ScopeUseError()
+
+
+def _linked_attempt_state(
+    parent: object, request_key: object, *, expected_parent: object, expected: _LinkedExpected
+) -> _LinkedAttemptState:
+    bound = _check_linked_binding(
+        parent, request_key, expected_parent=expected_parent, expected=expected
+    )
+    _verify_linked_parent_binding(bound, request_key, expected=expected)
+    return bound._attempt
+
+
+def _require_linked_record(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> _RecordScopeContext:
+    _check_linked_binding(parent, request_key, expected_parent=expected_parent, expected=expected)
+    record = parent._record
+    if (
+        record._phase is not _ScopePhase.ACTIVE
+        or type(record._scope) is not _HeldRecordScope
+        or record._scope._owner is not record
+        or record._held is None
+        or record._stack is None
+        or record._busy
+        or record._entering
+        or record._first_failure is not None
+        or record._cancellation is not None
+    ):
+        raise _ScopeUseError()
+    return record
+
+
+def _create_linked_start(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> None:
+    record = _require_linked_record(
+        parent, request_key, expected_parent=expected_parent, expected=expected
+    )
+    if parent._phase is not _LinkedPhase.RECORD_HELD or parent._creating:
+        raise _ScopeUseError()
+    start_ready = False
+    try:
+        parent._creating = True
+        result = _create_start_record_held(record._scope, expected.binding, expected.operation)
+        if record._first_failure is not None:
+            raise _ScopeFailure(record._first_failure)
+        if (
+            type(result) is not _HeldResult
+            or result is not parent._start_latch
+            or result.checkpoint is not _HeldCheckpoint.HELD_START_CHECKPOINT
+            or record._creation_publication is not True
+            or not record._create_attempted
+        ):
+            raise _ScopeFailure(
+                RecordResult(RecordState.UNVERIFIABLE, record._creation_publication)
+            )
+        _require_linked_record(
+            parent, request_key, expected_parent=expected_parent, expected=expected
+        )
+        parent._phase = _LinkedPhase.START_READY
+        start_ready = True
+    except BaseException as error:
+        state = parent._attempt
+        if isinstance(error, Exception):
+            if state.primary is None:
+                state.primary = error
+                state.facts.first_ordinary_domain = "record"
+            if isinstance(error, _ScopeFailure):
+                state.facts.record_observation = error.result.state
+        elif state.first_cancel is None:
+            state.first_cancel = error
+            state.facts.first_cancel_phase = "record"
+        raise
+    finally:
+        parent._creating = False
+        if not start_ready:
+            parent._phase = _LinkedPhase.FAILED
+
+
+def _require_linked_start_ready(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> None:
+    record = _require_linked_record(
+        parent, request_key, expected_parent=expected_parent, expected=expected
+    )
+    state = parent._attempt
+    if (
+        parent._phase is not _LinkedPhase.START_READY
+        or parent._current_child is not None
+        or parent._start_latch is None
+        or not record._create_attempted
+        or record._creation_publication is not True
+        or state.primary is not None
+        or state.first_cancel is not None
+    ):
+        raise _ScopeUseError()
+
+
+def _issue_linked_child(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> _LinkedSessionChild:
+    _require_linked_start_ready(
+        parent, request_key, expected_parent=expected_parent, expected=expected
+    )
+    if not parent._issuing:
+        raise _ScopeUseError()
+    child = object.__new__(_LinkedSessionChild)
+    child._factory_identity = child
+    child._parent = parent
+    child._active = True
+    parent._current_child = child
+    parent._phase = _LinkedPhase.SESSION_RUNNING
+    return child
+
+
+def _retain_phase_failure(state: _LinkedAttemptState, error: BaseException) -> None:
+    if isinstance(error, Exception):
+        if state.primary is None:
+            state.primary = error
+            state.facts.first_ordinary_domain = "phase_exit"
+    elif state.first_cancel is None:
+        state.first_cancel = error
+        state.facts.first_cancel_phase = "phase_exit"
+
+
+@dataclass(init=False, repr=False, eq=False, slots=True)
+class _LinkedSessionPhaseContext(_NoScopeCopy, AbstractContextManager[_LinkedSessionChild]):
+    _factory_identity: _LinkedSessionPhaseContext
+    _parent: _SharedStartSessionContext
+    _request: object
+    _expected_parent: object
+    _expected: _LinkedExpected
+    _lifecycle: Literal["new", "entering", "active", "exiting", "closed"]
+    _child: _LinkedSessionChild | None
+
+    def _check_handle(self) -> None:
+        if type(self) is not _LinkedSessionPhaseContext:
+            raise _ScopeUseError()
+        try:
+            _ = (
+                self._parent,
+                self._request,
+                self._expected_parent,
+                self._expected,
+                self._lifecycle,
+                self._child,
+            )
+            if self._factory_identity is not self:
+                raise _ScopeUseError()
+        except AttributeError:
+            raise _ScopeUseError() from None
+
+    def __finish_phase(self, *, completed: bool) -> None:
+        parent = _check_linked_actor(self._parent)
+        # Issuance may have installed the child before entry could retain it.
+        child = parent._current_child
+        if child is not None:
+            child._active = False
+        parent._issuing = False
+        parent._phase = _LinkedPhase.CONSUMED if completed else _LinkedPhase.FAILED
+        self._lifecycle = "closed"
+
+    def __enter__(self) -> _LinkedSessionChild:
+        _LinkedSessionPhaseContext._check_handle(self)
+        if self._lifecycle != "new" or self._child is not None:
+            raise _ScopeUseError()
+        parent = self._parent
+        _require_linked_start_ready(
+            parent, self._request, expected_parent=self._expected_parent, expected=self._expected
+        )
+        if parent._issuing:
+            raise _ScopeUseError()
+
+        state = parent._attempt
+        try:
+            self._lifecycle = "entering"
+            parent._issuing = True
+            child = _issue_linked_child(
+                parent,
+                self._request,
+                expected_parent=self._expected_parent,
+                expected=self._expected,
+            )
+            _require_linked_child(
+                child, self._request, expected_parent=self._expected_parent, expected=self._expected
+            )
+            self._child = child
+            self._lifecycle = "active"
+            return child
+        except BaseException as error:
+            state.phase_exit_triple = (type(error), error, error.__traceback__)
+            _retain_phase_failure(state, error)
+            self.__finish_phase(completed=False)
+            raise
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> Literal[False]:
+        _LinkedSessionPhaseContext._check_handle(self)
+        child = self._child
+        parent = self._parent
+        if (
+            self._lifecycle != "active"
+            or child is None
+            or parent is not self._expected_parent
+            or not parent._issuing
+        ):
+            raise _ScopeUseError()
+        _require_linked_child(
+            child, self._request, expected_parent=self._expected_parent, expected=self._expected
+        )
+
+        state = parent._attempt
+        try:
+            if exc is not None:
+                state.phase_exit_triple = (exc_type, exc, traceback)
+                _retain_phase_failure(state, exc)
+            self._lifecycle = "exiting"
+            self.__finish_phase(completed=exc is None)
+        except BaseException as error:
+            if exc is None:
+                state.phase_exit_triple = (type(error), error, error.__traceback__)
+            _retain_phase_failure(state, error)
+            state.facts.phase_exit_failure = (
+                "ordinary" if isinstance(error, Exception) else "cancellation"
+            )
+            if parent._phase is _LinkedPhase.SESSION_RUNNING:
+                self.__finish_phase(completed=False)
+            else:
+                self._lifecycle = "closed"
+            raise
+        return False
+
+
+def _linked_session_phase(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> _LinkedSessionPhaseContext:
+    phase = object.__new__(_LinkedSessionPhaseContext)
+    phase._factory_identity = phase
+    phase._parent = parent
+    phase._request = request_key
+    phase._expected_parent = expected_parent
+    phase._expected = expected
+    phase._lifecycle = "new"
+    phase._child = None
+    return phase
+
+
+def _require_linked_child(
+    child: object, request_key: object, *, expected_parent: object, expected: _LinkedExpected
+) -> None:
+    if type(child) is not _LinkedSessionChild:
+        raise _ScopeUseError()
+    try:
+        parent = child._parent
+        _require_linked_record(
+            parent, request_key, expected_parent=expected_parent, expected=expected
+        )
+        if (
+            child._factory_identity is not child
+            or parent._current_child is not child
+            or not child._active
+            or parent._phase is not _LinkedPhase.SESSION_RUNNING
+        ):
+            raise _ScopeUseError()
+    except AttributeError:
+        raise _ScopeUseError() from None
+
+
+def _checkpoint_linked_child(
+    child: _LinkedSessionChild,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> None:
+    _require_linked_child(child, request_key, expected_parent=expected_parent, expected=expected)
+    held = child._parent._record._held
+    if held is None:
+        raise _ScopeUseError()
+    held.revalidate()
+
+
+def _note_linked_candidate(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> None:
+    _check_linked_binding(parent, request_key, expected_parent=expected_parent, expected=expected)
+    _require_linked_child(
+        parent._current_child, request_key, expected_parent=expected_parent, expected=expected
+    )
+    if parent._candidate_noted or not parent._attempt.facts.candidate_constructed:
+        raise _ScopeUseError()
+    parent._candidate_noted = True
+
+
+def _final_linked_checkpoint(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> None:
+    record = _require_linked_record(
+        parent, request_key, expected_parent=expected_parent, expected=expected
+    )
+    child, held, state = parent._current_child, record._held, parent._attempt
+    if (
+        parent._phase is not _LinkedPhase.CONSUMED
+        or type(child) is not _LinkedSessionChild
+        or child._factory_identity is not child
+        or child._parent is not parent
+        or child._active
+        or held is None
+        or parent._final_checking
+        or parent._final_checked
+        or not parent._candidate_noted
+        or not state.facts.candidate_constructed
+        or state.primary is not None
+        or state.first_cancel is not None
+    ):
+        raise _ScopeUseError()
+    try:
+        parent._final_checking = True
+        try:
+            held.revalidate()
+        except Exception:
+            raise _LinkedCheckpointFailure() from None
+        parent._final_checked = True
+    except BaseException as error:
+        if isinstance(error, Exception):
+            state.primary = error
+            state.facts.first_ordinary_domain = "final_checkpoint"
+        elif state.first_cancel is None:
+            state.first_cancel = error
+            state.facts.first_cancel_phase = "final_checkpoint"
+        parent._phase = _LinkedPhase.FAILED
+        raise
+    finally:
+        parent._final_checking = False
+
+
+def _copy_linked_failure_annotations(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+    classification: _SessionFailureClass | None = None,
+) -> None:
+    _check_linked_binding(parent, request_key, expected_parent=expected_parent, expected=expected)
+    if classification is not None and type(classification) is not _SessionFailureClass:
+        raise _ScopeUseError()
+    _require_linked_child(
+        parent._current_child, request_key, expected_parent=expected_parent, expected=expected
+    )
+    state = parent._attempt
+    state.notes = _LinkedAnnotations(classification, state.notes.publication)
+
+
+def _copy_linked_publication_annotations(
+    parent: _SharedStartSessionContext,
+    request_key: object,
+    *,
+    expected_parent: object,
+    expected: _LinkedExpected,
+) -> None:
+    _check_linked_binding(parent, request_key, expected_parent=expected_parent, expected=expected)
+    _require_linked_child(
+        parent._current_child, request_key, expected_parent=expected_parent, expected=expected
+    )
+    state = parent._attempt
+    state.notes = _LinkedAnnotations(
+        state.notes.session_failure, (state.facts.writer_phase, state.facts.credential_publication)
+    )
+
+
+def _mark_linked_diagnostic_failure(
+    facts: _LinkedCoreFacts, step: _DiagnosticStep, kind: _FailureKind
+) -> None:
+    facts.diagnostic_status = "incomplete"
+    if facts.first_diagnostic_step is None:
+        facts.first_diagnostic_step = step
+        facts.first_diagnostic_kind = kind
+
+
+def _fill_linked_snapshot(
+    snapshot: _LinkedDiagnosticsSnapshot, facts: _LinkedCoreFacts, notes: _LinkedAnnotations
+) -> None:
+    for name in _LINKED_FACT_FIELDS:
+        object.__setattr__(snapshot, name, object.__getattribute__(facts, name))
+    object.__setattr__(snapshot, "annotations", notes)
+
+
+def _build_linked_diagnostics(
+    facts: _LinkedCoreFacts, notes: _LinkedAnnotations
+) -> _LinkedDiagnosticsSnapshot:
+    snapshot = object.__new__(_LinkedDiagnosticsSnapshot)
+    completed = _LinkedAnnotations(
+        notes.session_failure if notes.session_failure is facts.session_failure else None,
+        notes.publication
+        if notes.publication == (facts.writer_phase, facts.credential_publication)
+        else None,
+    )
+    _fill_linked_snapshot(snapshot, facts, completed)
+    return snapshot
+
+
+def _select_linked_outcome(state: _LinkedAttemptState) -> BaseException | None:
+    facts = state.facts
+    facts.delivery = "withheld"
+    if state.first_cancel is not None:
+        facts.selected_outcome = "cancellation"
+        return state.first_cancel
+    if state.primary is not None:
+        facts.selected_outcome = "failure"
+        return state.primary
+    facts.selected_outcome = "return_path_selected"
+    facts.delivery = "return_path_selected"
+    return None
+
+
+def _finalize_linked_scope(
+    parent: _SharedStartSessionContext,
+    exc_type: type[BaseException] | None,
+    exc: BaseException | None,
+    traceback: TracebackType | None,
+) -> Literal[False]:
+    _check_linked_actor(parent)
+    record, state = parent._record, parent._attempt
+    if (
+        parent._phase
+        not in {
+            _LinkedPhase.RECORD_HELD,
+            _LinkedPhase.START_READY,
+            _LinkedPhase.CONSUMED,
+            _LinkedPhase.FAILED,
+        }
+        or parent._creating
+        or parent._issuing
+        or parent._final_checking
+        or record._busy
+        or record._entering
+    ):
+        raise _ScopeUseError()
+    state.record_exit_triple = (exc_type, exc, traceback)
+    facts = state.facts
+    if isinstance(exc, Exception):
+        if state.primary is None:
+            state.primary = exc
+            facts.first_ordinary_domain = (
+                "final_checkpoint" if parent._phase is _LinkedPhase.CONSUMED else "record"
+            )
+    elif exc is not None and state.first_cancel is None:
+        state.first_cancel = exc
+        facts.first_cancel_phase = (
+            "final_checkpoint" if parent._phase is _LinkedPhase.CONSUMED else "record"
+        )
+
+    terminal = record._first_failure
+    if terminal is not None:
+        facts.record_observation = terminal.state
+    elif facts.first_ordinary_domain == "record" and isinstance(exc, _ScopeFailure):
+        facts.record_observation = exc.result.state
+    elif facts.record_observation is None and parent._start_latch is not None:
+        facts.record_observation = _HeldCheckpoint.HELD_START_CHECKPOINT
+    facts.record_publication = record._creation_publication
+    if state.first_cancel is None and record._cancellation is not None:
+        state.first_cancel = record._cancellation
+        facts.first_cancel_phase = "record"
+    if state.primary is None and state.first_cancel is None and not parent._final_checked:
+        state.primary = _ScopeUseError()
+        facts.first_ordinary_domain = "record"
+
+    try:
+        parent._phase = _LinkedPhase.EXITING
+        child = parent._current_child
+        if child is not None:
+            child._active = False
+        stack, record._stack = record._stack, None
+        record._held = None
+        record._scope = None
+        record._cancellation = None
+        record._phase = _ScopePhase.CLOSED
+        if stack is not None:
+            stack.__exit__(exc_type, exc, traceback)
+    except BaseException as cleanup:
+        if isinstance(cleanup, Exception):
+            facts.cleanup_failure = "ordinary"
+            if state.primary is None:
+                state.primary = cleanup
+                facts.first_ordinary_domain = "exit"
+        else:
+            facts.cleanup_failure = "cancellation"
+            if state.first_cancel is None:
+                state.first_cancel = cleanup
+                facts.first_cancel_phase = "exit"
+    finally:
+        parent._phase = _LinkedPhase.CLOSED
+
+    if (
+        facts.diagnostic_status == "incomplete"
+        and state.first_cancel is None
+        and state.primary is None
+    ):
+        state.primary = state.incomplete_failure
+        facts.first_ordinary_domain = "diagnostic"
+    selected = _select_linked_outcome(state)
+    try:
+        snapshot = _build_linked_diagnostics(facts, state.notes)
+        if type(snapshot) is not _LinkedDiagnosticsSnapshot:
+            incomplete = state.incomplete_failure
+            if incomplete is None:
+                raise _ScopeUseError()
+            raise incomplete
+        parent._diagnostics = snapshot
+    except BaseException as diagnostic:
+        if isinstance(diagnostic, Exception):
+            if state.primary is None:
+                state.primary = diagnostic
+                facts.first_ordinary_domain = "diagnostic"
+            _mark_linked_diagnostic_failure(facts, "snapshot", "ordinary")
+        else:
+            if state.first_cancel is None:
+                state.first_cancel = diagnostic
+                facts.first_cancel_phase = "snapshot"
+            _mark_linked_diagnostic_failure(facts, "snapshot", "cancellation")
+        selected = _select_linked_outcome(state)
+        _fill_linked_snapshot(state.fallback, facts, _EMPTY_LINKED_ANNOTATIONS)
+        parent._diagnostics = state.fallback
+    finally:
+        state.primary = None
+        state.first_cancel = None
+        state.session_body_triple = None
+        state.phase_exit_triple = None
+        state.record_exit_triple = None
+        state.writer_error = None
+        state.writer_diagnostic = None
+        state.incomplete_failure = None
+    if selected is not None and selected is not exc:
+        raise selected
+    return False
+
+
+def _read_linked_diagnostics(
+    parent: object, request_key: object, *, expected_parent: object, expected: _LinkedExpected
+) -> _LinkedDiagnosticsSnapshot:
+    bound = _check_linked_binding(
+        parent, request_key, expected_parent=expected_parent, expected=expected
+    )
+    if (
+        bound._phase is not _LinkedPhase.CLOSED
+        or type(bound._diagnostics) is not _LinkedDiagnosticsSnapshot
+    ):
+        raise _ScopeUseError()
+    return bound._diagnostics

@@ -17,6 +17,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Literal, NoReturn, Protocol
 
+from tridentine_calendar_google_sync import production_write_token_operation_record as records
 from tridentine_calendar_google_sync.google_auth import load_desktop_client_config
 from tridentine_calendar_google_sync.production_write_target import (
     ProductionWriteTargetConfig,
@@ -1021,7 +1022,11 @@ def _issue_credential_session_owner(
     return owner
 
 
-def _require_session_owner(owner: object, request: object) -> _CredentialSessionScopeContext:
+def _require_session_owner(
+    owner: object, request: object
+) -> _CredentialSessionScopeContext | _StartLinkedSessionContext:
+    if type(owner) is _StartLinkedSessionOwner:
+        return _require_start_linked_session_owner(owner, request)
     if type(owner) is not _CredentialSessionOwner:
         raise _CredentialSessionUseError()
     try:
@@ -1347,6 +1352,606 @@ def prepare_production_write_rehearsal_credential_session_mock(
         evidence_mode="test",
         refresher=refresher,
     )
+
+
+_START_LINKED_INPUT_FIELDS = (
+    "_input_token_path",
+    "_input_state_path",
+    "production_read_token_path",
+    "test_write_token_path",
+    "target",
+    "now",
+    "evidence_mode",
+    "refresher",
+    "confirmation",
+    "binding",
+    "operation",
+)
+
+
+@dataclass(init=False, frozen=True, repr=False, eq=False, slots=True)
+class _StartLinkedSessionRequest(_NoCredentialSessionCopy):
+    _input_token_path: str | Path
+    _input_state_path: str | Path
+    production_read_token_path: str | Path
+    test_write_token_path: str | Path
+    target: ProductionWriteTargetConfig
+    now: datetime
+    evidence_mode: Literal["test"]
+    refresher: ProductionWriteTokenRefresher
+    confirmation: str
+    binding: records.SyntheticBinding
+    operation: records.RecordOperation
+    _context: _StartLinkedSessionContext
+    _association: _LinkedParentAssociation | None
+
+    @property
+    def production_write_token_path(self) -> Path:
+        return self._context.checked_token_path
+
+    @property
+    def generation_state_path(self) -> Path:
+        return self._context.checked_state_path
+
+
+@dataclass(init=False, frozen=True, repr=False, eq=False, slots=True)
+class _LinkedParentAssociation(_NoCredentialSessionCopy):
+    request: _StartLinkedSessionRequest
+    parent: records._SharedStartSessionContext
+    expected: records._LinkedExpected
+    attempt_state: records._LinkedAttemptState
+
+
+@dataclass(init=False, repr=False, eq=False, slots=True)
+class _StartLinkedSessionOwner(_NoCredentialSessionCopy):
+    _issuer: _StartLinkedSessionContext
+    _child: records._LinkedSessionChild
+
+
+@dataclass(init=False, repr=False, eq=False, slots=True)
+class _StartLinkedSessionContext(_NoCredentialSessionCopy):
+    _factory_identity: _StartLinkedSessionContext
+    _request: _StartLinkedSessionRequest
+    _snapshot: tuple[object, ...]
+    _pid: int
+    _thread: threading.Thread
+    _association: _LinkedParentAssociation | None
+    checked_token_path: Path
+    checked_state_path: Path
+    _phase: _CredentialSessionPhase
+    _owner: _StartLinkedSessionOwner | None
+    _busy: bool
+    _used: bool
+    _load_state: Callable[[str | Path], ProductionWriteTokenGenerationState]
+    _load_token: Callable[[str | Path], ProductionWriteAuthorizedUserToken]
+    _writer: _CredentialSessionWriter
+    _render_state: Callable[[ProductionWriteTokenGenerationState], str]
+    _render_token: Callable[[ProductionWriteAuthorizedUserToken], str]
+    _io_error: type[ProductionWriteTokenIOError]
+
+    def _revalidate(self, owner: object, request: object) -> None:
+        if _require_start_linked_session_owner(owner, request) is not self or not self._busy:
+            raise _CredentialSessionUseError()
+        if type(owner) is not _StartLinkedSessionOwner:
+            raise _CredentialSessionUseError()
+        association = _linked_session_association(self, request)
+        try:
+            records._checkpoint_linked_child(
+                owner._child,
+                association.request,
+                expected_parent=association.parent,
+                expected=association.expected,
+            )
+        except records._ScopeUseError:
+            raise _CredentialSessionUseError() from None
+        except Exception:
+            raise ProductionWriteTokenSessionLockError() from None
+
+    def _persist(
+        self,
+        token: ProductionWriteAuthorizedUserToken,
+        path: str | Path,
+        *,
+        expected_token: ProductionWriteAuthorizedUserToken,
+    ) -> Path:
+        return _persist_linked(self, token, path, expected_token=expected_token)
+
+
+def _check_start_linked_request(
+    context: object, request: object
+) -> tuple[_StartLinkedSessionContext, _StartLinkedSessionRequest]:
+    if (
+        type(context) is not _StartLinkedSessionContext
+        or type(request) is not _StartLinkedSessionRequest
+    ):
+        raise _CredentialSessionUseError()
+    try:
+        retained = tuple(getattr(request, name) for name in _START_LINKED_INPUT_FIELDS)
+        valid = (
+            context._factory_identity is context
+            and context._request is request
+            and request._context is context
+            and context._pid == getpid()
+            and context._thread is threading.current_thread()
+            and context._thread.is_alive()
+            and type(context._phase) is _CredentialSessionPhase
+            and type(context._busy) is bool
+            and type(context._used) is bool
+            and request.evidence_mode == "test"
+            and len(context._snapshot) == len(retained)
+            and all(
+                current is original
+                for current, original in zip(retained, context._snapshot, strict=True)
+            )
+        )
+    except AttributeError:
+        raise _CredentialSessionUseError() from None
+    if not valid:
+        raise _CredentialSessionUseError()
+    return context, request
+
+
+def _linked_session_association(context: object, request: object) -> _LinkedParentAssociation:
+    context, request = _check_start_linked_request(context, request)
+    try:
+        association = context._association
+        if (
+            type(association) is not _LinkedParentAssociation
+            or request._association is not association
+            or association.request is not request
+            or type(association.parent) is not records._SharedStartSessionContext
+            or type(association.expected) is not records._LinkedExpected
+            or type(association.attempt_state) is not records._LinkedAttemptState
+            or association.attempt_state.parent is not association.parent
+            or association.attempt_state.request is not request
+            or association.parent._attempt is not association.attempt_state
+            or association.expected.checked_token_path is not context.checked_token_path
+            or association.expected.checked_state_path is not context.checked_state_path
+        ):
+            raise _CredentialSessionUseError()
+    except AttributeError:
+        raise _CredentialSessionUseError() from None
+    return association
+
+
+def _seal_start_linked_parent(
+    context: _StartLinkedSessionContext,
+    request: _StartLinkedSessionRequest,
+    parent: records._SharedStartSessionContext,
+    expected: records._LinkedExpected,
+    state: records._LinkedAttemptState,
+) -> None:
+    _check_start_linked_request(context, request)
+    try:
+        if (
+            context._association is not None
+            or request._association is not None
+            or context._phase is not _CredentialSessionPhase.NEW
+            or context._owner is not None
+            or context._busy
+            or context._used
+            or type(expected) is not records._LinkedExpected
+            or expected.checked_token_path is not context.checked_token_path
+            or expected.checked_state_path is not context.checked_state_path
+            or expected.binding != request.binding
+            or expected.operation != request.operation
+            or records._linked_attempt_state(
+                parent, request, expected_parent=parent, expected=expected
+            )
+            is not state
+        ):
+            raise _CredentialSessionUseError()
+    except (AttributeError, records._ScopeUseError):
+        raise _CredentialSessionUseError() from None
+    association = object.__new__(_LinkedParentAssociation)
+    object.__setattr__(association, "request", request)
+    object.__setattr__(association, "parent", parent)
+    object.__setattr__(association, "expected", expected)
+    object.__setattr__(association, "attempt_state", state)
+    object.__setattr__(request, "_association", association)
+    context._association = association
+
+
+def _bound_linked_parent(context: object) -> records._SharedStartSessionContext:
+    if type(context) is not _StartLinkedSessionContext:
+        raise _CredentialSessionUseError()
+    try:
+        association = _linked_session_association(context, context._request)
+        if context._phase is not _CredentialSessionPhase.NEW:
+            raise _CredentialSessionUseError()
+        records._verify_linked_parent_binding(
+            association.parent, association.request, expected=association.expected
+        )
+    except (AttributeError, records._ScopeUseError):
+        raise _CredentialSessionUseError() from None
+    return association.parent
+
+
+def _issue_start_linked_session_owner(
+    context: _StartLinkedSessionContext, child: records._LinkedSessionChild
+) -> _StartLinkedSessionOwner:
+    if type(context) is not _StartLinkedSessionContext:
+        raise _CredentialSessionUseError()
+    try:
+        association = _linked_session_association(context, context._request)
+        if (
+            context._phase is not _CredentialSessionPhase.NEW
+            or context._owner is not None
+            or context._busy
+            or context._used
+        ):
+            raise _CredentialSessionUseError()
+        records._require_linked_child(
+            child,
+            association.request,
+            expected_parent=association.parent,
+            expected=association.expected,
+        )
+    except (AttributeError, records._ScopeUseError):
+        raise _CredentialSessionUseError() from None
+    owner = object.__new__(_StartLinkedSessionOwner)
+    owner._issuer = context
+    owner._child = child
+    context._owner = owner
+    context._phase = _CredentialSessionPhase.ACTIVE
+    return owner
+
+
+def _require_start_linked_session_owner(
+    owner: object, request: object
+) -> _StartLinkedSessionContext:
+    if type(owner) is not _StartLinkedSessionOwner:
+        raise _CredentialSessionUseError()
+    try:
+        context = owner._issuer
+        association = _linked_session_association(context, request)
+        if context._owner is not owner or context._phase is not _CredentialSessionPhase.ACTIVE:
+            raise _CredentialSessionUseError()
+        records._require_linked_child(
+            owner._child, request, expected_parent=association.parent, expected=association.expected
+        )
+    except (AttributeError, records._ScopeUseError):
+        raise _CredentialSessionUseError() from None
+    return context
+
+
+def _start_linked_session_context(
+    production_write_token_path: str | Path,
+    generation_state_path: str | Path,
+    production_read_token_path: str | Path,
+    test_write_token_path: str | Path,
+    target: ProductionWriteTargetConfig,
+    confirmation: str,
+    *,
+    now: datetime,
+    refresher: ProductionWriteTokenRefresher,
+    binding: records.SyntheticBinding,
+    operation: records.RecordOperation,
+) -> _StartLinkedSessionContext:
+    from tridentine_calendar_google_sync.production_write_token_io import (
+        ProductionWriteTokenIOError,
+        load_production_write_authorized_user_token,
+        load_production_write_token_generation_state,
+        persist_refreshed_production_write_token,
+        render_production_write_authorized_user_token_json,
+        render_production_write_token_generation_state_json,
+        validate_production_write_token_path_set,
+    )
+    from tridentine_calendar_google_sync.production_write_token_rehearsal import (
+        verify_production_write_token_rehearsal_confirmation,
+    )
+
+    validate_production_write_target_config(target)
+    verify_production_write_token_rehearsal_confirmation(target, confirmation)
+    if not records._linux_storage_available():
+        raise records._ScopeFailure(records.RecordResult(records.RecordState.UNSUPPORTED_PLATFORM))
+    if not _is_utc(now):
+        raise ProductionWriteTokenConfigError(
+            "production_write_token_clock_invalid",
+            "Production write-token validation time must be UTC",
+        )
+    token_path, state_path, _, _, _ = validate_production_write_token_path_set(
+        production_write_token_path=production_write_token_path,
+        generation_state_path=generation_state_path,
+        production_read_token_path=production_read_token_path,
+        test_write_token_path=test_write_token_path,
+        client_config_path=None,
+        write_token_exists=True,
+        generation_state_exists=True,
+    )
+    browser_count = getattr(refresher, "browser_fallback_count", None)
+    if (
+        getattr(refresher, "mock_only", None) is not True
+        or getattr(refresher, "live_capable", None) is not False
+        or type(browser_count) is not int
+        or browser_count != 0
+        or not callable(getattr(refresher, "refresh", None))
+    ):
+        raise ProductionWriteTokenRefreshError(
+            "production_write_token_refresh_adapter_unsafe",
+            "Production write-token refresh adapter is unsafe",
+        )
+    if not records._valid_binding(binding) or not records._valid_operation(operation):
+        raise records._ScopeUseError()
+    binding_snapshot = records.SyntheticBinding(
+        binding.directory,
+        binding.storage_ref,
+        binding.pair_ref,
+        binding.token_slot,
+        binding.state_slot,
+    )
+    operation_snapshot = records.RecordOperation(
+        operation.operation_id, operation.predecessor_id, operation.kind
+    )
+    expected = records._LinkedExpected(binding_snapshot, operation_snapshot, token_path, state_path)
+    if not records._valid_linked_layout(expected):
+        raise records._ScopeUseError()
+
+    request = object.__new__(_StartLinkedSessionRequest)
+    context = object.__new__(_StartLinkedSessionContext)
+    retained = (
+        production_write_token_path,
+        generation_state_path,
+        production_read_token_path,
+        test_write_token_path,
+        target,
+        now,
+        "test",
+        refresher,
+        confirmation,
+        binding,
+        operation,
+    )
+    for name, value in zip(_START_LINKED_INPUT_FIELDS, retained, strict=True):
+        object.__setattr__(request, name, value)
+    object.__setattr__(request, "_context", context)
+    object.__setattr__(request, "_association", None)
+    context._factory_identity = context
+    context._request = request
+    context._snapshot = retained
+    context._pid = getpid()
+    context._thread = threading.current_thread()
+    context._association = None
+    context.checked_token_path = token_path
+    context.checked_state_path = state_path
+    context._phase = _CredentialSessionPhase.NEW
+    context._owner = None
+    context._busy = False
+    context._used = False
+    context._load_state = load_production_write_token_generation_state
+    context._load_token = load_production_write_authorized_user_token
+    context._writer = persist_refreshed_production_write_token
+    context._render_state = render_production_write_token_generation_state_json
+    context._render_token = render_production_write_authorized_user_token_json
+    context._io_error = ProductionWriteTokenIOError
+    parent = records._shared_start_session_scope(
+        binding_snapshot, operation_snapshot, request, token_path=token_path, state_path=state_path
+    )
+    records._verify_linked_parent_binding(parent, request, expected=expected)
+    state = records._linked_attempt_state(
+        parent, request, expected_parent=parent, expected=expected
+    )
+    _seal_start_linked_parent(context, request, parent, expected, state)
+    return context
+
+
+def _classify_linked_session_failure(error: Exception) -> records._SessionFailureClass:
+    kind = type(error)
+    if kind is ProductionWriteTokenRefreshPersistenceError:
+        return records._SessionFailureClass.PERSISTENCE
+    if kind is ProductionWriteTokenRefreshPrewriteError:
+        return records._SessionFailureClass.PREWRITE
+    if kind is ProductionWriteTokenSessionLockError:
+        return records._SessionFailureClass.LOCK
+    if kind is ProductionWriteTokenRefreshError:
+        return records._SessionFailureClass.REFRESH
+    return records._SessionFailureClass.SESSION_OTHER
+
+
+def _raise_linked_cancellation(error: BaseException) -> NoReturn:
+    # Preserve the selected object and Python's normal implicit chaining.
+    raise error
+
+
+def _annotate_linked_writer(
+    association: _LinkedParentAssociation, step: records._DiagnosticStep
+) -> bool:
+    state = association.attempt_state
+    try:
+        records._copy_linked_publication_annotations(
+            association.parent,
+            association.request,
+            expected_parent=association.parent,
+            expected=association.expected,
+        )
+    except Exception as diagnostic:
+        state.writer_diagnostic = diagnostic
+        records._mark_linked_diagnostic_failure(state.facts, step, "ordinary")
+        return False
+    except BaseException as diagnostic:
+        if state.first_cancel is None:
+            state.first_cancel = diagnostic
+            state.facts.first_cancel_phase = "annotation"
+        records._mark_linked_diagnostic_failure(state.facts, step, "cancellation")
+        _raise_linked_cancellation(state.first_cancel)
+    return True
+
+
+def _persist_linked(
+    context: _StartLinkedSessionContext,
+    token: ProductionWriteAuthorizedUserToken,
+    path: str | Path,
+    *,
+    expected_token: ProductionWriteAuthorizedUserToken,
+) -> Path:
+    if _require_start_linked_session_owner(context._owner, context._request) is not context:
+        raise _CredentialSessionUseError()
+    association = _linked_session_association(context, context._request)
+    state = association.attempt_state
+    facts = state.facts
+    if not context._busy or facts.logical_save_called:
+        raise _CredentialSessionUseError()
+    facts.logical_save_called = True
+    facts.writer_phase = "not_called"
+    facts.credential_publication = False
+    if not _annotate_linked_writer(association, "pre_writer"):
+        raise context._io_error(
+            "production_write_token_linked_diagnostic_failed",
+            "START-linked persistence diagnostics failed",
+            publication_possible=False,
+        )
+    facts.writer_phase = "call_started"
+    facts.credential_publication = None
+    try:
+        result = context._writer(token, path, expected_token=expected_token)
+    except BaseException as writer_error:
+        state.writer_error = writer_error
+        facts.writer_failure_kind = (
+            "ordinary" if isinstance(writer_error, Exception) else "cancellation"
+        )
+        facts.writer_phase = "raised"
+        if not isinstance(writer_error, Exception) and state.first_cancel is None:
+            state.first_cancel = writer_error
+            facts.first_cancel_phase = "writer"
+        if isinstance(writer_error, context._io_error):
+            publication = writer_error.publication_possible
+            facts.credential_publication = publication if type(publication) is bool else None
+        _annotate_linked_writer(association, "writer_raised")
+        if state.first_cancel is not None and state.first_cancel is not writer_error:
+            _raise_linked_cancellation(state.first_cancel)
+        raise
+    facts.writer_phase = "returned"
+    facts.credential_publication = True
+    if not _annotate_linked_writer(association, "writer_returned"):
+        raise context._io_error(
+            "production_write_token_linked_diagnostic_failed",
+            "START-linked persistence diagnostics failed",
+            publication_possible=True,
+        )
+    return result
+
+
+def _prepare_start_linked_session_mock(
+    production_write_token_path: str | Path,
+    generation_state_path: str | Path,
+    production_read_token_path: str | Path,
+    test_write_token_path: str | Path,
+    target: ProductionWriteTargetConfig,
+    confirmation: str,
+    *,
+    now: datetime,
+    refresher: ProductionWriteTokenRefresher,
+    binding: records.SyntheticBinding,
+    operation: records.RecordOperation,
+) -> ProductionWriteCredentialSession:
+    """Use one retained START under a shared lock for this synthetic request."""
+    context = _start_linked_session_context(
+        production_write_token_path,
+        generation_state_path,
+        production_read_token_path,
+        test_write_token_path,
+        target,
+        confirmation,
+        now=now,
+        refresher=refresher,
+        binding=binding,
+        operation=operation,
+    )
+    parent = _bound_linked_parent(context)
+    association = _linked_session_association(context, context._request)
+    request, state, expected = association.request, association.attempt_state, association.expected
+    facts = state.facts
+    candidate: ProductionWriteCredentialSession | None = None
+    try:
+        with parent:
+            records._create_linked_start(parent, request, expected_parent=parent, expected=expected)
+            try:
+                with records._linked_session_phase(
+                    parent, request, expected_parent=parent, expected=expected
+                ) as child:
+                    owner = _issue_start_linked_session_owner(context, child)
+                    try:
+                        candidate = _load_production_write_credential_session_held(owner, request)
+                    except BaseException as error:
+                        state.session_body_triple = (type(error), error, error.__traceback__)
+                        if isinstance(error, Exception):
+                            if state.primary is None:
+                                state.primary = error
+                                facts.first_ordinary_domain = "session"
+                                facts.session_failure = records._SessionFailureClass.SESSION_OTHER
+                        elif state.first_cancel is None:
+                            state.first_cancel = error
+                            facts.first_cancel_phase = "session"
+                        step: records._DiagnosticStep = "initial"
+                        try:
+                            records._copy_linked_failure_annotations(
+                                parent, request, expected_parent=parent, expected=expected
+                            )
+                            if isinstance(error, Exception) and state.primary is error:
+                                step = "classification"
+                                classification = _classify_linked_session_failure(error)
+                                facts.session_failure = classification
+                                step = "refinement"
+                                records._copy_linked_failure_annotations(
+                                    parent,
+                                    request,
+                                    expected_parent=parent,
+                                    expected=expected,
+                                    classification=classification,
+                                )
+                        except Exception:
+                            records._mark_linked_diagnostic_failure(facts, step, "ordinary")
+                        except BaseException as diagnostic:
+                            if state.first_cancel is None:
+                                state.first_cancel = diagnostic
+                                facts.first_cancel_phase = "annotation"
+                            records._mark_linked_diagnostic_failure(facts, step, "cancellation")
+                        if state.first_cancel is not None and state.first_cancel is not error:
+                            _raise_linked_cancellation(state.first_cancel)
+                        raise
+                    facts.candidate_constructed = True
+                    try:
+                        records._note_linked_candidate(
+                            parent, request, expected_parent=parent, expected=expected
+                        )
+                    except BaseException as diagnostic:
+                        if isinstance(diagnostic, Exception):
+                            state.primary = diagnostic
+                            facts.first_ordinary_domain = "diagnostic"
+                            records._mark_linked_diagnostic_failure(facts, "candidate", "ordinary")
+                        else:
+                            if state.first_cancel is None:
+                                state.first_cancel = diagnostic
+                                facts.first_cancel_phase = "annotation"
+                            records._mark_linked_diagnostic_failure(
+                                facts, "candidate", "cancellation"
+                            )
+                        raise
+            except BaseException as error:
+                # A failing phase exit may arrive after the body already retained its failure.
+                if state.phase_exit_triple is None or state.phase_exit_triple[1] is not error:
+                    state.phase_exit_triple = (type(error), error, error.__traceback__)
+                    if error is not state.primary and error is not state.first_cancel:
+                        facts.phase_exit_failure = (
+                            "ordinary" if isinstance(error, Exception) else "cancellation"
+                        )
+                    if isinstance(error, Exception):
+                        if state.primary is None:
+                            state.primary = error
+                            facts.first_ordinary_domain = "phase_exit"
+                    elif state.first_cancel is None:
+                        state.first_cancel = error
+                        facts.first_cancel_phase = "phase_exit"
+                raise
+            records._final_linked_checkpoint(
+                parent, request, expected_parent=parent, expected=expected
+            )
+    except BaseException:
+        candidate = None
+        raise
+    if candidate is None:
+        raise _CredentialSessionUseError()
+    return candidate
 
 
 __all__ = [
