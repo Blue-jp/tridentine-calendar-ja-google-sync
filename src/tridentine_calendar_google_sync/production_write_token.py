@@ -1303,7 +1303,7 @@ def prepare_production_write_rehearsal_credential_session(
     *,
     now: datetime,
 ) -> ProductionWriteCredentialSession:
-    """Load provider-evidenced credentials; live refresh remains unavailable."""
+    """Temporarily refuse provider session preparation pending managed admission."""
 
     from tridentine_calendar_google_sync.production_write_token_rehearsal import (
         verify_production_write_token_rehearsal_confirmation,
@@ -1311,15 +1311,9 @@ def prepare_production_write_rehearsal_credential_session(
 
     validate_production_write_target_config(target)
     verify_production_write_token_rehearsal_confirmation(target, confirmation)
-    return _load_production_write_credential_session(
-        production_write_token_path,
-        generation_state_path,
-        production_read_token_path,
-        test_write_token_path,
-        target,
-        now=now,
-        evidence_mode="provider",
-        refresher=None,
+    raise ProductionWriteTokenConfigError(
+        "production_write_token_provider_session_enforcement_unavailable",
+        "Production write-token provider session preparation is unavailable",
     )
 
 

@@ -9,14 +9,17 @@ from __future__ import annotations
 import ast
 import copy
 import pickle
+import socket
 import sys
 import threading
+import webbrowser
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import FrameType, TracebackType
-from typing import Literal
+from types import FrameType, ModuleType, TracebackType
+from typing import Literal, NoReturn
 
 import pytest
 import test_credential_session_lock_phase6d1h as lock_guards
@@ -28,6 +31,7 @@ from phase6d0_auth_helpers import FakeRefresher, oauth_credentials
 
 from tridentine_calendar_google_sync import production_write_token as tokens
 from tridentine_calendar_google_sync import production_write_token_io as token_io
+from tridentine_calendar_google_sync.production_write_target import ProductionWriteTargetPolicyError
 from tridentine_calendar_google_sync.production_write_token_models import (
     PRODUCTION_WRITE_SCOPES,
     ProductionWriteAuthorizedUserToken,
@@ -200,32 +204,38 @@ def _public(
     pair: _Scenario,
     refresher: FakeRefresher | None = None,
     *,
-    provider: bool = False,
     now: datetime = memory.NOW,
     confirmation: str | None = None,
 ) -> ProductionWriteCredentialSession:
+    """Exercise the real public mock wrapper."""
     phrase = pair.confirmation if confirmation is None else confirmation
-    if provider:
-        result = tokens.prepare_production_write_rehearsal_credential_session(
-            memory.TOKEN_PATH,
-            memory.STATE_PATH,
-            memory.READ_PATH,
-            memory.TEST_PATH,
-            pair.target,
-            phrase,
-            now=now,
-        )
-    else:
-        result = tokens.prepare_production_write_rehearsal_credential_session_mock(
-            memory.TOKEN_PATH,
-            memory.STATE_PATH,
-            memory.READ_PATH,
-            memory.TEST_PATH,
-            pair.target,
-            phrase,
-            now=now,
-            refresher=refresher,
-        )
+    result = tokens.prepare_production_write_rehearsal_credential_session_mock(
+        memory.TOKEN_PATH,
+        memory.STATE_PATH,
+        memory.READ_PATH,
+        memory.TEST_PATH,
+        pair.target,
+        phrase,
+        now=now,
+        refresher=refresher,
+    )
+    assert pair.active is None
+    pair.note("session_return")
+    return result
+
+
+def _private_provider(pair: _Scenario) -> ProductionWriteCredentialSession:
+    """Exercise the private legacy loader's provider-origin behavior."""
+    result = tokens._load_production_write_credential_session(
+        memory.TOKEN_PATH,
+        memory.STATE_PATH,
+        memory.READ_PATH,
+        memory.TEST_PATH,
+        pair.target,
+        now=memory.NOW,
+        evidence_mode="provider",
+        refresher=None,
+    )
     assert pair.active is None
     pair.note("session_return")
     return result
@@ -277,7 +287,296 @@ def _provider_token(pair: _Scenario) -> None:
     pair.old_token = pair.token
 
 
-@pytest.mark.parametrize("mode", ("test_unexpired", "test_refreshed", "provider"))
+_PUBLIC_REFUSAL_CODE = "production_write_token_provider_session_enforcement_unavailable"
+_PUBLIC_REFUSAL_MESSAGE = "Production write-token provider session preparation is unavailable"
+
+# This finite monitor covers the named entry points only. It is not an I/O sandbox.
+_PUBLIC_REFUSAL_EFFECTS = (
+    (tokens, "_load_production_write_credential_session"),
+    (tokens, "_credential_session_scope"),
+    (tokens, "_is_utc"),
+    (token_io, "validate_production_write_token_path_set"),
+    (tokens, "_prepare_start_linked_session_mock"),
+    (tokens, "_start_linked_session_context"),
+    (tokens.records, "create_start_record"),
+    (tokens.records, "read_start_record"),
+    (tokens.records, "_create_linked_start"),
+    (tokens, "_production_write_session_lock"),
+    (tokens.records.private_lock, "acquire_posix_private_directory_lock"),
+    (token_io, "load_production_write_authorized_user_token"),
+    (token_io, "load_production_write_token_generation_state"),
+    (tokens, "authorize_production_write_token"),
+    (tokens, "authorize_production_write_token_mock"),
+    (tokens, "load_desktop_client_config"),
+    (FakeRefresher, "refresh"),
+    (_Refresher, "refresh"),
+    (token_io, "persist_refreshed_production_write_token"),
+    (token_io, "write_production_write_authorized_user_token"),
+    (token_io, "write_production_write_token_generation_state"),
+    (token_io, "write_production_write_token_bundle"),
+    (tokens, "ProductionWriteCredentialSession"),
+    (tokens._CredentialSessionScopeContext, "__exit__"),
+    (tokens._CredentialSessionScopeContext, "_exit_owned_context"),
+    (tokens.records._RecordScopeContext, "__exit__"),
+    (tokens.records, "_finalize_linked_scope"),
+    (token_io, "remove_sensitive_file_if_matches"),
+    (socket, "socket"),
+    (socket, "create_connection"),
+    (socket, "getaddrinfo"),
+    (webbrowser, "open"),
+    (webbrowser, "open_new"),
+    (webbrowser, "open_new_tab"),
+    (webbrowser, "get"),
+)
+
+
+class _PublicRefusalEffect(BaseException):
+    """Sentinel for crossing a monitored downstream boundary."""
+
+
+class _PublicRefusalPath:
+    def __init__(self) -> None:
+        self.effects: Counter[str] = Counter()
+
+    def _stop(self, name: str) -> NoReturn:
+        self.effects[name] += 1
+        raise _PublicRefusalEffect(name)
+
+    def __fspath__(self) -> str:
+        self._stop("__fspath__")
+
+    def __str__(self) -> str:
+        self._stop("__str__")
+
+    def __repr__(self) -> str:
+        self._stop("__repr__")
+
+    def __format__(self, _format_spec: str) -> str:
+        self._stop("__format__")
+
+
+def _public_refusal_effect_name(owner: ModuleType | type[object], name: str) -> str:
+    return f"{owner.__name__}.{name}"
+
+
+def _install_public_refusal_effects(patch: pytest.MonkeyPatch) -> Counter[str]:
+    effects: Counter[str] = Counter()
+
+    def blocked(label: str) -> Callable[..., NoReturn]:
+        def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+            effects[label] += 1
+            raise _PublicRefusalEffect(label)
+
+        return refuse
+
+    for owner, name in _PUBLIC_REFUSAL_EFFECTS:
+        patch.setattr(owner, name, blocked(_public_refusal_effect_name(owner, name)))
+    return effects
+
+
+def test_public_provider_refusal_monitor_calibrates_and_restores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    originals = tuple(getattr(owner, name) for owner, name in _PUBLIC_REFUSAL_EFFECTS)
+    delegated = 0
+
+    def delegation_probe(*_args: object, **_kwargs: object) -> None:
+        nonlocal delegated
+        delegated += 1
+
+    with monkeypatch.context() as delegates:
+        for owner, name in _PUBLIC_REFUSAL_EFFECTS:
+            delegates.setattr(owner, name, delegation_probe)
+        with delegates.context() as isolated:
+            effects = _install_public_refusal_effects(isolated)
+            for owner, name in _PUBLIC_REFUSAL_EFFECTS:
+                label = _public_refusal_effect_name(owner, name)
+                with pytest.raises(_PublicRefusalEffect) as caught:
+                    getattr(owner, name)()
+                assert caught.value.args == (label,)
+            assert effects == Counter(
+                _public_refusal_effect_name(owner, name) for owner, name in _PUBLIC_REFUSAL_EFFECTS
+            )
+            assert all(count == 1 for count in effects.values())
+        assert all(
+            getattr(owner, name) is delegation_probe for owner, name in _PUBLIC_REFUSAL_EFFECTS
+        )
+    assert delegated == 0
+    assert all(
+        getattr(owner, name) is original
+        for (owner, name), original in zip(_PUBLIC_REFUSAL_EFFECTS, originals, strict=True)
+    )
+
+    path = _PublicRefusalPath()
+    for convert in (Path, str, repr, format):
+        with pytest.raises(_PublicRefusalEffect):
+            convert(path)
+    assert path.effects == Counter({"__fspath__": 1, "__str__": 1, "__repr__": 1, "__format__": 1})
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "unexpired",
+        "expired",
+        "unsafe_path",
+        "absent_path",
+        "naive_now",
+        "non_utc_now",
+        "path_probe",
+    ),
+)
+def test_public_provider_refuses_without_downstream_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    pair = _Scenario(expired=case == "expired")
+    _provider_token(pair)
+    marker = "synthetic-refusal-secret-marker"
+    pair.token = pair.token.model_copy(update={"access_token": marker})
+    pair.old_token = pair.token
+    probe = _PublicRefusalPath()
+    paths = (memory.TOKEN_PATH, memory.STATE_PATH, memory.READ_PATH, memory.TEST_PATH)
+    now = memory.NOW
+    if case == "unsafe_path":
+        paths = (f"../{marker}\x00", *paths[1:])
+    elif case == "absent_path":
+        paths = (f"synthetic-absent/{marker}/token.json", *paths[1:])
+    elif case == "naive_now":
+        now = now.replace(tzinfo=None)
+    elif case == "non_utc_now":
+        now = now.astimezone(timezone(timedelta(hours=1)))
+    elif case == "path_probe":
+        paths = (probe, probe, probe, probe)
+
+    with monkeypatch.context() as isolated:
+        effects = _install_public_refusal_effects(isolated)
+        for _ in range(2):
+            with pytest.raises(tokens.ProductionWriteTokenConfigError) as caught:
+                tokens.prepare_production_write_rehearsal_credential_session(
+                    *paths, pair.target, pair.confirmation, now=now
+                )
+            assert type(caught.value) is tokens.ProductionWriteTokenConfigError
+            assert caught.value.code == _PUBLIC_REFUSAL_CODE
+            assert caught.value.public_message == str(caught.value) == _PUBLIC_REFUSAL_MESSAGE
+            assert marker not in str(caught.value)
+            assert pair.confirmation not in str(caught.value)
+            assert all(path not in str(caught.value) for path in paths if isinstance(path, str))
+        assert not effects
+        assert not probe.effects
+    assert pair.token is pair.old_token and pair.state is pair.original_state
+
+
+@pytest.mark.parametrize(
+    ("target_valid", "confirmation_valid"),
+    ((False, True), (True, False), (False, False), (True, True)),
+    ids=("invalid_target", "invalid_confirmation", "both_invalid", "both_valid"),
+)
+def test_public_provider_preserves_target_then_confirmation_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    target_valid: bool,
+    confirmation_valid: bool,
+) -> None:
+    pair = _Scenario()
+    target = (
+        pair.target
+        if target_valid
+        else pair.target.model_copy(update={"target_environment": "synthetic-invalid"})
+    )
+    confirmation = pair.confirmation if confirmation_valid else f"{pair.confirmation} "
+    path = _PublicRefusalPath()
+    wrapper_order: list[str] = []
+    real_target = tokens.validate_production_write_target_config
+    real_confirmation = memory.rehearsal.verify_production_write_token_rehearsal_confirmation
+
+    # These aliases record the wrapper's calls, while both validators run their real bodies.
+    def validate_target(value: tokens.ProductionWriteTargetConfig) -> str:
+        wrapper_order.append("target")
+        return real_target(value)
+
+    def verify_confirmation(value: tokens.ProductionWriteTargetConfig, phrase: str) -> None:
+        wrapper_order.append("confirmation")
+        real_confirmation(value, phrase)
+
+    if not target_valid:
+        expected_type = ProductionWriteTargetPolicyError
+        expected_code = "production_write_target_policy_mismatch"
+        expected_message = "Production write target policy verification failed"
+        expected_order = ["target"]
+    elif not confirmation_valid:
+        expected_type = memory.rehearsal.ProductionWriteTokenRehearsalError
+        expected_code = "production_rehearsal_confirmation_mismatch"
+        expected_message = "Production write-token read-only confirmation did not match"
+        expected_order = ["target", "confirmation"]
+    else:
+        expected_type = tokens.ProductionWriteTokenConfigError
+        expected_code = _PUBLIC_REFUSAL_CODE
+        expected_message = _PUBLIC_REFUSAL_MESSAGE
+        expected_order = ["target", "confirmation"]
+
+    with monkeypatch.context() as isolated:
+        effects = _install_public_refusal_effects(isolated)
+        isolated.setattr(tokens, "validate_production_write_target_config", validate_target)
+        isolated.setattr(
+            memory.rehearsal,
+            "verify_production_write_token_rehearsal_confirmation",
+            verify_confirmation,
+        )
+        with pytest.raises(expected_type) as caught:
+            tokens.prepare_production_write_rehearsal_credential_session(
+                path, path, path, path, target, confirmation, now=memory.NOW
+            )
+        assert type(caught.value) is expected_type
+        assert caught.value.code == expected_code
+        assert caught.value.public_message == str(caught.value) == expected_message
+        assert wrapper_order == expected_order
+        assert not effects
+        assert not path.effects
+
+
+def test_public_provider_refusal_preserves_signature_export_and_wrapper_shape() -> None:
+    assert tokens.__file__ is not None
+    tree = ast.parse(Path(tokens.__file__).read_text(encoding="utf-8"))
+    name = "prepare_production_write_rehearsal_credential_session"
+    wrapper = _function(tree, name)
+    expected = _function(
+        ast.parse(
+            """
+def prepare_production_write_rehearsal_credential_session(
+    production_write_token_path: str | Path,
+    generation_state_path: str | Path,
+    production_read_token_path: str | Path,
+    test_write_token_path: str | Path,
+    target: ProductionWriteTargetConfig,
+    confirmation: str,
+    *,
+    now: datetime,
+) -> ProductionWriteCredentialSession:
+    from tridentine_calendar_google_sync.production_write_token_rehearsal import (
+        verify_production_write_token_rehearsal_confirmation,
+    )
+    validate_production_write_target_config(target)
+    verify_production_write_token_rehearsal_confirmation(target, confirmation)
+    raise ProductionWriteTokenConfigError(
+        "production_write_token_provider_session_enforcement_unavailable",
+        "Production write-token provider session preparation is unavailable",
+    )
+"""
+        ),
+        name,
+    )
+    assert ast.dump(wrapper.args) == ast.dump(expected.args)
+    assert wrapper.returns is not None and expected.returns is not None
+    assert ast.dump(wrapper.returns) == ast.dump(expected.returns)
+    assert not wrapper.decorator_list and not wrapper.type_params
+    assert ast.get_docstring(wrapper)
+    assert [ast.dump(node) for node in wrapper.body[1:]] == [
+        ast.dump(node) for node in expected.body
+    ]
+    assert tokens.__all__.count(name) == 1
+
+
+@pytest.mark.parametrize("mode", ("test_unexpired", "test_refreshed"))
 def test_public_paths_retain_real_construction_and_exact_checkpoint_order(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
@@ -285,10 +584,8 @@ def test_public_paths_retain_real_construction_and_exact_checkpoint_order(
 ) -> None:
     pair = _Scenario(expired=mode == "test_refreshed")
     refresher = _Refresher(pair)
-    if mode == "provider":
-        _provider_token(pair)
     with _installed(monkeypatch, pair):
-        session = _public(pair, refresher, provider=mode == "provider")
+        session = _public(pair, refresher)
     assert type(session) is ProductionWriteCredentialSession
     assert session.generation_state is pair.original_state
     assert session.refresh_count == int(mode == "test_refreshed")
@@ -344,26 +641,77 @@ def test_public_paths_retain_real_construction_and_exact_checkpoint_order(
     )
 
 
-@pytest.mark.parametrize(
-    "mode", ("expired_provider", "provider_test_evidence", "test_provider_evidence")
-)
-def test_evidence_modes_and_provider_no_refresh_remain_closed(
+def test_private_provider_retains_real_construction_and_exact_checkpoint_order(
+    monkeypatch: pytest.MonkeyPatch,
+    record_property: Callable[[str, object], None],
+) -> None:
+    pair = _Scenario()
+    _provider_token(pair)
+    with _installed(monkeypatch, pair):
+        session = _private_provider(pair)
+    assert type(session) is ProductionWriteCredentialSession
+    assert session.generation_state is pair.original_state
+    assert session.refresh_count == 0
+    assert session.token is pair.old_token
+    assert _events(pair) == (
+        "explicit_call",
+        "path_check",
+        "lock_create",
+        "lock_enter",
+        "state_read",
+        "token_read",
+        "checkpoint",
+        "checkpoint",
+        "constructor",
+        "lock_exit_normal",
+        "session_return",
+    )
+    assert pair.active is None and len(pair.exit_details) == 1
+    assert pair.exit_details[0] == (None, None, None)
+    assert session.calendar_api_call_count == session.browser_fallback_count == 0
+    record_property(
+        "owned_body_evidence",
+        {
+            "scope": "MEMORY_ONLY",
+            "mode": "private_provider",
+            "counts": pair.counts(1),
+            "constructors": _events(pair).count("constructor"),
+            "native_checkpoint_measured": False,
+        },
+    )
+
+
+@pytest.mark.parametrize("mode", ("expired_provider", "provider_test_evidence"))
+def test_private_provider_evidence_and_no_refresh_remain_closed(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
     pair = _Scenario(expired=mode == "expired_provider")
-    if mode != "provider_test_evidence":
+    if mode == "expired_provider":
         _provider_token(pair)
+    with (
+        _installed(monkeypatch, pair),
+        pytest.raises(tokens.ProductionWriteTokenError) as caught,
+    ):
+        _private_provider(pair)
+    if mode == "expired_provider":
+        assert caught.value.code == "production_write_token_refresh_unavailable"
+    else:
+        assert caught.value.code == "production_write_token_grant_evidence_origin_mismatch"
+    assert _events(pair).count("refresh") == _events(pair).count("save") == 0
+    assert _events(pair).count("constructor") == _events(pair).count("session_return") == 0
+
+
+def test_public_mock_rejects_provider_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    pair = _Scenario()
+    _provider_token(pair)
     refresher = _Refresher(pair)
     with (
         _installed(monkeypatch, pair),
         pytest.raises(tokens.ProductionWriteTokenError) as caught,
     ):
-        _public(pair, refresher, provider=mode != "test_provider_evidence")
-    if mode == "expired_provider":
-        assert caught.value.code == "production_write_token_refresh_unavailable"
-    else:
-        assert caught.value.code == "production_write_token_grant_evidence_origin_mismatch"
+        _public(pair, refresher)
+    assert caught.value.code == "production_write_token_grant_evidence_origin_mismatch"
     assert _events(pair).count("refresh") == _events(pair).count("save") == 0
     assert _events(pair).count("constructor") == _events(pair).count("session_return") == 0
 
