@@ -15,7 +15,7 @@ from enum import StrEnum
 from os import getpid
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Literal, NoReturn, Protocol
+from typing import TYPE_CHECKING, Literal, NoReturn, Protocol, final
 
 from tridentine_calendar_google_sync import production_write_token_operation_record as records
 from tridentine_calendar_google_sync.google_auth import load_desktop_client_config
@@ -1946,6 +1946,267 @@ def _prepare_start_linked_session_mock(
     if candidate is None:
         raise _CredentialSessionUseError()
     return candidate
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _BoundMockRehearsalSnapshot:
+    binding: records.SyntheticBinding
+    operation: records.RecordOperation
+    production_write_token_path: Path
+    generation_state_path: Path
+    production_read_token_path: Path
+    test_write_token_path: Path
+    target: ProductionWriteTargetConfig
+    target_hash: str
+    confirmation: str
+
+
+def _invalid_bound_mock_provider() -> ProductionWriteTokenConfigError:
+    return ProductionWriteTokenConfigError(
+        "production_rehearsal_bound_provider_use_invalid",
+        "Bound synthetic rehearsal provider use is invalid",
+    )
+
+
+@final
+class _BoundMockRehearsalSessionProvider(_NoCredentialSessionCopy):
+    """Fixture-configured admission for one synthetic rehearsal pair."""
+
+    __slots__ = (
+        "_active",
+        "_factory_identity",
+        "_make_refresher",
+        "_now_utc",
+        "_pid",
+        "_snapshot",
+        "_thread",
+        "refresh_attempt_count",
+    )
+    _active: bool
+    _factory_identity: _BoundMockRehearsalSessionProvider
+    _make_refresher: Callable[[], ProductionWriteTokenRefresher]
+    _now_utc: Callable[[], datetime]
+    _pid: int
+    _snapshot: _BoundMockRehearsalSnapshot
+    _thread: threading.Thread
+    refresh_attempt_count: int
+    mock_only: Literal[True] = True
+    live_capable: Literal[False] = False
+    browser_launch_count: Literal[0] = 0
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise _invalid_bound_mock_provider()
+
+    def __setattr__(self, _name: str, _value: object) -> NoReturn:
+        raise _invalid_bound_mock_provider()
+
+    def __delattr__(self, _name: str) -> NoReturn:
+        raise _invalid_bound_mock_provider()
+
+    def _require_initialized(self) -> None:
+        try:
+            valid = (
+                type(self) is _BoundMockRehearsalSessionProvider
+                and self._factory_identity is self
+                and type(self._snapshot) is _BoundMockRehearsalSnapshot
+                and type(self._pid) is int
+                and isinstance(self._thread, threading.Thread)
+                and type(self._active) is bool
+                and type(self.refresh_attempt_count) is int
+                and self.refresh_attempt_count in (0, 1)
+                and callable(self._now_utc)
+                and callable(self._make_refresher)
+            )
+        except AttributeError:
+            raise _invalid_bound_mock_provider() from None
+        if not valid:
+            raise _invalid_bound_mock_provider()
+
+    def load_session(
+        self, *, target: ProductionWriteTargetConfig
+    ) -> ProductionWriteCredentialSession:
+        self._require_initialized()
+        if (
+            self._pid != getpid()
+            or self._thread is not threading.current_thread()
+            or not self._thread.is_alive()
+            or self._active
+        ):
+            raise _invalid_bound_mock_provider()
+        if type(target) is not ProductionWriteTargetConfig:
+            raise _invalid_bound_mock_provider()
+        validate_production_write_target_config(target)
+        snapshot = self._snapshot
+        if not hmac.compare_digest(
+            calculate_production_write_target_hash(target), snapshot.target_hash
+        ):
+            raise ProductionWriteTokenConfigError(
+                "production_rehearsal_bound_target_mismatch",
+                "Bound synthetic rehearsal target does not match",
+            )
+
+        try:
+            object.__setattr__(self, "_active", True)
+            object.__setattr__(self, "refresh_attempt_count", 0)
+            now = self._now_utc()
+            refresher = _BoundMockRehearsalRefresher(self._make_refresher(), self)
+            return _prepare_start_linked_session_mock(
+                snapshot.production_write_token_path,
+                snapshot.generation_state_path,
+                snapshot.production_read_token_path,
+                snapshot.test_write_token_path,
+                snapshot.target,
+                snapshot.confirmation,
+                now=now,
+                refresher=refresher,
+                binding=snapshot.binding,
+                operation=snapshot.operation,
+            )
+        finally:
+            object.__setattr__(self, "_active", False)
+
+
+@final
+class _BoundMockRehearsalRefresher:
+    """Count dispatch while letting the held loader inspect the actual fake."""
+
+    _forwarded = frozenset(
+        (
+            "mock_only",
+            "live_capable",
+            "browser_fallback_count",
+            "refresh_attempt_count",
+            "calendar_api_call_count",
+        )
+    )
+    if TYPE_CHECKING:
+        mock_only: Literal[True]
+        live_capable: Literal[False]
+        browser_fallback_count: Literal[0]
+        refresh_attempt_count: int
+        calendar_api_call_count: int
+
+    def __init__(
+        self,
+        refresher: ProductionWriteTokenRefresher,
+        provider: _BoundMockRehearsalSessionProvider,
+    ) -> None:
+        try:
+            counts = (
+                refresher.browser_fallback_count,
+                refresher.refresh_attempt_count,
+                refresher.calendar_api_call_count,
+            )
+            valid = (
+                refresher.mock_only is True
+                and refresher.live_capable is False
+                and all(type(count) is int and count == 0 for count in counts)
+                and callable(refresher.refresh)
+            )
+        except AttributeError:
+            raise _invalid_bound_mock_provider() from None
+        if not valid:
+            raise _invalid_bound_mock_provider()
+        self._refresher = refresher
+        self._provider = provider
+
+    def __getattr__(self, name: str) -> object:
+        if name in self._forwarded:
+            return getattr(self._refresher, name)
+        raise AttributeError(name)
+
+    def refresh(
+        self,
+        token: ProductionWriteAuthorizedUserToken,
+        scopes: tuple[str, ...],
+    ) -> ProductionWriteOAuthCredentials:
+        refresh = self._refresher.refresh
+        object.__setattr__(self._provider, "refresh_attempt_count", 1)
+        return refresh(token, scopes)
+
+
+def _bind_mock_rehearsal_session_provider(
+    *,
+    binding: records.SyntheticBinding,
+    operation: records.RecordOperation,
+    production_write_token_path: Path,
+    generation_state_path: Path,
+    production_read_token_path: Path,
+    test_write_token_path: Path,
+    target: ProductionWriteTargetConfig,
+    confirmation: str,
+    now_utc: Callable[[], datetime],
+    make_refresher: Callable[[], ProductionWriteTokenRefresher],
+) -> _BoundMockRehearsalSessionProvider:
+    from tridentine_calendar_google_sync.production_write_token_rehearsal import (
+        verify_production_write_token_rehearsal_confirmation,
+    )
+
+    paths = (
+        production_write_token_path,
+        generation_state_path,
+        production_read_token_path,
+        test_write_token_path,
+    )
+    if (
+        not all(records._valid_directory(path) for path in paths)
+        or len(set(paths)) != len(paths)
+        or any(path.name.casefold() == records.RECORD_LEAF.casefold() for path in paths)
+        or not records._valid_linked_layout(
+            records._LinkedExpected(
+                binding, operation, production_write_token_path, generation_state_path
+            )
+        )
+        or production_write_token_path.parent.parts != binding.directory.parts
+        or generation_state_path.parent.parts != binding.directory.parts
+        or not callable(now_utc)
+        or not callable(make_refresher)
+        or type(target) is not ProductionWriteTargetConfig
+        or type(confirmation) is not str
+    ):
+        raise _invalid_bound_mock_provider()
+    validate_production_write_target_config(target)
+    retained_target = ProductionWriteTargetConfig(
+        schema_version=target.schema_version,
+        target_environment=target.target_environment,
+        target_label=target.target_label,
+        target_purpose=target.target_purpose,
+        calendar_id=target.calendar_id,
+        expected_target_fingerprint=target.expected_target_fingerprint,
+        expected_summary=target.expected_summary,
+        expected_access_role=target.expected_access_role,
+        expected_time_zone=target.expected_time_zone,
+    )
+    verify_production_write_token_rehearsal_confirmation(retained_target, confirmation)
+    snapshot = _BoundMockRehearsalSnapshot(
+        binding=records.SyntheticBinding(
+            binding.directory,
+            binding.storage_ref,
+            binding.pair_ref,
+            binding.token_slot,
+            binding.state_slot,
+        ),
+        operation=records.RecordOperation(
+            operation.operation_id, operation.predecessor_id, operation.kind
+        ),
+        production_write_token_path=production_write_token_path,
+        generation_state_path=generation_state_path,
+        production_read_token_path=production_read_token_path,
+        test_write_token_path=test_write_token_path,
+        target=retained_target,
+        target_hash=calculate_production_write_target_hash(retained_target),
+        confirmation=confirmation,
+    )
+    provider = object.__new__(_BoundMockRehearsalSessionProvider)
+    object.__setattr__(provider, "_snapshot", snapshot)
+    object.__setattr__(provider, "_now_utc", now_utc)
+    object.__setattr__(provider, "_make_refresher", make_refresher)
+    object.__setattr__(provider, "_pid", getpid())
+    object.__setattr__(provider, "_thread", threading.current_thread())
+    object.__setattr__(provider, "_active", False)
+    object.__setattr__(provider, "refresh_attempt_count", 0)
+    object.__setattr__(provider, "_factory_identity", provider)
+    return provider
 
 
 __all__ = [

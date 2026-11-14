@@ -30,6 +30,7 @@ from tridentine_calendar_google_sync.production_write_target import (
 )
 from tridentine_calendar_google_sync.production_write_token import (
     ProductionWriteTokenRefreshError,
+    _BoundMockRehearsalSessionProvider,
     _verify_mock_production_write_authorized_user_token,
     validate_production_token_role,
     validate_production_write_scopes,
@@ -740,7 +741,7 @@ def run_production_write_token_readonly_rehearsal_mock(
 ) -> ProductionWriteTokenRehearsalOutcome:
     """Invoke credentials and fake client only after exact read confirmation."""
 
-    validate_production_write_target_config(target)
+    target_fingerprint = validate_production_write_target_config(target)
     context = _Context(
         target_safe_ref=production_write_target_reference(target),
         token_role="production_write",
@@ -759,6 +760,15 @@ def run_production_write_token_readonly_rehearsal_mock(
             credential_session_provider,
             transport_provider,
         )
+        if type(credential_session_provider) is _BoundMockRehearsalSessionProvider:
+            _verify_manifest_source(manifest, accepted_profile, accepted_source)
+            _verify_baseline_provenance(
+                trusted_baseline,
+                target_fingerprint,
+                manifest,
+                accepted_profile,
+                accepted_source,
+            )
         session = credential_session_provider.load_session(target=target)
     except ProductionWriteTokenRefreshError as exc:
         context.refresh_count = credential_session_provider.refresh_attempt_count
