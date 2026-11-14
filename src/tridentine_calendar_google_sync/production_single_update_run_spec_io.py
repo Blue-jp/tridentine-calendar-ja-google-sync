@@ -10,6 +10,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from tridentine_calendar_google_sync._private_create_io import (
+    PrivateCreateIOError,
+    create_private_text,
+)
 from tridentine_calendar_google_sync.production_single_update_run_spec import (
     ProductionSingleUpdateRunSpecError,
     private_production_single_update_run_spec_data,
@@ -21,7 +25,6 @@ from tridentine_calendar_google_sync.production_single_update_run_spec_models im
 )
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
-    atomic_write_private_text,
     read_sensitive_bytes,
 )
 
@@ -30,6 +33,12 @@ MAX_PRODUCTION_SINGLE_UPDATE_RUN_SPEC_BYTES = 4 * 1024 * 1024
 
 class ProductionSingleUpdateRunSpecIOError(ProductionSingleUpdateRunSpecError):
     """A content-free Production Run Spec parse or path failure."""
+
+    def __init__(
+        self, code: str, public_message: str, *, publication_possible: bool | None = None
+    ) -> None:
+        super().__init__(code, public_message)
+        self.publication_possible = publication_possible
 
 
 class _DuplicateJsonKey(ValueError):
@@ -184,7 +193,7 @@ def write_production_single_update_run_spec(
     *,
     now: datetime | None = None,
 ) -> Path:
-    """Atomically create one private Run Spec without overwrite."""
+    """Create one private Run Spec; preserve uncertain-publication errors without retry."""
 
     rendered = render_production_single_update_run_spec_json(
         run_spec,
@@ -192,18 +201,21 @@ def write_production_single_update_run_spec(
         require_current=True,
     )
     try:
-        atomic_write_private_text(
+        create_private_text(
             path,
             rendered,
-            overwrite=False,
             max_size=MAX_PRODUCTION_SINGLE_UPDATE_RUN_SPEC_BYTES,
         )
         return Path(path)
-    except SensitivePathError as exc:
+    except PrivateCreateIOError as exc:
+        message = "Production Single Update Run Spec could not be written safely."
+        if exc.publication_possible is not False:
+            message += " Output may exist; do not retry or remove it automatically."
         raise ProductionSingleUpdateRunSpecIOError(
             "production_single_update_run_spec_write_failed",
-            "Production Single Update Run Spec could not be written safely",
-        ) from exc
+            message,
+            publication_possible=exc.publication_possible,
+        ) from None
 
 
 __all__ = [

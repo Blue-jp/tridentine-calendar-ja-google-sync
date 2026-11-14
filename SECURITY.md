@@ -1,7 +1,7 @@
 # Security Policy
 
-Credentialsやtokenをpublic issue、Pull Request、commit、logへ貼り付けないでください。
+Do not post credentials or tokens in public issues, pull requests, commits, or logs.
 
-Calendar IDやprivate iCal URLを公開しないでください。誤ってcommitまたは公開した場合は、該当credentialやtokenの利用を直ちに停止し、必要なcredential rotationを行ってください。
+Do not publicly disclose Calendar IDs or private iCal URLs. If any credential or token is accidentally committed or otherwise exposed publicly, stop using the affected credential or token immediately and perform any necessary credential rotation.
 
-Security issueを報告する際も、秘密値そのものは送信せず、秘密情報を除いた再現手順と影響だけを共有してください。
+When reporting a security issue, do not include the secret values themselves. Share only reproduction steps and impact information with all sensitive information removed.

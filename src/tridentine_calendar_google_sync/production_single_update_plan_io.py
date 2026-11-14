@@ -9,6 +9,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from tridentine_calendar_google_sync._private_create_io import (
+    PrivateCreateIOError,
+    create_private_text,
+)
 from tridentine_calendar_google_sync.production_single_update_plan import (
     ProductionSingleUpdatePlanError,
     private_production_single_update_plan_data,
@@ -19,7 +23,6 @@ from tridentine_calendar_google_sync.production_single_update_plan_models import
 )
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
-    atomic_write_private_text,
     read_sensitive_bytes,
 )
 
@@ -28,6 +31,12 @@ MAX_PRODUCTION_SINGLE_UPDATE_PLAN_BYTES = 4 * 1024 * 1024
 
 class ProductionSingleUpdatePlanIOError(ProductionSingleUpdatePlanError):
     """A content-free Production Plan parse or path failure."""
+
+    def __init__(
+        self, code: str, public_message: str, *, publication_possible: bool | None = None
+    ) -> None:
+        super().__init__(code, public_message)
+        self.publication_possible = publication_possible
 
 
 class _DuplicateJsonKey(ValueError):
@@ -130,22 +139,25 @@ def write_production_single_update_plan(
     plan: ProductionSingleUpdatePlan,
     path: str | Path,
 ) -> Path:
-    """Atomically create one private Plan without overwrite."""
+    """Create one private Plan; preserve uncertain-publication errors without retry."""
 
     rendered = render_production_single_update_plan_json(plan)
     try:
-        atomic_write_private_text(
+        create_private_text(
             path,
             rendered,
-            overwrite=False,
             max_size=MAX_PRODUCTION_SINGLE_UPDATE_PLAN_BYTES,
         )
         return Path(path)
-    except SensitivePathError as exc:
+    except PrivateCreateIOError as exc:
+        message = "Production Single Update Plan could not be written safely."
+        if exc.publication_possible is not False:
+            message += " Output may exist; do not retry or remove it automatically."
         raise ProductionSingleUpdatePlanIOError(
             "production_single_update_plan_write_failed",
-            "Production Single Update Plan could not be written safely",
-        ) from exc
+            message,
+            publication_possible=exc.publication_possible,
+        ) from None
 
 
 __all__ = [
