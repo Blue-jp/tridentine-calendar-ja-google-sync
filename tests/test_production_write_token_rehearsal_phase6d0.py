@@ -12,9 +12,12 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 import test_token_start_linked_session_phase6d1h as linked_tests
+from jsonschema import Draft202012Validator
+from jsonschema import ValidationError as JSONSchemaValidationError
 from phase6b_helpers import build_production_snapshot
 from phase6d0_auth_helpers import ISSUED_AT, production_token
 from phase6d0_rehearsal_helpers import (
@@ -22,6 +25,7 @@ from phase6d0_rehearsal_helpers import (
     build_rehearsal_artifacts,
     run_rehearsal,
 )
+from pydantic import ValidationError
 
 from tridentine_calendar_google_sync import (
     google_auth,
@@ -70,13 +74,16 @@ from tridentine_calendar_google_sync.production_write_token_rehearsal_io import 
 )
 from tridentine_calendar_google_sync.production_write_token_rehearsal_models import (
     ProductionWriteTokenReadOnlyTransport,
+    ProductionWriteTokenRehearsalReport,
     ProductionWriteTokenRehearsalResultState,
+    ProductionWriteTokenRehearsalSnapshot,
 )
 from tridentine_calendar_google_sync.production_write_token_rehearsal_report import (
     render_production_write_token_rehearsal_report_json,
     render_production_write_token_rehearsal_report_text,
     render_production_write_token_rehearsal_snapshot_json,
     verify_production_write_token_rehearsal_report,
+    verify_production_write_token_rehearsal_snapshot,
 )
 from tridentine_calendar_google_sync.production_write_token_rehearsal_transport import (
     FakeProductionWriteCredentialSessionProvider,
@@ -1667,3 +1674,438 @@ def test_bound_bridge_has_one_linked_call_and_keeps_exact_gates_and_order() -> N
         and node.value == "production_write_token_provider_session_enforcement_unavailable"
         for node in ast.walk(public)
     )
+
+
+@pytest.fixture
+def rehearsal_report_scratch(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
+    with TemporaryDirectory(
+        prefix="rehearsal-retry-", dir=tmp_path_factory.getbasetemp()
+    ) as directory:
+        yield Path(directory)
+
+
+@pytest.fixture(scope="module")
+def saved_rehearsal_report_schema() -> dict[str, object]:
+    path = (
+        Path(__file__).parent.parent
+        / "schemas"
+        / "production-write-token-readonly-rehearsal-report-v1.schema.json"
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_saved_rehearsal_report_schema_is_draft_2020_valid(
+    saved_rehearsal_report_schema: dict[str, object],
+) -> None:
+    Draft202012Validator.check_schema(saved_rehearsal_report_schema)
+
+
+def _rehearsal_retry_errors(
+    codes: tuple[str, ...],
+) -> dict[int, ProductionWriteTokenRehearsalTransportError]:
+    return {
+        index: ProductionWriteTokenRehearsalTransportError(
+            code, retryable=code in {"server_503", "server_502"}
+        )
+        for index, code in enumerate(codes, start=1)
+    }
+
+
+def _assert_retry_report_output(
+    artifacts: RehearsalArtifacts,
+    outcome: ProductionWriteTokenRehearsalOutcome,
+    schema: dict[str, object],
+) -> None:
+    report, snapshot = outcome.report, outcome.snapshot
+    verify_production_write_token_rehearsal_report(report, snapshot)
+    rendered = render_production_write_token_rehearsal_report_json(report, snapshot)
+    document = json.loads(rendered)
+    try:
+        Draft202012Validator(schema).validate(document)
+    except JSONSchemaValidationError as error:
+        pytest.fail(
+            f"Saved rehearsal schema rejected instance at {tuple(error.path)} ({error.validator})",
+            pytrace=False,
+        )
+
+    reread = ProductionWriteTokenRehearsalReport.model_validate_json(rendered)
+    assert reread == report
+    snapshot_text = ""
+    reread_snapshot = None
+    if snapshot is not None:
+        verify_production_write_token_rehearsal_snapshot(snapshot)
+        snapshot_text = render_production_write_token_rehearsal_snapshot_json(snapshot)
+        reread_snapshot = ProductionWriteTokenRehearsalSnapshot.model_validate_json(snapshot_text)
+        assert reread_snapshot == snapshot
+    verify_production_write_token_rehearsal_report(reread, reread_snapshot)
+
+    text = render_production_write_token_rehearsal_report_text(report, snapshot)
+    assert f"get calls: {report.get_call_count}" in text.splitlines()
+    assert document["get_call_count"] == report.get_call_count
+    assert document["read_retry_count"] == report.read_retry_count
+    assert document["safe_code"] == report.safe_code
+
+    target = artifacts.inputs.target
+    token = artifacts.session.token
+    event = min(
+        artifacts.inputs.snapshot.events,
+        key=lambda candidate: (
+            candidate.safe_ical_uid_reference or "",
+            candidate.safe_event_reference,
+        ),
+    )
+    forbidden = (
+        target.calendar_id,
+        target.expected_target_fingerprint,
+        token.access_token,
+        token.refresh_token,
+        token.client_secret,
+        event.event_id,
+        event.etag,
+        event.ical_uid,
+        event.summary,
+        event.description,
+    )
+    visibly_redacted = all(
+        value not in output
+        for value in forbidden
+        if value
+        for output in (rendered, snapshot_text, text)
+    )
+    assert visibly_redacted
+
+
+@pytest.mark.parametrize(
+    ("page_sizes", "list_errors", "get_errors", "counts", "result_state", "safe_code"),
+    (
+        pytest.param(
+            (4,),
+            (),
+            (),
+            (2, 1, 1, 0),
+            ProductionWriteTokenRehearsalResultState.READY,
+            None,
+            id="normal",
+        ),
+        pytest.param(
+            (4,),
+            (),
+            ("server_503",),
+            (3, 1, 2, 1),
+            ProductionWriteTokenRehearsalResultState.READY,
+            None,
+            id="get-retry-success",
+        ),
+        pytest.param(
+            (4,),
+            (),
+            ("server_503", "server_502"),
+            (3, 1, 2, 1),
+            ProductionWriteTokenRehearsalResultState.TRANSPORT_FAILED,
+            "server_502",
+            id="get-retry-failure",
+        ),
+        pytest.param(
+            (4,),
+            (),
+            ("permission_denied",),
+            (2, 1, 1, 0),
+            ProductionWriteTokenRehearsalResultState.INPUT_BINDING_MISMATCH,
+            "permission_denied",
+            id="get-terminal-failure",
+        ),
+        pytest.param(
+            (4,),
+            ("server_503",),
+            ("server_503",),
+            (3, 2, 1, 1),
+            ProductionWriteTokenRehearsalResultState.TRANSPORT_FAILED,
+            "server_503",
+            id="list-retry-uses-budget",
+        ),
+        pytest.param(
+            (1, 1, 1, 1),
+            (),
+            ("server_503",),
+            (5, 4, 1, 1),
+            ProductionWriteTokenRehearsalResultState.API_CALL_LIMIT_EXCEEDED,
+            "api_call_limit_exceeded",
+            id="get-retry-at-call-cap",
+        ),
+        pytest.param(
+            (4,),
+            ("server_503", "server_502"),
+            (),
+            (2, 2, 0, 1),
+            ProductionWriteTokenRehearsalResultState.TRANSPORT_FAILED,
+            "server_502",
+            id="list-retry-stops-before-get",
+        ),
+    ),
+)
+def test_get_retry_wrapper_reports_actual_attempts(
+    rehearsal_report_scratch: Path,
+    saved_rehearsal_report_schema: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    page_sizes: tuple[int, ...],
+    list_errors: tuple[str, ...],
+    get_errors: tuple[str, ...],
+    counts: tuple[int, int, int, int],
+    result_state: ProductionWriteTokenRehearsalResultState,
+    safe_code: str | None,
+) -> None:
+    artifacts = build_rehearsal_artifacts(
+        rehearsal_report_scratch,
+        page_sizes=page_sizes,
+        list_failures=_rehearsal_retry_errors(list_errors),
+        get_failures=_rehearsal_retry_errors(get_errors),
+    )
+    transport = artifacts.transport
+    original_get = FakeProductionWriteTokenReadOnlyTransport.get_event
+    selected = min(
+        artifacts.inputs.snapshot.events,
+        key=lambda event: (event.safe_ical_uid_reference or "", event.safe_event_reference),
+    )
+    observed_get_targets: list[bool] = []
+
+    def observe_get(self, *, event_id: str, token_role: str):
+        observed_get_targets.append(
+            self is transport and event_id == selected.event_id and token_role == "production_write"
+        )
+        return original_get(self, event_id=event_id, token_role=token_role)
+
+    try:
+        with monkeypatch.context() as local:
+            local.setattr(FakeProductionWriteTokenReadOnlyTransport, "get_event", observe_get)
+            outcome = run_rehearsal(artifacts)
+    finally:
+        assert FakeProductionWriteTokenReadOnlyTransport.get_event is original_get
+
+    report = outcome.report
+    assert (
+        report.calendar_api_call_count,
+        report.list_call_count,
+        report.get_call_count,
+        report.read_retry_count,
+    ) == counts
+    _, list_calls, get_calls, _ = counts
+    assert transport.list_raw_calls == list_calls
+    assert transport.get_raw_calls == get_calls
+    assert transport.call_log == ("events.list",) * list_calls + ("events.get",) * get_calls
+    assert observed_get_targets == [True] * get_calls
+    assert artifacts.credential_provider.load_count == artifacts.transport_provider.build_count == 1
+    assert report.rehearsal_client_construction_count == 1
+    assert report.mutation_call_count == transport.mutation_raw_calls == 0
+    assert report.result_state is result_state and report.safe_code == safe_code
+    ready = result_state is ProductionWriteTokenRehearsalResultState.READY
+    assert (outcome.snapshot is not None) is ready
+    assert report.get_performed is (get_calls > 0)
+    assert report.get_verified is ready
+    if ready:
+        assert (
+            report.baseline_cross_binding and report.snapshot_complete and report.source_zero_diff
+        )
+        assert outcome.snapshot is not None and outcome.snapshot.event_count == 4
+    _assert_retry_report_output(artifacts, outcome, saved_rehearsal_report_schema)
+
+
+def test_get_retry_does_not_accept_a_mismatched_event(
+    rehearsal_report_scratch: Path, saved_rehearsal_report_schema: dict[str, object]
+) -> None:
+    artifacts = build_rehearsal_artifacts(rehearsal_report_scratch)
+    snapshot = artifacts.inputs.snapshot
+    expected = min(
+        snapshot.events,
+        key=lambda event: (event.safe_ical_uid_reference or "", event.safe_event_reference),
+    )
+    pages = paginate_production_write_token_rehearsal_snapshot(
+        snapshot, (4,), target_summary=artifacts.inputs.target.expected_summary
+    )
+    transport = FakeProductionWriteTokenReadOnlyTransport(
+        collections=(pages,),
+        get_events=(expected.model_copy(update={"description": "Mismatched fresh description"}),),
+        get_failures=_rehearsal_retry_errors(("server_503",)),
+    )
+    provider = FakeProductionWriteTokenReadOnlyTransportProvider(transport)
+    artifacts = replace(artifacts, transport=transport, transport_provider=provider)
+    outcome = run_rehearsal(artifacts)
+    report = outcome.report
+    assert report.result_state is ProductionWriteTokenRehearsalResultState.GET_VERIFICATION_FAILED
+    assert report.safe_code == "production_rehearsal_get_verification_failed"
+    assert outcome.snapshot is None
+    assert report.get_performed and not report.get_verified
+    assert (
+        report.calendar_api_call_count,
+        report.list_call_count,
+        report.get_call_count,
+        report.read_retry_count,
+    ) == (3, 1, 2, 1)
+    assert transport.list_raw_calls == 1 and transport.get_raw_calls == 2
+    assert transport.call_log == ("events.list", "events.get", "events.get")
+    assert artifacts.credential_provider.load_count == provider.build_count == 1
+    assert report.rehearsal_client_construction_count == 1
+    assert transport.mutation_raw_calls == report.mutation_call_count == 0
+    _assert_retry_report_output(artifacts, outcome, saved_rehearsal_report_schema)
+
+
+def _retry_report_model_errors(error: ValidationError) -> list[tuple[tuple, str]]:
+    return [
+        (item["loc"], item["type"])
+        for item in error.errors(include_input=False, include_context=False, include_url=False)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("changes", "model_location", "model_error", "schema_location", "schema_keyword"),
+    (
+        pytest.param(
+            {"read_retry_count": 0},
+            (),
+            "value_error",
+            ("read_retry_count",),
+            "const",
+            id="two-gets-without-retry",
+        ),
+        pytest.param(
+            {"get_call_count": 3, "calendar_api_call_count": 4},
+            ("get_call_count",),
+            "less_than_equal",
+            ("get_call_count",),
+            "maximum",
+            id="three-gets",
+        ),
+        pytest.param(
+            {"get_call_count": -1, "calendar_api_call_count": 0, "get_performed": False},
+            ("get_call_count",),
+            "greater_than_equal",
+            ("get_call_count",),
+            "minimum",
+            id="negative-get",
+        ),
+        pytest.param(
+            {"get_call_count": 1, "calendar_api_call_count": 2, "read_retry_count": 2},
+            ("read_retry_count",),
+            "less_than_equal",
+            ("read_retry_count",),
+            "maximum",
+            id="two-retries",
+        ),
+        pytest.param(
+            {"list_call_count": 4, "calendar_api_call_count": 6},
+            ("calendar_api_call_count",),
+            "less_than_equal",
+            ("calendar_api_call_count",),
+            "maximum",
+            id="six-api-calls",
+        ),
+        pytest.param(
+            {"unexpected_field": 0},
+            ("unexpected_field",),
+            "extra_forbidden",
+            (),
+            "additionalProperties",
+            id="unknown-field",
+        ),
+    ),
+)
+def test_get_retry_report_model_and_saved_schema_reject_invalid_counts(
+    rehearsal_report_scratch: Path,
+    saved_rehearsal_report_schema: dict[str, object],
+    changes: dict[str, object],
+    model_location: tuple[str, ...],
+    model_error: str,
+    schema_location: tuple[str, ...],
+    schema_keyword: str,
+) -> None:
+    artifacts = build_rehearsal_artifacts(
+        rehearsal_report_scratch, get_failures=_rehearsal_retry_errors(("server_503", "server_502"))
+    )
+    outcome = run_rehearsal(artifacts)
+    report = outcome.report
+    assert report.result_state is ProductionWriteTokenRehearsalResultState.TRANSPORT_FAILED
+    assert report.get_call_count == 2 and report.read_retry_count == 1
+    with pytest.raises(ValidationError) as rejected_model:
+        ProductionWriteTokenRehearsalReport.model_validate(report.model_dump() | changes)
+    assert _retry_report_model_errors(rejected_model.value) == [(model_location, model_error)]
+
+    document = json.loads(render_production_write_token_rehearsal_report_json(report))
+    errors = list(
+        Draft202012Validator(saved_rehearsal_report_schema).iter_errors(document | changes)
+    )
+    assert [(tuple(error.path), error.validator) for error in errors] == [
+        (schema_location, schema_keyword)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("report_kind", "changes", "expected_message"),
+    (
+        pytest.param(
+            "stopped-get",
+            {"calendar_api_call_count": 4},
+            "Production rehearsal API counts are invalid",
+            id="api-count-sum",
+        ),
+        pytest.param(
+            "stopped-list",
+            {"get_verified": True},
+            "Production rehearsal get state is invalid",
+            id="verified-get-not-performed",
+        ),
+        pytest.param(
+            "stopped-get",
+            {"get_performed": False},
+            "Production rehearsal get count is invalid",
+            id="performed-get-count",
+        ),
+        pytest.param(
+            "ready",
+            {"source_zero_diff": False},
+            "Ready Production rehearsal is incompletely verified",
+            id="ready-needs-verification",
+        ),
+        pytest.param(
+            "ready",
+            {"safe_code": "permission_denied"},
+            "Ready Production rehearsal contains a finding",
+            id="ready-no-safe-code",
+        ),
+        pytest.param(
+            "ready",
+            {"privacy_findings": ("synthetic_finding",)},
+            "Ready Production rehearsal contains a finding",
+            id="ready-no-privacy-finding",
+        ),
+        pytest.param(
+            "stopped-get",
+            {"safe_code": None},
+            "Stopped Production rehearsal requires a safe code",
+            id="stopped-needs-safe-code",
+        ),
+    ),
+)
+def test_get_retry_report_preserves_model_terminal_invariants(
+    rehearsal_report_scratch: Path,
+    report_kind: str,
+    changes: dict[str, object],
+    expected_message: str,
+) -> None:
+    artifacts = build_rehearsal_artifacts(
+        rehearsal_report_scratch,
+        list_failures=(
+            _rehearsal_retry_errors(("server_503", "server_502"))
+            if report_kind == "stopped-list"
+            else {}
+        ),
+        get_failures=_rehearsal_retry_errors(
+            ("server_503", "server_502") if report_kind == "stopped-get" else ("server_503",)
+        ),
+    )
+    report = run_rehearsal(artifacts).report
+    assert report.read_retry_count == 1
+    assert report.get_call_count == (0 if report_kind == "stopped-list" else 2)
+    with pytest.raises(ValidationError) as rejected:
+        ProductionWriteTokenRehearsalReport.model_validate(report.model_dump() | changes)
+    issues = rejected.value.errors(include_input=False, include_context=False, include_url=False)
+    assert [(item["loc"], item["type"]) for item in issues] == [((), "value_error")]
+    assert issues[0]["msg"] == f"Value error, {expected_message}"

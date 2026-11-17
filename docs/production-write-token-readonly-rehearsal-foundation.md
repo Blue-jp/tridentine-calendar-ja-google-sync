@@ -63,7 +63,7 @@ The safe target reference is derived from a validated Production target config; 
 The dedicated rehearsal boundary exposes only:
 
 - `list_events`, implementing complete unfiltered `events.list` pagination; and
-- `get_event`, implementing one deterministic fresh `events.get`.
+- `get_event`, verifying one deterministically selected managed event with at most two `events.get` attempts for that same event.
 
 It does not return a generic Google service or events resource. Patch, import, insert, update, delete, move, watch, batch, ACL, CalendarList mutation, and Calendar clear are absent. In particular, Phase 6C `patch_description` is not imported into or reachable from the live rehearsal layer.
 
@@ -81,7 +81,9 @@ The Google Event ID is resolved from the fresh snapshot in memory and the ETag r
 
 ## API budget and retry policy
 
-The rehearsal raw Calendar API hard maximum is 5. The nominal two-page full snapshot plus one get uses 3 calls; one-, two-, and three-page collections use 2, 3, and 4 calls respectively. At most one bounded read retry is allowed, and a predicted sixth call is rejected before transport use.
+The rehearsal raw Calendar API hard maximum is 5. One-, two-, and three-page collections with a single GET use 2, 3, and 4 calls respectively. List and GET share one retry slot. A sixth call is rejected before the transport is invoked.
+
+The report counts actual transport attempts. Two GET attempts require `read_retry_count` to be 1. The retry count records consumption of the shared slot, so it can be 1 with zero or one GET attempt. This includes a list retry or a retry that consumes the slot and then hits the total call limit.
 
 Only 429, rate-limit 403, and 500/502/503 read failures are retryable. Permission 403, 400, 404, 410, target mismatch, Baseline mismatch, Source diff, and malformed responses are terminal. No mutation method or mutation retry exists in this layer.
 
@@ -165,3 +167,50 @@ failed pairs gain no persistent recovery marker. Standalone writers, reconciliat
 noncooperating changes, directory replacement and filesystem/durability boundaries
 remain separate work. DS-04 remains PARTIAL and all live hard-offs remain in force.
 See [POSIX private-artifact security](posix-private-artifact-security.md).
+
+## GET retry report accounting correction
+
+On 2026-11-17 JST, the user approved recording up to two actual GET attempts for one selected event, with one shared list/GET retry slot and five total transport calls. The fixed starting HEAD was `ec3ec6a8fc1b7e288522217de6699c88f410d766`.
+
+The preceding diagnosis is inherited evidence. It comprised six stored-result fake cases and four supplemental executions of the existing control bodies, for ten successful observations. In that diagnosis, both two-GET paths escaped report construction with a Pydantic `ValidationError` at `get_call_count` (`less_than_equal`). One path had verified the event and reached READY report construction. The other had reached a stop report with the second transport error. The original Windows `tmp_path` pytest nodes were outside the supplemental execution.
+
+The model and saved Draft 2020-12 Schema now allow GET counts from zero through two and require a retry count of one when GET is two. The retained API budget and retry counters describe actual transport attempts and shared retry slot consumption, respectively. The wrapper, read and retry logic, fake transport, renderer, hashes, and credential preparation and ownership paths retain their existing implementation.
+
+The tracked review covered the model, renderer, Schema, schema-related tests, and build configuration. The build configuration includes the Schema in the source distribution and wheel. No runtime loader for this specific Schema, dedicated existing instance test, mandatory version bump rule, or in-repository consumer contract requiring the old cap was identified in that scope. The v1 Schema filename, `schema_version`, `report_type`, and `$id` are preserved. Readers pinned to the old model or Schema can reject the newly representable count of two. External consumers were outside the review.
+
+Windows Python 3.12.14 resolved the package to this worktree. Installed versions matched `uv.lock`, including pytest 8.4.2, pytest-socket 0.8.1, Pydantic 2.13.4, jsonschema 4.26.0, Ruff 0.16.4, and mypy 1.20.2. Pytest used the existing strict settings and socket guard, Python `-B`, and the disabled cache provider.
+
+| Execution | Collected | Passed | Failed | Errors | Skipped | Deselected | Exit |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Before A and B changed, normal and both two-GET nodes | 3 | 1 | 2 | 0 | 0 | 0 | 1 |
+| Final new production-write pytest nodes | 87 | 22 | 0 | 0 | 0 | 65 | 0 |
+| Existing production-write pytest nodes | 17 | 17 | 0 | 0 | 0 | 0 | 0 |
+| Existing base guards | 2 | 2 | 0 | 0 | 0 | 0 | 0 |
+| Supplemental executions of existing test bodies | 27 | 27 | 0 | 0 | 0 | 0 | 0 |
+
+In the before-change run, the normal control passed and the two expected report-return cases failed at the original model limit. The final real wrapper cases gave the following counts. Each loaded the provider and built the fake once, with zero mutations.
+
+| Scenario | API / list / GET / retry | Report |
+| --- | --- | --- |
+| Normal | 2 / 1 / 1 / 0 | READY with snapshot |
+| GET retry succeeds | 3 / 1 / 2 / 1 | READY with verified event and bound snapshot |
+| Both GET attempts fail | 3 / 1 / 2 / 1 | TRANSPORT_FAILED with the second code, `server_502` |
+| Non-retryable GET | 2 / 1 / 1 / 0 | INPUT_BINDING_MISMATCH with `permission_denied` |
+| List consumes retry before GET failure | 3 / 2 / 1 / 1 | TRANSPORT_FAILED with `server_503` |
+| GET retry hits the five-call cap | 5 / 4 / 1 / 1 | API_CALL_LIMIT_EXCEEDED with `api_call_limit_exceeded` |
+
+The mismatched event after a retry stopped with GET_VERIFICATION_FAILED. A list failure after the shared retry produced a stopped report with GET zero and retry one. The real two-GET success and stop outputs passed saved-Schema validation, JSON and model reread, report hash and snapshot binding checks where applicable, and text rendering with the actual count. The tests separately checked the Schema itself, sensitive-value exclusion, invalid count combinations and unknown fields in both validators, and the retained terminal invariants in the model.
+
+The 17 existing production-write nodes covered two existing structural or monitor cases, public provider refusal, the CLI, and wiring and privacy. The two base guards covered the generic schema/privacy scan and rehearsal CLI hard-off.
+
+The 27 supplemental cases delegated to three parameter sets of the original pagination test definition, the original list retry test body, and 23 fail-closed cases from a separate test file under the production marker and socket guard. They received fresh ordinary scratch paths in place of requesting the Windows ACL-adjusting pytest fixture. They were collected as supplemental nodes, not direct executions of the original pytest nodes.
+
+Of the original 65 cases in `tests/test_production_write_token_rehearsal_phase6d0.py`, two were executed directly and four through supplemental nodes: the three pagination parameter sets and the list retry case. These were six distinct original cases; the remaining 59 were not executed for this correction. The 23 fail-closed cases in the separate file were included in the 27 supplemental executions, not in those six cases. The new-test-only run's 65 deselected cases describe that run's selection, not the total unexecuted scope.
+
+The two private report-output cases and the native and independent-process probes remained outside the executed scope. The broader private-storage and full regression suites were also not run.
+
+Individual output lines and pytest display IDs for the two CLI help parameter sets and the 27 supplemental cases were not obtained. Their identification relies on the saved selectors or harness records, fixed definitions, and aggregate execution results; this is not direct individual-node log evidence. No execution counts have been revised.
+
+Ruff lint, repository format check (290 files), strict mypy for the changed module and all 124 source files, and direct JSON Schema checks passed. Synthetic ICS fixture generation, reading, and cleanup stayed within fresh test-owned scratch. Credential and START storage, private report publication, and real Google operations were outside the exercised path.
+
+Run 43541737935 attempt 1 and comment 6916607308 are inherited evidence for the preceding connection change. They do not cover this correction. DS-04 remains PARTIAL. The Historical Deep Security Scan remains INCOMPLETE, the separate 47194b0 scan remains FAIL, Production remains BLOCKED, live handlers remain hard-off, and the registry remains empty and fail-closed.

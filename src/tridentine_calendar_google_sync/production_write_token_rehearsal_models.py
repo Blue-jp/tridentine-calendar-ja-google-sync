@@ -163,7 +163,8 @@ class ProductionWriteTokenRehearsalReport(StrictFrozenModel):
         le=PRODUCTION_REHEARSAL_API_CALL_HARD_MAXIMUM,
     )
     list_call_count: int = Field(ge=0, le=PRODUCTION_REHEARSAL_API_CALL_HARD_MAXIMUM)
-    get_call_count: int = Field(ge=0, le=1)
+    # Count actual GET attempts for the single selected event.
+    get_call_count: int = Field(ge=0, le=2)
     read_retry_count: int = Field(ge=0, le=PRODUCTION_REHEARSAL_READ_RETRY_MAXIMUM)
     mutation_call_count: Literal[0] = 0
     target_metadata_verified: bool
@@ -201,6 +202,8 @@ class ProductionWriteTokenRehearsalReport(StrictFrozenModel):
             raise ValueError("Production rehearsal get state is invalid")
         if self.get_performed != (self.get_call_count > 0):
             raise ValueError("Production rehearsal get count is invalid")
+        if self.get_call_count == 2 and self.read_retry_count != 1:
+            raise ValueError("Production rehearsal get retry count is invalid")
         if self.result_state is ProductionWriteTokenRehearsalResultState.READY:
             if not all(
                 (
