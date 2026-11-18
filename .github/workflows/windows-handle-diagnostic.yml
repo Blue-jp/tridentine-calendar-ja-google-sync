@@ -106,7 +106,7 @@ jobs:
             $start.RedirectStandardOutput = $true
             $start.RedirectStandardError = $true
             foreach ($argument in @(
-              '-B','-m','pytest','-vv','-rP','--tb=short','-p','no:cacheprovider',
+              '-B','-m','pytest','-vv','-rP','--tb=short','--color=no','-p','no:cacheprovider',
               '-m','not google_read and not google_test_write and not google_production_write',
               '--basetemp',$scratch,$node
             )) {
@@ -140,28 +140,85 @@ jobs:
             $safeAggregates = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
             $nodeResults = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
             $nodePrefix = [regex]::Escape($node).Replace('/', '[\\/]')
-            $comparisonFailed = $false
+            $targetName = [regex]::Escape(($node -split '::', 2)[1])
+            $targetHeader = '^_+[ \t]+' + $targetName + '[ \t]+_+[ \t]*$'
+            $targetFrame = '^tests[\\/]test_windows_sensitive_files_phase6d1f\.py:([1-9][0-9]{0,5}): in ' + $targetName + '[ \t]*$'
+            $capturedBoundary = '^-{3,}[ \t]+Captured (?:stdout|stderr|log) (?:setup|call|teardown)[ \t]+-{3,}[ \t]*$'
+            $shortSummaryBoundary = '^={3,}[ \t]+short test summary info[ \t]+={3,}[ \t]*$'
+            $endSummaryBoundary = '^={3,}[ \t]+(?:[0-9]+ (?:deselected|warnings?), )*1 failed(?:, [0-9]+ (?:deselected|warnings?))*[ \t]+in [0-9]+(?:\.[0-9]+)?s(?:[ \t]+\([0-9:]+\))?[ \t]+={3,}[ \t]*$'
+            $targetLines = [Collections.Generic.HashSet[int]]::new()
+            $failureSection = $false
+            $targetTraceback = $false
+            $targetBlocks = 0
+            $finalFrameSeen = $false
+            $targetClosed = $false
+            $candidateLines = 0
+            $rejectedLines = 0
             foreach ($line in ($captured -split '\r?\n')) {
-              if ($line.Length -le 1500 -and $line -cmatch $pattern) {
-                $null = $safeAggregates.Add($line)
+              if ($line.StartsWith('handle_diagnostic', [StringComparison]::Ordinal)) {
+                $candidateLines++
+                if ($line.Length -le 1500 -and $line -cmatch $pattern) {
+                  $null = $safeAggregates.Add($line)
+                } else {
+                  $rejectedLines++
+                }
               }
               if ($line -cmatch ("^$nodePrefix[ \t]+(PASSED|FAILED|SKIPPED|ERROR)(?:[ \t]+\[[ \t]*[0-9]+%\])?[ \t]*$")) {
                 $null = $nodeResults.Add($Matches[1])
               }
-              if ($line -cmatch '^[ \t]*>?[ \t]*assert after == before[ \t]*$') {
-                $comparisonFailed = $true
+
+              if ($line -cmatch '^={3,}.*={3,}[ \t]*$') {
+                if ($targetTraceback -and $finalFrameSeen -and
+                    ($line -cmatch $shortSummaryBoundary -or $line -cmatch $endSummaryBoundary)) {
+                  $targetClosed = $true
+                }
+                $failureSection = $line -cmatch '^={3,}[ \t]+FAILURES[ \t]+={3,}[ \t]*$'
+                $targetTraceback = $false
+              } elseif ($failureSection -and $line -cmatch '^_+[ \t]+.+[ \t]+_+[ \t]*$') {
+                $targetTraceback = $line -cmatch $targetHeader
+                if ($targetTraceback) {
+                  $targetBlocks++
+                  $finalFrameSeen = $false
+                  $targetClosed = $false
+                }
+              } elseif ($targetTraceback -and $line -cmatch $capturedBoundary) {
+                $targetClosed = $finalFrameSeen
+                $targetTraceback = $false
+              } elseif ($targetTraceback -and $line -cmatch '^(?:The above exception was the direct cause of the following exception|During handling of the above exception, another exception occurred):[ \t]*$') {
+                $finalFrameSeen = $false
+              } elseif ($targetTraceback -and $line -cmatch $targetFrame) {
+                $null = $targetLines.Add([int]$Matches[1])
+                $finalFrameSeen = $true
               }
             }
-            if ($nodeResults.Count -eq 1) {
-              foreach ($item in $nodeResults) { Publish-Safe "node_result=$item" }
-            } else {
-              Publish-Safe 'node_result=unobserved'
+
+            $nodeResult = if ($nodeResults.Count -eq 1) { @($nodeResults)[0] } else { 'unobserved' }
+            Publish-Safe "node_result=$nodeResult"
+            $stage = 'unknown'
+            if ($pytestExit -eq 0 -and $nodeResult -ceq 'PASSED' -and $targetBlocks -eq 0) {
+              $stage = 'not_failed'
+            } elseif ($pytestExit -eq 1 -and $nodeResult -ceq 'FAILED' -and
+                      $targetBlocks -eq 1 -and $targetClosed -and $targetLines.Count -eq 1) {
+              # Line map for the fixed diagnostic commit.
+              $number = @($targetLines)[0]
+              $stage = switch ($number) {
+                645 { 'initial_path_validation' }
+                764 { 'loop_path_validation' }
+                770 { 'handle_count_comparison' }
+                { $_ -ge 788 -and $_ -le 806 } { 'post_comparison_checks' }
+                default { 'unknown' }
+              }
             }
-            if ($comparisonFailed) { Publish-Safe 'comparison_assertion_failed=1' }
+            Publish-Safe "failure_stage=$stage"
+            if ($stage -ceq 'handle_count_comparison') { Publish-Safe 'comparison_assertion_failed=1' }
+
+            $capture = if ($candidateLines -eq 0) { 'no_candidate' }
+              elseif ($safeAggregates.Count -eq 0) { 'format_mismatch' }
+              elseif ($safeAggregates.Count -eq 1) { 'safe_aggregate' }
+              else { 'conflicting_aggregates' }
+            Publish-Safe "diagnostic_capture=$capture candidate_lines=$candidateLines rejected_lines=$rejectedLines"
             if ($safeAggregates.Count -eq 1) {
               foreach ($item in $safeAggregates) { Publish-Safe $item }
-            } else {
-              Publish-Safe "diagnostic_records=$($safeAggregates.Count)"
             }
             exit $pytestExit
           } catch {
