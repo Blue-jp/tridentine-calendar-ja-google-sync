@@ -1,0 +1,174 @@
+name: Windows handle lifecycle diagnostic
+
+on:
+  push:
+    branches:
+      - diagnostic/windows-handle-lifecycle-20261119
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: Windows handle lifecycle diagnostic
+    if: github.run_attempt == 1
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify checkout
+        shell: pwsh
+        run: |
+          $actual = @(& git rev-parse HEAD 2>&1) -join ''
+          if ($LASTEXITCODE -ne 0 -or $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$' -or $actual -cne $env:GITHUB_SHA) {
+            throw 'Checkout verification failed.'
+          }
+          Write-Output "checkout_sha=$actual"
+
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+
+      - name: Install fixed base dependencies
+        shell: pwsh
+        env:
+          DIAGNOSTIC_PYTHON: ${{ steps.python.outputs.python-path }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $null = & uv sync --frozen --extra dev --python $env:DIAGNOSTIC_PYTHON --no-python-downloads 2>&1
+          $code = $LASTEXITCODE
+          Write-Output "uv_sync_exit=$code"
+          exit $code
+
+      - name: Run the Windows lifecycle node once
+        shell: pwsh
+        run: |
+          function Publish-Safe([string]$line) {
+            Write-Output $line
+            Write-Output "::notice file=tests/test_windows_sensitive_files_phase6d1f.py,title=Windows handle diagnostic::$line"
+          }
+
+          $phase = 'preflight'
+          $launched = $false
+          $pytestExit = $null
+          $process = $null
+          try {
+            $PSNativeCommandUseErrorActionPreference = $false
+            $checkout = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+            $python = Join-Path $checkout '.venv/Scripts/python.exe'
+            $v = @(& $python -B -I -S -c 'import sys; print(sys.platform, sys.implementation.name, ".".join(map(str, sys.version_info[:3])))' 2>&1)
+            if ($LASTEXITCODE -ne 0 -or ($v -join ' ').Trim() -cne 'win32 cpython 3.12.10') {
+              throw 'Python verification failed.'
+            }
+            Publish-Safe 'python=3.12.10 platform=win32 implementation=cpython'
+            if ($env:RUNNER_TEMP -notmatch '^[A-Za-z]:[\\/]' -or
+                $env:GITHUB_RUN_ID -notmatch '^[0-9]+$' -or
+                $env:GITHUB_RUN_ATTEMPT -ne '1') {
+              throw 'Scratch inputs failed validation.'
+            }
+            $temp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\','/')
+            $tempInfo = Get-Item -LiteralPath $temp -Force -ErrorAction Stop
+            if (-not $tempInfo.PSIsContainer -or
+                ($tempInfo.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw 'Scratch parent is not an ordinary directory.'
+            }
+            $checkoutPrefix = $checkout.TrimEnd('\','/') + '\'
+            $tempPrefix = $temp + '\'
+            if ($tempPrefix.StartsWith($checkoutPrefix,[StringComparison]::OrdinalIgnoreCase) -or
+                $checkoutPrefix.StartsWith($tempPrefix,[StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Scratch and checkout overlap.'
+            }
+            $scratch = [IO.Path]::GetFullPath((Join-Path $temp "handle-diagnostic-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"))
+            if ([IO.Path]::GetDirectoryName($scratch) -ine $temp) {
+              throw 'Scratch is outside runner temp.'
+            }
+            try {
+              $null = Get-Item -LiteralPath $scratch -Force -ErrorAction Stop
+              throw 'Scratch path already exists.'
+            } catch [Management.Automation.ItemNotFoundException] {
+              # The explicit basetemp must be absent before pytest starts.
+            }
+
+            $phase = 'launch'
+            $node = 'tests/test_windows_sensitive_files_phase6d1f.py::test_handle_lifecycle_has_no_net_leak_and_errors_are_redacted'
+            $start = [Diagnostics.ProcessStartInfo]::new($python)
+            $start.WorkingDirectory = $checkout
+            $start.UseShellExecute = $false
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            foreach ($argument in @(
+              '-B','-m','pytest','-vv','-rP','--tb=short','-p','no:cacheprovider',
+              '-m','not google_read and not google_test_write and not google_production_write',
+              '--basetemp',$scratch,$node
+            )) {
+              $start.ArgumentList.Add($argument)
+            }
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $start
+            if (-not $process.Start()) { throw 'Pytest launch failed.' }
+            $launched = $true
+            $out = $process.StandardOutput.ReadToEndAsync()
+            $err = $process.StandardError.ReadToEndAsync()
+            Publish-Safe 'pytest_launch_count=1'
+            $phase = 'capture'
+            $process.WaitForExit()
+            $pytestExit = $process.ExitCode
+            Publish-Safe "pytest_exit=$pytestExit"
+            $captured = $out.GetAwaiter().GetResult() + [Environment]::NewLine + $err.GetAwaiter().GetResult()
+
+            $fields = [ordered]@{
+              before='(?:[0-9]+|unavailable)'; after='(?:[0-9]+|unavailable)'; delta='(?:-?[0-9]+|unavailable)'
+              completed='[0-9]+/20'; interval_complete='(?:True|False)'; missing_api_iterations='[0-9]+'
+              required_apis_seen='(?:True|False)'; CreateFileW='[0-9]+'; OpenFileById='[0-9]+'
+              OpenProcessToken='[0-9]+'; acquired='[0-9]+'; close_calls='[0-9]+'
+              close_successes='[0-9]+'; close_failures='[0-9]+'; matched_acquisitions='[0-9]+'
+              unmatched_unambiguous_acquisitions='[0-9]+'; ambiguous_acquisitions='[0-9]+'
+              ambiguous_values='[0-9]+'; ambiguous_close_successes='[0-9]+'; ambiguous_close_failures='[0-9]+'
+              no_observed_acquisition_close_successes='[0-9]+'; no_observed_acquisition_close_failures='[0-9]+'
+              observation_errors='[0-9]+'; accounting_consistent='(?:True|False)'; verdict='(?:all_matched|unconfirmed)'
+            }
+            $pattern = '^handle_diagnostic' + (($fields.GetEnumerator() | ForEach-Object { " $($_.Key)=$($_.Value)" }) -join '') + '$'
+            $safeAggregates = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            $nodeResults = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            $nodePrefix = [regex]::Escape($node).Replace('/', '[\\/]')
+            $comparisonFailed = $false
+            foreach ($line in ($captured -split '\r?\n')) {
+              if ($line.Length -le 1500 -and $line -cmatch $pattern) {
+                $null = $safeAggregates.Add($line)
+              }
+              if ($line -cmatch ("^$nodePrefix[ \t]+(PASSED|FAILED|SKIPPED|ERROR)(?:[ \t]+\[[ \t]*[0-9]+%\])?[ \t]*$")) {
+                $null = $nodeResults.Add($Matches[1])
+              }
+              if ($line -cmatch '^[ \t]*>?[ \t]*assert after == before[ \t]*$') {
+                $comparisonFailed = $true
+              }
+            }
+            if ($nodeResults.Count -eq 1) {
+              foreach ($item in $nodeResults) { Publish-Safe "node_result=$item" }
+            } else {
+              Publish-Safe 'node_result=unobserved'
+            }
+            if ($comparisonFailed) { Publish-Safe 'comparison_assertion_failed=1' }
+            if ($safeAggregates.Count -eq 1) {
+              foreach ($item in $safeAggregates) { Publish-Safe $item }
+            } else {
+              Publish-Safe "diagnostic_records=$($safeAggregates.Count)"
+            }
+            exit $pytestExit
+          } catch {
+            if (-not $launched) { Publish-Safe 'pytest_launch_count=0' }
+            Publish-Safe "diagnostic_phase_failed=$phase"
+            if ($null -ne $pytestExit) { exit $pytestExit }
+            exit 1
+          } finally {
+            if ($null -ne $process) { $process.Dispose() }
+          }

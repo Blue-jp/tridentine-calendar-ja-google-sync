@@ -6,6 +6,7 @@ import ctypes
 import os
 import sys
 import threading
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -625,7 +626,9 @@ def test_c9_temp_acl_is_private_before_first_content_byte(safe_root: Path) -> No
     assert not temp.exists()
 
 
-def test_handle_lifecycle_has_no_net_leak_and_errors_are_redacted(safe_root: Path) -> None:
+def test_handle_lifecycle_has_no_net_leak_and_errors_are_redacted(
+    safe_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     get_handle_count = windows_files._kernel32.GetProcessHandleCount
     get_handle_count.argtypes = [
         windows_files.wintypes.HANDLE,
@@ -640,11 +643,147 @@ def test_handle_lifecycle_has_no_net_leak_and_errors_are_redacted(safe_root: Pat
 
     candidate = safe_root / "missing.txt"
     validate_sensitive_output_path(candidate)
-    before = count()
-    for _ in range(20):
-        validate_sensitive_output_path(candidate)
-    after = count()
-    assert after == before
+    acquisition_bits = {"_CreateFileW": 1, "_OpenFileById": 2, "_OpenProcessToken": 4}
+    expected_bits = sum(acquisition_bits.values())
+    acquired = dict.fromkeys(acquisition_bits, 0)
+    pending: dict[int, str] = {}
+    ambiguous_values: set[int] = set()
+    ambiguous_acquisitions = 0
+    closes: Counter[tuple[str, bool]] = Counter()
+    completed = 0
+    missing_api_iterations = 0
+    observed_bits = 0
+    observation_errors = 0
+    repetitions = 20
+    before = after = None
+    observing = False
+    test_thread = threading.get_ident()
+    token_handle_pointer = ctypes.POINTER(windows_files.wintypes.HANDLE)
+    invalid_handle = windows_files._INVALID_HANDLE_VALUE
+
+    def observe(name, native):
+        def wrapped(*args, **kwargs):
+            nonlocal ambiguous_acquisitions, observed_bits, observation_errors
+            if not observing or threading.get_ident() != test_thread:
+                return native(*args, **kwargs)
+
+            result = native(*args, **kwargs)
+            saved_error = ctypes.get_last_error()
+            try:
+                if name == "_CloseHandle":
+                    succeeded = bool(result)
+                    value = args[0]
+                    if value in ambiguous_values:
+                        group = "ambiguous"
+                    elif (group := pending.get(value)) is None:
+                        group = "no_observed_acquisition"
+                    elif succeeded:
+                        del pending[value]
+                    closes[group, succeeded] += 1
+                    return result
+
+                if name == "_OpenProcessToken":
+                    if not result:
+                        return result
+                    value = ctypes.cast(args[2], token_handle_pointer).contents.value
+                else:
+                    if result == invalid_handle:
+                        return result
+                    value = result
+                if not isinstance(value, int) or value in (0, invalid_handle):
+                    observation_errors += 1
+                    return result
+
+                acquired[name] += 1
+                observed_bits |= acquisition_bits[name]
+                if value in ambiguous_values:
+                    ambiguous_acquisitions += 1
+                elif value in pending:
+                    del pending[value]
+                    ambiguous_values.add(value)
+                    # Quarantine both lifetimes and any later reuse of this value.
+                    ambiguous_acquisitions += 2
+                else:
+                    pending[value] = name
+            except Exception:
+                observation_errors += 1
+            finally:
+                ctypes.set_last_error(saved_error)
+            return result
+
+        return wrapped
+
+    def report() -> None:
+        matched = sum(closes[name, True] for name in acquired)
+        unmatched = len(pending)
+        total_acquired = sum(acquired.values())
+        successes = sum(n for (_, ok), n in closes.items() if ok)
+        failures = sum(n for (_, ok), n in closes.items() if not ok)
+        interval_complete = before is not None and after is not None and completed == repetitions
+        required_apis_seen = completed == repetitions and missing_api_iterations == 0
+        consistent = total_acquired == matched + unmatched + ambiguous_acquisitions
+        all_matched = (
+            interval_complete
+            and required_apis_seen
+            and consistent
+            and total_acquired > 0
+            and unmatched == ambiguous_acquisitions == observation_errors == failures == 0
+        )
+        delta = after - before if before is not None and after is not None else "unavailable"
+        print(
+            "handle_diagnostic "
+            f"before={before if before is not None else 'unavailable'} "
+            f"after={after if after is not None else 'unavailable'} delta={delta} "
+            f"completed={completed}/{repetitions} interval_complete={interval_complete} "
+            f"missing_api_iterations={missing_api_iterations} "
+            f"required_apis_seen={required_apis_seen} "
+            f"CreateFileW={acquired['_CreateFileW']} OpenFileById={acquired['_OpenFileById']} "
+            f"OpenProcessToken={acquired['_OpenProcessToken']} acquired={total_acquired} "
+            f"close_calls={successes + failures} close_successes={successes} "
+            f"close_failures={failures} matched_acquisitions={matched} "
+            f"unmatched_unambiguous_acquisitions={unmatched} "
+            f"ambiguous_acquisitions={ambiguous_acquisitions} "
+            f"ambiguous_values={len(ambiguous_values)} "
+            f"ambiguous_close_successes={closes['ambiguous', True]} "
+            f"ambiguous_close_failures={closes['ambiguous', False]} "
+            f"no_observed_acquisition_close_successes={closes['no_observed_acquisition', True]} "
+            f"no_observed_acquisition_close_failures={closes['no_observed_acquisition', False]} "
+            f"observation_errors={observation_errors} accounting_consistent={consistent} "
+            f"verdict={'all_matched' if all_matched else 'unconfirmed'}"
+        )
+
+    try:
+        with monkeypatch.context() as patch:
+            for name in (*acquisition_bits, "_CloseHandle"):
+                patch.setattr(windows_files, name, observe(name, getattr(windows_files, name)))
+            before = count()
+            observing = True
+            try:
+                for _ in range(repetitions):
+                    observed_bits = 0
+                    validate_sensitive_output_path(candidate)
+                    completed += 1
+                    missing_api_iterations += int(observed_bits != expected_bits)
+            finally:
+                observing = False
+            after = count()
+        assert after == before
+    except BaseException:
+        try:
+            report()
+        except BaseException:
+            # Preserve the original exception even if diagnostic output fails.
+            pass
+        raise
+    else:
+        try:
+            report()
+        except Exception:
+            # A reporting error must not fail the original test.
+            pass
+    finally:
+        pending.clear()
+        ambiguous_values.clear()
 
     owned = windows_files._open_directory(safe_root, parent=True)
     owned.close()
