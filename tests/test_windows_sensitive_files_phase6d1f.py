@@ -501,6 +501,48 @@ def test_intermediate_ancestor_broad_rebind_authority_is_rejected(
     assert not tuple(parent.glob(".private-write-*.tmp"))
 
 
+@pytest.mark.parametrize("missing", ["owner", "dacl"])
+def test_security_info_releases_descriptor_when_output_is_missing(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    descriptor_value = 1
+    freed: list[int] = []
+    output_pointer = ctypes.POINTER(ctypes.c_void_p)
+
+    def fake_get_security_info(
+        _handle,
+        _object_type,
+        _information,
+        owner_out,
+        _group_out,
+        dacl_out,
+        _sacl_out,
+        descriptor_out,
+    ) -> int:
+        ctypes.cast(descriptor_out, output_pointer)[0] = descriptor_value
+        if missing != "owner":
+            ctypes.cast(owner_out, output_pointer)[0] = 2
+        if missing != "dacl":
+            ctypes.cast(dacl_out, output_pointer)[0] = 3
+        return 0
+
+    def fake_local_free(pointer: int) -> None:
+        freed.append(pointer)
+
+    monkeypatch.setattr(windows_files, "_GetSecurityInfo", fake_get_security_info)
+    monkeypatch.setattr(windows_files, "_LocalFree", fake_local_free)
+
+    with (
+        pytest.raises(windows_files.WindowsSensitiveFileError) as captured,
+        windows_files._security_info(0),
+    ):
+        pytest.fail("incomplete security info must not be yielded")
+
+    assert captured.value.code == "sensitive_acl_invalid"
+    assert captured.value.public_message == "sensitive access control is missing or invalid"
+    assert freed == [descriptor_value]
+
+
 def test_c3_parent_broad_write_is_rejected_before_marker(tmp_path: Path) -> None:
     parent = create_acl_directory(tmp_path / "broad-write-parent", broad_write=True)
     output = parent / "marker.txt"

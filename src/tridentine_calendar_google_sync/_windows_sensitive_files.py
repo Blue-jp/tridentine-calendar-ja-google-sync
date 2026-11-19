@@ -1185,15 +1185,14 @@ if sys.platform == "win32":
             None,
             ctypes.byref(descriptor),
         )
-        if status != 0 or not descriptor.value or not owner.value or not dacl.value:
+        descriptor_value = descriptor.value if status == 0 else None
+        if not descriptor_value:
             _fail("sensitive_acl_invalid", "sensitive access control is missing or invalid")
-        descriptor_value = descriptor.value
-        owner_value = owner.value
-        dacl_value = dacl.value
-        if descriptor_value is None or owner_value is None or dacl_value is None:
-            _fail("sensitive_acl_invalid", "sensitive access control is missing or invalid")
-        owned = _OwnedLocal(descriptor_value)
-        with owned:
+        with _OwnedLocal(descriptor_value):
+            owner_value = owner.value
+            dacl_value = dacl.value
+            if not owner_value or not dacl_value:
+                _fail("sensitive_acl_invalid", "sensitive access control is missing or invalid")
             yield owner_value, dacl_value, descriptor_value
 
     def _verify_acl_aces(
