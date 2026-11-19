@@ -4,6 +4,14 @@
   "title": "Production write-token read-only rehearsal report",
   "type": "object",
   "additionalProperties": false,
+  "if": {
+    "required": ["get_call_count"],
+    "properties": {"get_call_count": {"const": 2}}
+  },
+  "then": {
+    "required": ["read_retry_count"],
+    "properties": {"read_retry_count": {"const": 1}}
+  },
   "required": [
     "schema_version",
     "report_type",
@@ -64,7 +72,7 @@
     "rehearsal_client_construction_count": {"type": "integer", "minimum": 0, "maximum": 1},
     "calendar_api_call_count": {"type": "integer", "minimum": 0, "maximum": 5},
     "list_call_count": {"type": "integer", "minimum": 0, "maximum": 5},
-    "get_call_count": {"type": "integer", "minimum": 0, "maximum": 1},
+    "get_call_count": {"type": "integer", "minimum": 0, "maximum": 2},
     "read_retry_count": {"type": "integer", "minimum": 0, "maximum": 1},
     "mutation_call_count": {"const": 0},
     "target_metadata_verified": {"type": "boolean"},

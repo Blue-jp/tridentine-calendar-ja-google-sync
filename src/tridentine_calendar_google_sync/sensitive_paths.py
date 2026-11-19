@@ -6,7 +6,6 @@ import hmac
 import json
 import os
 import stat
-import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -80,50 +79,37 @@ def _reject_symlink_components(path: Path) -> None:
 
 
 def _reject_git_worktree(path: Path) -> None:
-    """Reject paths beneath a committed worktree without emitting Git output."""
+    """Reject any ancestor .git marker without running Git or reading its contents."""
 
-    start = path if path.is_dir() else path.parent
     if path.is_relative_to(_PACKAGE_REPOSITORY_ROOT):
         raise SensitivePathError(
             "sensitive_path_in_git_worktree",
             "sensitive data must be stored outside every Git worktree",
         )
+    try:
+        start = path if path.is_dir() else path.parent
+    except OSError:
+        raise SensitivePathError(
+            "sensitive_path_unavailable",
+            "sensitive path cannot be safely inspected",
+        ) from None
     for ancestor in (start, *start.parents):
-        marker = ancestor / ".git"
         try:
-            if marker.exists() or marker.is_symlink():
-                try:
-                    result = subprocess.run(
-                        [
-                            "git",
-                            "-c",
-                            "safe.directory=*",
-                            "-C",
-                            os.fspath(ancestor),
-                            "rev-parse",
-                            "--verify",
-                            "HEAD",
-                        ],
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                        timeout=5,
-                    )
-                except (OSError, subprocess.SubprocessError):
-                    continue
-                if result.returncode == 0:
-                    raise SensitivePathError(
-                        "sensitive_path_in_git_worktree",
-                        "sensitive data must be stored outside every Git worktree",
-                    )
-        except SensitivePathError:
-            raise
-        except OSError as exc:
+            (ancestor / ".git").lstat()
+        except FileNotFoundError:
+            # Only a positively missing marker permits traversal to continue.
+            continue
+        except OSError:
             raise SensitivePathError(
                 "sensitive_path_unavailable",
                 "sensitive path cannot be safely inspected",
-            ) from exc
+            ) from None
+        # A directory, gitfile, malformed marker, or dangling link all block.
+        # Do not make privacy depend on Git availability or a resolvable HEAD.
+        raise SensitivePathError(
+            "sensitive_path_in_git_worktree",
+            "sensitive data must be stored outside every Git worktree",
+        )
 
 
 def validate_sensitive_input_path(
@@ -288,6 +274,57 @@ def read_sensitive_bytes(
 
 if sys.platform != "win32":
 
+    def _prepare_posix_private_output_fd(descriptor: int) -> None:
+        """Set and verify mode on the fresh mkstemp descriptor before content write.
+
+        This helper is only for the empty temporary file just created by this
+        writer. It is not a permission-repair API for existing inputs or outputs.
+        Publication, ancestor binding, and cleanup remain separate boundaries.
+        """
+
+        if os.name != "posix":
+            raise SensitivePathError(
+                "sensitive_private_io_unavailable",
+                "strict private output permission verification is unavailable",
+            )
+        try:
+            before = os.fstat(descriptor)
+            effective_uid = os.geteuid()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_uid != effective_uid
+                or before.st_size != 0
+                or stat.S_IMODE(before.st_mode) & ~0o600
+            ):
+                raise SensitivePathError(
+                    "sensitive_write_failed",
+                    "sensitive temporary output failed permission verification",
+                )
+            # Apply permissions to the opened object, never to a replaceable name.
+            os.fchmod(descriptor, 0o600)
+            after = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(after.st_mode)
+                or after.st_dev != before.st_dev
+                or after.st_ino != before.st_ino
+                or after.st_nlink != 1
+                or after.st_uid != effective_uid
+                or after.st_size != 0
+                or stat.S_IMODE(after.st_mode) != 0o600
+            ):
+                raise SensitivePathError(
+                    "sensitive_write_failed",
+                    "sensitive temporary output failed permission verification",
+                )
+        except SensitivePathError:
+            raise
+        except (OSError, AttributeError, NotImplementedError):
+            raise SensitivePathError(
+                "sensitive_write_failed",
+                "sensitive temporary output permissions could not be verified",
+            ) from None
+
     def _read_posix_private_bytes(path: Path, *, max_size: int) -> bytes:
         # Read one owner-only regular file through a no-follow fd chain.
         if os.name != "posix":
@@ -298,8 +335,9 @@ if sys.platform != "win32":
 
         no_follow = getattr(os, "O_NOFOLLOW", 0)
         directory_flag = getattr(os, "O_DIRECTORY", 0)
+        nonblocking = getattr(os, "O_NONBLOCK", 0)
         close_on_exec = getattr(os, "O_CLOEXEC", 0)
-        if no_follow == 0 or directory_flag == 0:
+        if no_follow == 0 or directory_flag == 0 or nonblocking == 0:
             raise SensitivePathError(
                 "sensitive_private_io_unavailable",
                 "strict private input verification is unavailable",
@@ -333,7 +371,7 @@ if sys.platform != "win32":
 
             file_descriptor = os.open(
                 path.name,
-                os.O_RDONLY | no_follow | close_on_exec,
+                os.O_RDONLY | no_follow | close_on_exec | nonblocking,
                 dir_fd=parent_descriptor,
             )
             before = os.fstat(file_descriptor)
@@ -416,6 +454,13 @@ if sys.platform != "win32":
 
 else:
 
+    def _prepare_posix_private_output_fd(descriptor: int) -> None:
+        del descriptor
+        raise SensitivePathError(
+            "sensitive_private_io_unavailable",
+            "strict POSIX output permission verification is unavailable",
+        )
+
     def _read_posix_private_bytes(path: Path, *, max_size: int) -> bytes:
         del path, max_size
         raise SensitivePathError(
@@ -428,8 +473,15 @@ def read_private_sensitive_bytes(
     value: str | Path,
     *,
     max_size: int = MAX_SENSITIVE_FILE_BYTES,
+    windows_require_protected_acl: bool = True,
 ) -> bytes:
-    """Read one strictly private local file without repairing its permissions."""
+    """Read private bytes without permission repair or a generic-reader fallback.
+
+    POSIX always requires effective-owner, single-link, owner-only fd checks.
+    The Windows-only option preserves inherited-but-private credential support;
+    it does not relax POSIX checks. Baseline, target, and Production token callers
+    retain the protected-DACL default.
+    """
 
     if max_size <= 0:
         raise ValueError("max_size must be positive")
@@ -444,7 +496,7 @@ def read_private_sensitive_bytes(
                 max_size=max_size,
                 private_acl=True,
                 integrity_acl=False,
-                require_protected_acl=True,
+                require_protected_acl=windows_require_protected_acl,
             )
         except WindowsSensitiveFileError as exc:
             raise SensitivePathError(exc.code, exc.public_message) from exc
@@ -489,7 +541,7 @@ def _atomic_private_write(
     try:
         descriptor, temporary_name = tempfile.mkstemp(prefix=".private-write-", dir=path.parent)
         temporary_path = Path(temporary_name)
-        os.chmod(temporary_path, 0o600)
+        _prepare_posix_private_output_fd(descriptor)
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
             descriptor = -1
             stream.write(content)
@@ -508,7 +560,6 @@ def _atomic_private_write(
                 ) from exc
             temporary_path.unlink()
             temporary_path = None
-        os.chmod(path, 0o600)
         _fsync_parent(path.parent)
     except SensitivePathError:
         raise

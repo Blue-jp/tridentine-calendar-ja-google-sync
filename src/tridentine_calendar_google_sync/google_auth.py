@@ -18,7 +18,7 @@ from tridentine_calendar_google_sync.sensitive_paths import (
     JsonValue,
     SensitivePathError,
     atomic_write_private_json,
-    read_sensitive_bytes,
+    read_private_sensitive_bytes,
     validate_sensitive_output_path,
 )
 
@@ -185,16 +185,16 @@ def load_desktop_client_config(path: str | Path) -> DesktopInstalledClientConfig
     """Load one explicit desktop client JSON file outside every committed worktree."""
 
     try:
-        raw = read_sensitive_bytes(path, windows_private_acl=True)
+        raw = read_private_sensitive_bytes(path, windows_require_protected_acl=False)
         value = _normalize_client_payload(_decode_json_object(raw, kind="desktop_client_config"))
         return DesktopInstalledClientConfig.model_validate(value, strict=True)
     except GoogleAuthError:
         raise
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise GoogleAuthConfigError(
             "unsafe_desktop_client_path",
             "desktop client configuration path is unsafe or unavailable",
-        ) from exc
+        ) from None
     except ValidationError as exc:
         raise GoogleAuthConfigError(
             "invalid_desktop_client_config",
@@ -206,19 +206,19 @@ def load_authorized_user_token(path: str | Path) -> AuthorizedUserToken:
     """Load one explicit authorized-user JSON file and enforce the exact scope."""
 
     try:
-        raw = read_sensitive_bytes(
+        raw = read_private_sensitive_bytes(
             path,
-            windows_private_acl=True,
+            windows_require_protected_acl=False,
         )
         value = _normalize_token_payload(_decode_json_object(raw, kind="authorized_user_token"))
         return AuthorizedUserToken.model_validate(value, strict=True)
     except GoogleAuthError:
         raise
-    except SensitivePathError as exc:
+    except SensitivePathError:
         raise GoogleAuthConfigError(
             "unsafe_authorized_user_path",
             "authorized-user token path is unsafe or unavailable",
-        ) from exc
+        ) from None
     except ValidationError as exc:
         raise GoogleAuthConfigError(
             "invalid_authorized_user_token",

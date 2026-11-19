@@ -26,6 +26,7 @@ from tridentine_calendar_google_sync.accepted_production_source_manifest_io impo
     write_accepted_production_source_manifest,
 )
 from tridentine_calendar_google_sync.accepted_production_source_manifest_models import (
+    ACCEPTED_PRODUCTION_SOURCE_REPOSITORY,
     AcceptedProductionSourceManifest,
 )
 from tridentine_calendar_google_sync.accepted_production_source_manifest_report import (
@@ -41,7 +42,6 @@ from tridentine_calendar_google_sync.source_ics import inspect_source
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = REPOSITORY_ROOT / "schemas" / "accepted-production-source-manifest-v1.schema.json"
-REPOSITORY_IDENTITY = "ExampleOrg/production-calendar"
 
 
 def _source_text(
@@ -120,7 +120,6 @@ def _manifest(tmp_path: Path) -> AcceptedProductionSourceManifest:
     return build_accepted_production_source_manifest(
         profile,
         source,
-        repository_identity=REPOSITORY_IDENTITY,
     )
 
 
@@ -132,7 +131,7 @@ def test_builds_pin_agnostic_closed_accepted_production_manifest(tmp_path: Path)
     assert manifest.production is True
     assert manifest.acceptance_state == "accepted"
     assert manifest.synthetic is False
-    assert manifest.repository_identity == REPOSITORY_IDENTITY
+    assert manifest.repository_identity == ACCEPTED_PRODUCTION_SOURCE_REPOSITORY
     assert manifest.repository_tag == "calendar-accepted-v1"
     assert manifest.repository_commit == "a" * 40
     assert manifest.event_count == 1
@@ -153,26 +152,12 @@ def test_builds_pin_agnostic_closed_accepted_production_manifest(tmp_path: Path)
     Draft202012Validator(schema).validate(accepted_production_source_manifest_data(manifest))
 
 
-@pytest.mark.parametrize(
-    "repository_identity",
-    (
-        "ExampleOrg/test-calendar",
-        "ExampleOrg/synthetic-calendar",
-        "ExampleOrg/calendar.invalid",
-    ),
-)
-def test_rejects_test_synthetic_and_invalid_repository_markers(
-    tmp_path: Path,
-    repository_identity: str,
-) -> None:
-    profile, source = _production_inputs(tmp_path)
-    with pytest.raises(AcceptedProductionSourceManifestError) as raised:
-        build_accepted_production_source_manifest(
-            profile,
-            source,
-            repository_identity=repository_identity,
-        )
-    assert raised.value.code == "accepted_production_source_marker_forbidden"
+def test_rejects_non_authoritative_repository_identity(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    forged = manifest.model_copy(update={"repository_identity": "ExampleOrg/production-calendar"})
+
+    with pytest.raises(AcceptedProductionSourceManifestError):
+        verify_accepted_production_source_manifest(forged)
 
 
 @pytest.mark.parametrize(
@@ -193,7 +178,6 @@ def test_rejects_invalid_uid_and_event_test_markers(
         build_accepted_production_source_manifest(
             profile,
             source,
-            repository_identity=REPOSITORY_IDENTITY,
         )
 
 
@@ -210,7 +194,6 @@ def test_rejects_unaccepted_profile_dirty_source_and_mismatched_pin(tmp_path: Pa
         build_accepted_production_source_manifest(
             unaccepted,
             source,
-            repository_identity=REPOSITORY_IDENTITY,
         )
     assert unaccepted_error.value.code == "accepted_production_source_not_accepted"
 
@@ -219,7 +202,6 @@ def test_rejects_unaccepted_profile_dirty_source_and_mismatched_pin(tmp_path: Pa
         build_accepted_production_source_manifest(
             profile,
             dirty,
-            repository_identity=REPOSITORY_IDENTITY,
         )
     assert dirty_error.value.code == "accepted_production_source_not_clean"
 
@@ -228,7 +210,6 @@ def test_rejects_unaccepted_profile_dirty_source_and_mismatched_pin(tmp_path: Pa
         build_accepted_production_source_manifest(
             profile,
             mismatched,
-            repository_identity=REPOSITORY_IDENTITY,
         )
     assert mismatch_error.value.code == "accepted_production_source_profile_mismatch"
 
@@ -288,7 +269,7 @@ def test_safe_inspection_uses_prefixed_references_and_redacts_raw_pins(tmp_path:
         assert re.fullmatch(pattern, str(report[key])) is not None
 
     for raw_value in (
-        manifest.repository_identity,
+        ACCEPTED_PRODUCTION_SOURCE_REPOSITORY,
         manifest.repository_tag,
         manifest.repository_commit,
         manifest.ics_sha256,

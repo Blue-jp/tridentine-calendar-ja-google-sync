@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import inspect
 import json
+from collections import Counter
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Never, cast
 
 import pytest
 from phase6d0_auth_helpers import (
@@ -20,6 +22,8 @@ from phase6d0_auth_helpers import (
     write_fake_client_config,
 )
 
+from tridentine_calendar_google_sync import production_write_token as tokens
+from tridentine_calendar_google_sync import production_write_token_io as token_io
 from tridentine_calendar_google_sync.production_write_target import (
     ProductionWriteTargetConfig,
 )
@@ -87,7 +91,7 @@ def _stored_test_token(
     ProductionWriteTargetConfig,
     ProductionWriteTokenGenerationState,
 ]:
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths = artifact_paths(root)
     target = production_target()
     state = build_initial_production_write_token_generation_state(target, issued_at=ISSUED_AT)
@@ -253,7 +257,7 @@ def test_mock_token_is_persisted_but_rejected_as_operational_provider_evidence(
     assert captured.value.code == "production_write_token_grant_evidence_origin_mismatch"
 
 
-def test_provider_evidence_token_reloads_but_old_or_missing_evidence_does_not(
+def test_private_legacy_provider_reload_and_old_schema_rejection(
     tmp_path: Path,
 ) -> None:
     paths = artifact_paths(tmp_path)
@@ -267,14 +271,15 @@ def test_provider_evidence_token_reloads_but_old_or_missing_evidence_does_not(
     write_production_write_authorized_user_token(token, paths["write"])
     write_production_write_token_generation_state(state, paths["generation"])
 
-    session = prepare_production_write_rehearsal_credential_session(
+    session = tokens._load_production_write_credential_session(
         paths["write"],
         paths["generation"],
         paths["read"],
         paths["test"],
         target,
-        production_write_token_rehearsal_challenge(target),
         now=ISSUED_AT,
+        evidence_mode="provider",
+        refresher=None,
     )
     assert session.refresh_count == 0
     assert session.token.grant_evidence == provider_evidence
@@ -289,22 +294,100 @@ def test_provider_evidence_token_reloads_but_old_or_missing_evidence_does_not(
         parse_production_write_authorized_user_token_bytes(old_schema_bytes)
 
 
-def test_test_evidence_token_cannot_enter_operational_reload_path(tmp_path: Path) -> None:
+def test_private_legacy_provider_reload_rejects_test_evidence(tmp_path: Path) -> None:
     paths, target, _state = _stored_test_token(
         tmp_path,
         expiry_offset=timedelta(hours=1),
     )
     with pytest.raises(ProductionWriteTokenConfigError) as captured:
-        prepare_production_write_rehearsal_credential_session(
+        tokens._load_production_write_credential_session(
             paths["write"],
             paths["generation"],
             paths["read"],
             paths["test"],
             target,
-            production_write_token_rehearsal_challenge(target),
             now=ISSUED_AT,
+            evidence_mode="provider",
+            refresher=None,
         )
     assert captured.value.code == "production_write_token_grant_evidence_origin_mismatch"
+
+
+class _PublicProviderReloadEffectBlocked(BaseException):
+    """Test-owned refusal outside ordinary provider error classification."""
+
+
+def test_public_provider_prepare_refuses_before_provenance_reload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = production_target()
+    confirmation = production_write_token_rehearsal_challenge(target)
+    paths = artifact_paths(Path("synthetic-provider-refusal-private-marker"))
+    effect_targets = (
+        (tokens, "_load_production_write_credential_session"),
+        (tokens, "_credential_session_scope"),
+        (token_io, "validate_production_write_token_path_set"),
+        (token_io, "load_production_write_authorized_user_token"),
+        (token_io, "load_production_write_token_generation_state"),
+        (token_io, "persist_refreshed_production_write_token"),
+    )
+    originals = tuple(getattr(module, name) for module, name in effect_targets)
+    calls: Counter[str] = Counter()
+    delegated = 0
+    sentinel = _PublicProviderReloadEffectBlocked()
+
+    def underlying(*_args: object, **_kwargs: object) -> Never:
+        nonlocal delegated
+        delegated += 1
+        raise AssertionError("provider refusal monitor delegated to its underlying probe")
+
+    def blocker(name: str) -> Callable[..., Never]:
+        def block(*_args: object, **_kwargs: object) -> Never:
+            calls[name] += 1
+            raise sentinel
+
+        return block
+
+    with monkeypatch.context() as protected:
+        for module, name in effect_targets:
+            protected.setattr(module, name, underlying)
+        with monkeypatch.context() as monitored:
+            for module, name in effect_targets:
+                monitored.setattr(module, name, blocker(name))
+            for module, name in effect_targets:
+                with pytest.raises(_PublicProviderReloadEffectBlocked) as calibration:
+                    getattr(module, name)()
+                assert calibration.value is sentinel
+            assert calls == Counter({name: 1 for _, name in effect_targets})
+            assert delegated == 0
+            calls.clear()
+
+            for _ in range(2):
+                with pytest.raises(ProductionWriteTokenConfigError) as refused:
+                    prepare_production_write_rehearsal_credential_session(
+                        paths["write"],
+                        paths["generation"],
+                        paths["read"],
+                        paths["test"],
+                        target,
+                        confirmation,
+                        now=ISSUED_AT,
+                    )
+                assert type(refused.value) is ProductionWriteTokenConfigError
+                assert refused.value.code == (
+                    "production_write_token_provider_session_enforcement_unavailable"
+                )
+                assert refused.value.public_message == (
+                    "Production write-token provider session preparation is unavailable"
+                )
+                assert str(refused.value) == refused.value.public_message
+            assert not calls
+            assert delegated == 0
+        assert all(getattr(module, name) is underlying for module, name in effect_targets)
+    assert all(
+        getattr(module, name) is original
+        for (module, name), original in zip(effect_targets, originals, strict=True)
+    )
 
 
 def test_fresh_test_refresh_evidence_succeeds_without_generation_change(

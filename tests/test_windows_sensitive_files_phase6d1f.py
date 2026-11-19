@@ -501,6 +501,48 @@ def test_intermediate_ancestor_broad_rebind_authority_is_rejected(
     assert not tuple(parent.glob(".private-write-*.tmp"))
 
 
+@pytest.mark.parametrize("missing", ["owner", "dacl"])
+def test_security_info_releases_descriptor_when_output_is_missing(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    descriptor_value = 1
+    freed: list[int] = []
+    output_pointer = ctypes.POINTER(ctypes.c_void_p)
+
+    def fake_get_security_info(
+        _handle,
+        _object_type,
+        _information,
+        owner_out,
+        _group_out,
+        dacl_out,
+        _sacl_out,
+        descriptor_out,
+    ) -> int:
+        ctypes.cast(descriptor_out, output_pointer)[0] = descriptor_value
+        if missing != "owner":
+            ctypes.cast(owner_out, output_pointer)[0] = 2
+        if missing != "dacl":
+            ctypes.cast(dacl_out, output_pointer)[0] = 3
+        return 0
+
+    def fake_local_free(pointer: int) -> None:
+        freed.append(pointer)
+
+    monkeypatch.setattr(windows_files, "_GetSecurityInfo", fake_get_security_info)
+    monkeypatch.setattr(windows_files, "_LocalFree", fake_local_free)
+
+    with (
+        pytest.raises(windows_files.WindowsSensitiveFileError) as captured,
+        windows_files._security_info(0),
+    ):
+        pytest.fail("incomplete security info must not be yielded")
+
+    assert captured.value.code == "sensitive_acl_invalid"
+    assert captured.value.public_message == "sensitive access control is missing or invalid"
+    assert freed == [descriptor_value]
+
+
 def test_c3_parent_broad_write_is_rejected_before_marker(tmp_path: Path) -> None:
     parent = create_acl_directory(tmp_path / "broad-write-parent", broad_write=True)
     output = parent / "marker.txt"
@@ -625,26 +667,87 @@ def test_c9_temp_acl_is_private_before_first_content_byte(safe_root: Path) -> No
     assert not temp.exists()
 
 
-def test_handle_lifecycle_has_no_net_leak_and_errors_are_redacted(safe_root: Path) -> None:
-    get_handle_count = windows_files._kernel32.GetProcessHandleCount
-    get_handle_count.argtypes = [
-        windows_files.wintypes.HANDLE,
-        ctypes.POINTER(windows_files.wintypes.DWORD),
-    ]
-    get_handle_count.restype = windows_files.wintypes.BOOL
-
-    def count() -> int:
-        value = windows_files.wintypes.DWORD()
-        assert get_handle_count(windows_files._GetCurrentProcess(), ctypes.byref(value))
-        return int(value.value)
-
+def test_handle_lifecycle_has_no_net_leak_and_errors_are_redacted(
+    safe_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     candidate = safe_root / "missing.txt"
     validate_sensitive_output_path(candidate)
-    before = count()
-    for _ in range(20):
-        validate_sensitive_output_path(candidate)
-    after = count()
-    assert after == before
+
+    acquisition_apis = ("_CreateFileW", "_OpenFileById", "_OpenProcessToken")
+    thread = threading.get_ident()
+    invalid_handle_value = windows_files._INVALID_HANDLE_VALUE
+    token_pointer = ctypes.POINTER(windows_files.wintypes.HANDLE)
+    seen: set[str] = set()
+    pending: set[int] = set()
+    ambiguous: set[int] = set()
+    close_failures = unattributed_closes = observation_errors = 0
+
+    def observe(name, native):
+        def wrapped(*args, **kwargs):
+            nonlocal close_failures, unattributed_closes, observation_errors
+            if threading.get_ident() != thread:
+                return native(*args, **kwargs)
+
+            result = native(*args, **kwargs)
+            saved_error = ctypes.get_last_error()
+            try:
+                if name == "_CloseHandle":
+                    value = args[0]
+                    if not result:
+                        close_failures += 1
+                    elif value in pending:
+                        pending.remove(value)
+                    elif value not in ambiguous:
+                        unattributed_closes += 1
+                    return result
+
+                if name == "_OpenProcessToken":
+                    if not result:
+                        return result
+                    value = ctypes.cast(args[2], token_pointer).contents.value
+                else:
+                    if result == invalid_handle_value:
+                        return result
+                    value = result
+
+                if not isinstance(value, int) or value in (0, invalid_handle_value):
+                    observation_errors += 1
+                    return result
+
+                seen.add(name)
+                if value in pending:
+                    # A second acquisition without an observed close is ambiguous.
+                    pending.remove(value)
+                    ambiguous.add(value)
+                elif value not in ambiguous:
+                    pending.add(value)
+            except Exception:
+                observation_errors += 1
+            finally:
+                ctypes.set_last_error(saved_error)
+            return result
+
+        return wrapped
+
+    missing_api_iterations = pending_iterations = 0
+    with monkeypatch.context() as patch:
+        for name in (*acquisition_apis, "_CloseHandle"):
+            patch.setattr(windows_files, name, observe(name, getattr(windows_files, name)))
+        for _ in range(20):
+            seen.clear()
+            validate_sensitive_output_path(candidate)
+            if not seen.issuperset(acquisition_apis):
+                missing_api_iterations += 1
+            if pending:
+                pending_iterations += 1
+
+    ambiguous_count = len(ambiguous)
+    assert observation_errors == 0, "Windows handle observation failed"
+    assert missing_api_iterations == 0, "required handle acquisitions were not observed"
+    assert close_failures == 0, "a Win32 handle close failed"
+    assert ambiguous_count == 0, "a handle value had overlapping observed lifetimes"
+    assert unattributed_closes == 0, "a successful close had no observed acquisition"
+    assert pending_iterations == 0, "a validation returned with an unclosed handle"
 
     owned = windows_files._open_directory(safe_root, parent=True)
     owned.close()
