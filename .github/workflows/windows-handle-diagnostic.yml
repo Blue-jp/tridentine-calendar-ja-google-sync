@@ -70,12 +70,18 @@ jobs:
               throw 'Python verification failed.'
             }
             Publish-Safe 'python=3.12.10 platform=win32 implementation=cpython'
-            if ($env:RUNNER_TEMP -notmatch '^[A-Za-z]:[\\/]' -or
-                $env:GITHUB_RUN_ID -notmatch '^[0-9]+$' -or
+            if ($env:GITHUB_RUN_ID -notmatch '^[0-9]+$' -or
                 $env:GITHUB_RUN_ATTEMPT -ne '1') {
               throw 'Scratch inputs failed validation.'
             }
-            $temp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\','/')
+            $localAppData = [Environment]::GetFolderPath(
+              [Environment+SpecialFolder]::LocalApplicationData,
+              [Environment+SpecialFolderOption]::DoNotVerify
+            )
+            if ($localAppData -notmatch '^[A-Za-z]:[\\/]') {
+              throw 'LocalApplicationData did not resolve to a drive-qualified path.'
+            }
+            $temp = [IO.Path]::GetFullPath([IO.Path]::Combine($localAppData, 'Temp')).TrimEnd('\','/')
             $tempInfo = Get-Item -LiteralPath $temp -Force -ErrorAction Stop
             if (-not $tempInfo.PSIsContainer -or
                 ($tempInfo.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -89,7 +95,7 @@ jobs:
             }
             $scratch = [IO.Path]::GetFullPath((Join-Path $temp "handle-diagnostic-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"))
             if ([IO.Path]::GetDirectoryName($scratch) -ine $temp) {
-              throw 'Scratch is outside runner temp.'
+              throw 'Scratch is outside the selected Temp directory.'
             }
             try {
               $null = Get-Item -LiteralPath $scratch -Force -ErrorAction Stop
