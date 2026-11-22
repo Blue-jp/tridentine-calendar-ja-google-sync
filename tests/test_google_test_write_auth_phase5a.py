@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import REPOSITORY_ROOT
 from phase5a_helpers import make_test_target_config
+from pytest_mock import MockerFixture
 
+from tridentine_calendar_google_sync.google_auth import READ_ONLY_GOOGLE_SCOPES
+from tridentine_calendar_google_sync.google_optional import GoogleOptionalBindings
 from tridentine_calendar_google_sync.google_test_write_auth import (
     GOOGLE_TEST_EVENTS_OWNED_WRITE_SCOPE,
     TEST_WRITE_GOOGLE_SCOPES,
@@ -124,6 +128,96 @@ def test_token_loader_rejects_nonexact_scope_without_secret_echo(
         load_test_write_authorized_user_token(token_path)
     assert document["refresh_token"] not in str(captured.value)
     assert str(token_path) not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("initially_valid", "refreshed_grants"),
+    (
+        pytest.param(True, TEST_WRITE_GOOGLE_SCOPES, id="valid-no-write"),
+        pytest.param(False, TEST_WRITE_GOOGLE_SCOPES, id="expired-refresh-saved"),
+        pytest.param(False, READ_ONLY_GOOGLE_SCOPES, id="refresh-rejects-granted-scope"),
+    ),
+)
+def test_load_test_write_credentials_refresh_persistence(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    initially_valid: bool,
+    refreshed_grants: tuple[str, ...],
+) -> None:
+    import tridentine_calendar_google_sync.google_test_write_auth as auth_module
+
+    test_token = tmp_path / "fixture-test-write-token.json"
+    production_read = tmp_path / "fixture-production-read-token.json"
+    original = _token_document(list(TEST_WRITE_GOOGLE_SCOPES))
+    _write_private_json(test_token, original)
+    _write_private_json(production_read, _token_document(list(READ_ONLY_GOOGLE_SCOPES)))
+    test_before = test_token.read_bytes()
+    production_before = production_read.read_bytes()
+
+    refreshed_value = "fixture-refreshed-access-token-never-used"
+    serialized = original.copy()
+    credentials = SimpleNamespace(
+        valid=initially_valid,
+        expired=not initially_valid,
+        refresh_token=original["refresh_token"],
+        scopes=TEST_WRITE_GOOGLE_SCOPES,
+        granted_scopes=TEST_WRITE_GOOGLE_SCOPES,
+        to_json=lambda: json.dumps(serialized),
+    )
+
+    def refresh(_request: object) -> None:
+        credentials.valid = True
+        credentials.expired = False
+        credentials.granted_scopes = refreshed_grants
+        serialized["token"] = refreshed_value
+
+    credentials.refresh = mocker.Mock(side_effect=refresh)
+    request = object()
+    request_class = mocker.Mock(return_value=request)
+    bindings = GoogleOptionalBindings(
+        credentials_class=SimpleNamespace(
+            from_authorized_user_info=mocker.Mock(return_value=credentials)
+        ),
+        installed_app_flow_class=None,
+        request_class=request_class,
+        build_service=mocker.Mock(side_effect=AssertionError("unexpected service construction")),
+        http_error_class=RuntimeError,
+    )
+    write = mocker.spy(auth_module, "atomic_write_private_json")
+    target = make_test_target_config()
+    rejects_refresh = refreshed_grants != TEST_WRITE_GOOGLE_SCOPES
+
+    if rejects_refresh:
+        with pytest.raises(AuthConfigError) as caught:
+            auth_module.load_test_write_credentials(
+                test_token, production_read, target, bindings=bindings
+            )
+        assert caught.value.code == "unsafe_test_write_scope"
+    else:
+        result = auth_module.load_test_write_credentials(
+            test_token, production_read, target, bindings=bindings
+        )
+        assert result is credentials
+
+    if initially_valid:
+        request_class.assert_not_called()
+        credentials.refresh.assert_not_called()
+    else:
+        request_class.assert_called_once_with()
+        credentials.refresh.assert_called_once_with(request)
+
+    if initially_valid or rejects_refresh:
+        write.assert_not_called()
+        assert test_token.read_bytes() == test_before
+    else:
+        write.assert_called_once()
+        assert write.call_args.args[0] == test_token
+        assert write.call_args.kwargs["overwrite"] is True
+        saved = json.loads(test_token.read_text(encoding="utf-8"))
+        assert saved["token"] == refreshed_value
+        assert saved["token"] != original["token"]
+        assert saved["scopes"] == list(TEST_WRITE_GOOGLE_SCOPES)
+    assert production_read.read_bytes() == production_before
 
 
 def test_test_write_and_production_read_token_paths_must_be_distinct(tmp_path: Path) -> None:
