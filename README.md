@@ -406,7 +406,7 @@ Validation mismatches do not display Python tracebacks or file content during no
 - Sync plan reports use only safe references and contain no raw UID, Google event ID, ETag, event content, payload, method, or endpoint.
 - Private apply bundles contain raw UIDs, Google event IDs, ETags, and managed-field payloads, making them sensitive data equivalent to baselines and snapshots.
 - Public apply reports and operation journals use only safe references, hashes, and allowlisted outcome codes.
-- Store Test write tokens in separate files from Production read-only tokens; scope additions, overwriting, and reuse are rejected.
+- Initial Test write authorization creates a new dedicated token file and rejects overwriting, Production read-only token reuse, and scope expansion. Loading a valid Test token leaves it untouched. An expired, refreshable Test token is saved back to its designated file after a successful refresh and validation.
 - A Test Write Run Spec is a private artifact. Public reports / journals contain no raw UID, Google event ID, ETag, SUMMARY, DESCRIPTION, or payload.
 - Accepted Production manifests, Production target configs, sources, snapshots, baselines, Plans, and Run Specs are private runtime artifacts kept outside the repository. Production Plan/Run Spec inspection displays only safe references, aggregates, hashes, and lifetimes.
 - Production Run Specs do not store raw UID, SUMMARY, DESCRIPTION, Calendar ID, Google event ID, ETag, or current/desired body.

@@ -73,6 +73,12 @@ Every successful mutation requires post-write read-back. A mismatch stops the ru
 
 ## Storage and public output
 
-Test target config, credentials, Test write token, snapshot, trusted Test baseline, plan, run spec, journal, report, and receipt belong outside the repository. Writes are no-overwrite and atomic.
+Test target config, credentials, Test write token, snapshot, trusted Test baseline, plan, run spec, journal, report, and receipt belong outside the repository. New output files, including run specs and operation journals, must be written atomically without overwriting an existing destination.
+
+Initial Test write authorization creates a new dedicated token file atomically. It rejects an existing destination, reuse of the Production read-only token, and scope expansion.
+
+Loading valid Test write credentials leaves the token file untouched. When an existing Test token is expired and refreshable, the loader writes the refreshed token back to its designated Test token path only after a successful refresh and checks of credential validity and exact scope. Before saving, it rechecks the Test target policy and separation from the Production read-only token file.
+
+`inspect-test-calendar-prewrite` can perform this local token update while its Calendar event access remains list-only.
 
 The private run spec may temporarily hold raw source and Google identity needed for the one operation. The journal and public report contain only safe target/UID references, hashes, allowlisted state, and counters. They exclude Calendar ID, raw UID, Google event ID, ETag, summary, description, payload, endpoint, token, credentials, and absolute paths.
