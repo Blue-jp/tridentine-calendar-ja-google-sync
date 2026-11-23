@@ -248,17 +248,25 @@ def test_secret_loaders_have_no_generic_read_fallback(kind: str) -> None:
     loader = LOADERS[kind]
     module = sys.modules[loader.__module__]
     tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-    function = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == loader.__name__
-    )
-    calls = {
-        node.func.id
-        for node in ast.walk(function)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
-    assert "read_private_sensitive_bytes" in calls
+
+    def function_calls(name: str) -> set[str]:
+        function = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+        return {
+            node.func.id
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+    calls = function_calls(loader.__name__)
     assert "read_sensitive_bytes" not in calls
+    if kind == "test_token":
+        assert "_read_test_write_token" in calls
+        helper_calls = function_calls("_read_test_write_token")
+        assert "read_private_sensitive_bytes" in helper_calls
+        assert "read_sensitive_bytes" not in helper_calls
+    else:
+        assert "read_private_sensitive_bytes" in calls
     if kind == "production_token":
         assert "_require_private_file_mode" not in calls
