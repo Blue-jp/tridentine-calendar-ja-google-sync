@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +31,10 @@ from tridentine_calendar_google_sync.google_test_write_auth import (
 from tridentine_calendar_google_sync.google_test_write_auth import (
     TestWriteAuthorizationCancelled as AuthorizationCancelled,
 )
-from tridentine_calendar_google_sync.sensitive_paths import atomic_write_private_text
+from tridentine_calendar_google_sync.sensitive_paths import (
+    MAX_SENSITIVE_FILE_BYTES,
+    atomic_write_private_text,
+)
 from tridentine_calendar_google_sync.test_write_target import (
     TestWriteTargetPolicyError as TargetPolicyError,
 )
@@ -390,20 +394,37 @@ def test_token_loader_rejects_nonexact_scope_without_secret_echo(
     assert str(token_path) not in str(captured.value)
 
 
-@pytest.mark.parametrize(
-    ("initially_valid", "refreshed_grants"),
-    (
-        pytest.param(True, TEST_WRITE_GOOGLE_SCOPES, id="valid-no-write"),
-        pytest.param(False, TEST_WRITE_GOOGLE_SCOPES, id="expired-refresh-saved"),
-        pytest.param(False, READ_ONLY_GOOGLE_SCOPES, id="refresh-rejects-granted-scope"),
-    ),
-)
-def test_load_test_write_credentials_refresh_persistence(
+_REFRESHED_TEST_TOKEN = "fixture-refreshed-access-token-never-used"
+
+
+@dataclass(frozen=True)
+class _SyntheticRefresh:
+    token_path: Path
+    production_read: Path
+    token_before: bytes
+    production_before: bytes
+    credentials: SimpleNamespace
+    bindings: GoogleOptionalBindings
+    request: object
+
+    def load(self) -> object:
+        return auth_module.load_test_write_credentials(
+            self.token_path,
+            self.production_read,
+            make_test_target_config(),
+            bindings=self.bindings,
+        )
+
+
+def _synthetic_refresh(
     tmp_path: Path,
     mocker: MockerFixture,
-    initially_valid: bool,
-    refreshed_grants: tuple[str, ...],
-) -> None:
+    *,
+    initially_valid: bool = False,
+    refreshed_grants: tuple[str, ...] = TEST_WRITE_GOOGLE_SCOPES,
+) -> _SyntheticRefresh:
+    if os.name == "posix":
+        tmp_path.chmod(0o700)
     test_token = tmp_path / "fixture-test-write-token.json"
     production_read = tmp_path / "fixture-production-read-token.json"
     original = _token_document(list(TEST_WRITE_GOOGLE_SCOPES))
@@ -412,7 +433,6 @@ def test_load_test_write_credentials_refresh_persistence(
     test_before = test_token.read_bytes()
     production_before = production_read.read_bytes()
 
-    refreshed_value = "fixture-refreshed-access-token-never-used"
     serialized = original.copy()
     credentials = SimpleNamespace(
         valid=initially_valid,
@@ -427,7 +447,7 @@ def test_load_test_write_credentials_refresh_persistence(
         credentials.valid = True
         credentials.expired = False
         credentials.granted_scopes = refreshed_grants
-        serialized["token"] = refreshed_value
+        serialized["token"] = _REFRESHED_TEST_TOKEN
 
     credentials.refresh = mocker.Mock(side_effect=refresh)
     request = object()
@@ -441,45 +461,250 @@ def test_load_test_write_credentials_refresh_persistence(
         build_service=mocker.Mock(side_effect=AssertionError("unexpected service construction")),
         http_error_class=RuntimeError,
     )
-    preflight = mocker.spy(auth_module, "preflight_posix_private_text_create")
+    return _SyntheticRefresh(
+        test_token, production_read, test_before, production_before, credentials, bindings, request
+    )
+
+
+@pytest.mark.parametrize(
+    ("initially_valid", "refreshed_grants"),
+    (
+        pytest.param(True, TEST_WRITE_GOOGLE_SCOPES, id="valid-no-write"),
+        pytest.param(False, TEST_WRITE_GOOGLE_SCOPES, id="expired-refresh-saved"),
+        pytest.param(False, READ_ONLY_GOOGLE_SCOPES, id="refresh-rejects-granted-scope"),
+    ),
+)
+def test_load_test_write_credentials_refresh_persistence(
+    tmp_path: Path,
+    mocker: MockerFixture,
+    initially_valid: bool,
+    refreshed_grants: tuple[str, ...],
+) -> None:
+    auth = _synthetic_refresh(
+        tmp_path, mocker, initially_valid=initially_valid, refreshed_grants=refreshed_grants
+    )
+    credentials = auth.credentials
+    request_class = auth.bindings.request_class
+    initial_preflight = mocker.spy(auth_module, "preflight_posix_private_text_create")
+    refresh_preflight = mocker.spy(auth_module.posix_replace, "preflight_posix_private_replace")
     create = mocker.spy(auth_module, "create_private_text")
+    replace = mocker.spy(auth_module.posix_replace, "replace_posix_private_bytes")
     write = mocker.spy(auth_module, "atomic_write_private_json")
-    target = make_test_target_config()
     rejects_refresh = refreshed_grants != TEST_WRITE_GOOGLE_SCOPES
 
     if rejects_refresh:
         with pytest.raises(AuthConfigError) as caught:
-            auth_module.load_test_write_credentials(
-                test_token, production_read, target, bindings=bindings
-            )
+            auth.load()
         assert caught.value.code == "unsafe_test_write_scope"
     else:
-        result = auth_module.load_test_write_credentials(
-            test_token, production_read, target, bindings=bindings
-        )
-        assert result is credentials
+        assert auth.load() is credentials
 
     if initially_valid:
         request_class.assert_not_called()
         credentials.refresh.assert_not_called()
     else:
         request_class.assert_called_once_with()
-        credentials.refresh.assert_called_once_with(request)
+        credentials.refresh.assert_called_once_with(auth.request)
+
+    if os.name == "posix" and not initially_valid:
+        refresh_preflight.assert_called_once_with(
+            auth.token_path, expected_content=auth.token_before
+        )
+    else:
+        refresh_preflight.assert_not_called()
 
     if initially_valid or rejects_refresh:
         write.assert_not_called()
-        assert test_token.read_bytes() == test_before
+        replace.assert_not_called()
+        assert auth.token_path.read_bytes() == auth.token_before
     else:
-        write.assert_called_once()
-        assert write.call_args.args[0] == test_token
-        assert write.call_args.kwargs["overwrite"] is True
-        saved = json.loads(test_token.read_text(encoding="utf-8"))
-        assert saved["token"] == refreshed_value
-        assert saved["token"] != original["token"]
+        if os.name == "posix":
+            write.assert_not_called()
+            replace.assert_called_once()
+            assert replace.call_args.args[0] == auth.token_path
+            assert replace.call_args.kwargs["expected_content"] == auth.token_before
+            # The fixture is deliberately saved with regular json.dumps whitespace and no LF.
+            assert not auth.token_before.endswith(b"\n")
+            assert b": " in auth.token_before
+            original_keys = list(json.loads(auth.token_before))
+            assert original_keys != sorted(original_keys)
+            saved_stat = auth.token_path.stat()
+            assert saved_stat.st_uid == os.geteuid()
+            assert stat.S_IMODE(saved_stat.st_mode) == 0o600
+            assert saved_stat.st_nlink == 1
+        else:
+            replace.assert_not_called()
+            write.assert_called_once()
+            assert write.call_args.args[0] == auth.token_path
+            assert write.call_args.kwargs["overwrite"] is True
+        saved = json.loads(auth.token_path.read_bytes())
+        assert saved["token"] == _REFRESHED_TEST_TOKEN
+        assert saved["token"] != json.loads(auth.token_before)["token"]
         assert saved["scopes"] == list(TEST_WRITE_GOOGLE_SCOPES)
-    assert production_read.read_bytes() == production_before
-    preflight.assert_not_called()
+    assert auth.production_read.read_bytes() == auth.production_before
+    initial_preflight.assert_not_called()
     create.assert_not_called()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX token permissions")
+@pytest.mark.parametrize(
+    ("parent_mode", "token_mode"),
+    [(0o755, 0o600), (0o700, 0o400)],
+    ids=["nonprivate-parent", "readonly-token"],
+)
+def test_posix_refresh_rejects_legacy_permissions_only_when_expired(
+    tmp_path: Path, mocker: MockerFixture, parent_mode: int, token_mode: int
+) -> None:
+    auth = _synthetic_refresh(tmp_path, mocker, initially_valid=True)
+    tmp_path.chmod(parent_mode)
+    auth.token_path.chmod(token_mode)
+    preflight = mocker.spy(auth_module.posix_replace, "preflight_posix_private_replace")
+    replace = mocker.spy(auth_module.posix_replace, "replace_posix_private_bytes")
+    write = mocker.spy(auth_module, "atomic_write_private_json")
+
+    assert auth.load() is auth.credentials
+    preflight.assert_not_called()
+
+    auth.credentials.valid = False
+    auth.credentials.expired = True
+    with pytest.raises(auth_module.TestWriteTokenRefreshPersistenceError) as caught:
+        auth.load()
+
+    assert caught.value.code == "test_write_token_persistence_failed"
+    assert caught.value.publication_possible is False
+    assert "before the Google refresh request" in caught.value.public_message
+    preflight.assert_called_once_with(auth.token_path, expected_content=auth.token_before)
+    auth.bindings.request_class.assert_not_called()
+    auth.credentials.refresh.assert_not_called()
+    replace.assert_not_called()
+    write.assert_not_called()
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == parent_mode
+    assert stat.S_IMODE(auth.token_path.stat().st_mode) == token_mode
+    assert auth.token_path.read_bytes() == auth.token_before
+    assert auth.production_read.read_bytes() == auth.production_before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires real POSIX replacement")
+def test_posix_refresh_keeps_token_updated_during_refresh(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    auth = _synthetic_refresh(tmp_path, mocker)
+    finish_refresh = auth.credentials.refresh.side_effect
+    concurrent = _token_document(list(TEST_WRITE_GOOGLE_SCOPES))
+    concurrent["token"] = "fixture-concurrent-access-token-never-used"
+    concurrent_text = json.dumps(concurrent)
+
+    def refresh_with_concurrent_save(request: object) -> None:
+        finish_refresh(request)
+        atomic_write_private_text(auth.token_path, concurrent_text, overwrite=True)
+
+    auth.credentials.refresh.side_effect = refresh_with_concurrent_save
+    replace = mocker.spy(auth_module.posix_replace, "replace_posix_private_bytes")
+    write = mocker.spy(auth_module, "atomic_write_private_json")
+    with pytest.raises(auth_module.TestWriteTokenRefreshPersistenceError) as caught:
+        auth.load()
+
+    assert caught.value.publication_possible is False
+    assert "Google refresh succeeded" in caught.value.public_message
+    auth.credentials.refresh.assert_called_once_with(auth.request)
+    replace.assert_called_once()
+    assert replace.call_args.kwargs["expected_content"] == auth.token_before
+    write.assert_not_called()
+    assert auth.token_path.read_bytes() == concurrent_text.encode("utf-8")
+    assert auth.production_read.read_bytes() == auth.production_before
+
+
+@pytest.mark.parametrize(
+    "original_argument",
+    [
+        pytest.param(dict, id="omitted"),
+        pytest.param(lambda: {"expected_token_bytes": "fixture-string"}, id="wrong-type"),
+        pytest.param(
+            lambda: {"expected_token_bytes": b" " * (MAX_SENSITIVE_FILE_BYTES + 1)},
+            id="oversize",
+        ),
+        pytest.param(lambda: {"expected_token_bytes": b"{fixture-invalid-json"}, id="invalid-json"),
+        pytest.param(
+            lambda: {
+                "expected_token_bytes": json.dumps(
+                    _token_document(list(READ_ONLY_GOOGLE_SCOPES))
+                ).encode("utf-8")
+            },
+            id="unsafe-scope",
+        ),
+    ],
+)
+def test_simulated_posix_direct_refresh_requires_valid_original_bytes(
+    tmp_path: Path, mocker: MockerFixture, original_argument: Callable[[], dict[str, object]]
+) -> None:
+    auth = _synthetic_refresh(tmp_path, mocker)
+    mocker.patch.object(auth_module, "os", SimpleNamespace(name="posix"))
+    replace = mocker.patch.object(auth_module.posix_replace, "replace_posix_private_bytes")
+    write = mocker.spy(auth_module, "atomic_write_private_json")
+
+    with pytest.raises(AuthConfigError) as caught:
+        auth_module.persist_test_write_authorized_user_credentials(
+            auth.credentials,
+            auth.token_path,
+            auth.production_read,
+            make_test_target_config(),
+            overwrite_for_refresh=True,
+            **original_argument(),
+        )
+
+    assert isinstance(caught.value, auth_module.TestWriteTokenRefreshPersistenceError)
+    assert caught.value.code == "test_write_token_persistence_failed"
+    assert caught.value.publication_possible is False
+    assert "fixture-" not in caught.value.public_message
+    assert "fixture-" not in repr(caught.value)
+    replace.assert_not_called()
+    write.assert_not_called()
+    assert auth.token_path.read_bytes() == auth.token_before
+    assert auth.production_read.read_bytes() == auth.production_before
+
+
+@pytest.mark.parametrize("possible", [False, True, None], ids=["before", "attempted", "unknown"])
+def test_simulated_posix_refresh_persistence_failure_preserves_publication_evidence(
+    tmp_path: Path, mocker: MockerFixture, possible: bool | None
+) -> None:
+    auth = _synthetic_refresh(tmp_path, mocker)
+    mocker.patch.object(auth_module, "os", SimpleNamespace(name="posix"))
+    preflight = mocker.patch.object(auth_module.posix_replace, "preflight_posix_private_replace")
+    private_error = "fixture-backend-private-detail"
+
+    def fail(path: Path, content: bytes, *, expected_content: bytes) -> None:
+        assert expected_content == auth.token_before
+        if possible is not False:
+            atomic_write_private_text(path, content.decode("utf-8"), overwrite=True)
+        if possible is None:
+            raise OSError(private_error)
+        raise auth_module.posix_replace.PosixPrivateReplaceError(
+            private_error, publication_possible=possible
+        )
+
+    replace = mocker.patch.object(
+        auth_module.posix_replace, "replace_posix_private_bytes", side_effect=fail
+    )
+    write = mocker.spy(auth_module, "atomic_write_private_json")
+    with pytest.raises(AuthConfigError) as caught:
+        auth.load()
+
+    assert isinstance(caught.value, auth_module.TestWriteTokenRefreshPersistenceError)
+    assert caught.value.code == "test_write_token_persistence_failed"
+    assert caught.value.publication_possible is possible
+    assert "Google refresh succeeded" in caught.value.public_message
+    assert private_error not in str(caught.value)
+    assert private_error not in repr(caught.value)
+    preflight.assert_called_once_with(auth.token_path, expected_content=auth.token_before)
+    auth.credentials.refresh.assert_called_once_with(auth.request)
+    replace.assert_called_once()
+    assert replace.call_args.kwargs["expected_content"] == auth.token_before
+    write.assert_not_called()
+    assert auth.production_read.read_bytes() == auth.production_before
+    if possible is False:
+        assert auth.token_path.read_bytes() == auth.token_before
+    else:
+        assert auth.token_path.read_bytes() == replace.call_args.args[1]
 
 
 def test_test_write_and_production_read_token_paths_must_be_distinct(tmp_path: Path) -> None:

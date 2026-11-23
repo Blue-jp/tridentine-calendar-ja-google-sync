@@ -126,6 +126,47 @@ def test_expected_mismatch_stops_before_any_temporary(tmp_path: Path, expected: 
 
 
 @POSIX_ONLY
+@pytest.mark.parametrize("expected", (OLD, b"Z" * len(OLD)), ids=("match", "mismatch"))
+def test_preflight_is_read_only_and_releases_all_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, expected: bytes
+) -> None:
+    path = _stored(tmp_path)
+    before = path.stat()
+    fds: list[tuple[int, int]] = []
+
+    def opened(name: str, flags: int, **kwargs: Any) -> int:
+        assert flags & os.O_ACCMODE == os.O_RDONLY
+        assert not flags & (os.O_CREAT | os.O_TRUNC)
+        descriptor = os.open(name, flags, **kwargs)
+        fds.append((descriptor, flags))
+        return descriptor
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("preflight must be read-only")
+
+    filesystem = _proxy(
+        open=opened, write=forbidden, replace=forbidden, unlink=forbidden, fsync=forbidden
+    )
+    monkeypatch.setattr(replacement, "os", filesystem)
+    monkeypatch.setattr(replacement.directory, "os", filesystem)
+
+    if expected == OLD:
+        replacement.preflight_posix_private_replace(path, expected_content=expected)
+    else:
+        with pytest.raises(replacement.PosixPrivateReplaceError) as caught:
+            replacement.preflight_posix_private_replace(path, expected_content=expected)
+        _safe(caught.value, path, False)
+
+    assert any(flags & os.O_DIRECTORY for _, flags in fds)
+    assert sum(not flags & os.O_DIRECTORY for _, flags in fds) == 1
+    _closed([descriptor for descriptor, _ in fds])
+    after = path.stat()
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+    assert (after.st_mtime_ns, after.st_ctime_ns) == (before.st_mtime_ns, before.st_ctime_ns)
+    assert path.read_bytes() == OLD and list(path.parent.iterdir()) == [path]
+
+
+@POSIX_ONLY
 def test_relative_syscalls_keep_old_and_new_descriptors_and_sync_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -442,4 +483,4 @@ def test_backend_has_only_reviewed_token_io_consumer_and_no_cleanup_or_path_repa
         if module.name != "_posix_private_replace.py"
         and "_posix_private_replace" in module.read_text(encoding="utf-8")
     }
-    assert consumers == {"production_write_token_io.py"}
+    assert consumers == {"google_test_write_auth.py", "production_write_token_io.py"}

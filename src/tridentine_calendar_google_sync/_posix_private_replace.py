@@ -10,7 +10,8 @@ from __future__ import annotations
 import os
 import secrets
 import stat
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager, suppress
 from pathlib import Path
 
 from tridentine_calendar_google_sync import _posix_private_create as create
@@ -51,16 +52,7 @@ def _check_original(
     create._check_name(bound.descriptor, name, current)
 
 
-def replace_posix_private_bytes(path: Path, content: bytes, *, expected_content: bytes) -> None:
-    """Replace an observed existing private file through a retained 0700 parent.
-
-    Require bounded exact prior bytes, not a hash or a missing-file create. Keep
-    both leaf descriptors and the root-to-parent binding until verification ends.
-    Before replacement, both names and contents are rechecked. After an attempted
-    rename, True evidence never promises the old or new bytes exist at that name.
-    Failures may leave a private temporary; no failure cleanup touches any name.
-    Unit 4L routes validated POSIX token refresh here; generic writers remain unchanged.
-    """
+def _validate_replace_path(path: Path) -> None:
     if os.name != "posix":
         raise PosixPrivateReplaceError("posix_replace_unavailable")
     if (
@@ -71,30 +63,32 @@ def replace_posix_private_bytes(path: Path, content: bytes, *, expected_content:
         or "\x00" in str(path)
     ):
         raise PosixPrivateReplaceError("posix_replace_path_invalid")
-    if (
-        not isinstance(content, bytes)
-        or not isinstance(expected_content, bytes)
-        or len(content) > MAX_SENSITIVE_FILE_BYTES
-        or len(expected_content) > MAX_SENSITIVE_FILE_BYTES
-    ):
+
+
+def _validate_bounded_content(content: bytes) -> None:
+    if not isinstance(content, bytes) or len(content) > MAX_SENSITIVE_FILE_BYTES:
         raise PosixPrivateReplaceError("posix_replace_content_invalid")
+
+
+@contextmanager
+def _open_verified_original(
+    path: Path, expected_content: bytes
+) -> Iterator[tuple[directory._BoundPrivateDirectory, int, os.stat_result, int, int]]:
+    no_follow: int = getattr(os, "O_NOFOLLOW", 0)
+    close_on_exec: int = getattr(os, "O_CLOEXEC", 0)
+    nonblocking: int = getattr(os, "O_NONBLOCK", 0)
+    if (
+        not no_follow
+        or not close_on_exec
+        or not nonblocking
+        or not callable(getattr(os, "pread", None))
+        or not callable(getattr(os, "replace", None))
+    ):
+        raise PosixPrivateReplaceError("posix_replace_unavailable")
 
     bound: directory._BoundPrivateDirectory | None = None
     old_fd = -1
-    new_fd = -1
-    publication_possible = False
     try:
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
-        close_on_exec = getattr(os, "O_CLOEXEC", 0)
-        nonblocking = getattr(os, "O_NONBLOCK", 0)
-        if (
-            not no_follow
-            or not close_on_exec
-            or not nonblocking
-            or not callable(getattr(os, "pread", None))
-            or not callable(getattr(os, "replace", None))
-        ):
-            raise PosixPrivateReplaceError("posix_replace_unavailable")
         bound = directory.open_posix_private_directory(path.parent)
         uid = directory._effective_uid()
         bound.revalidate()
@@ -117,7 +111,52 @@ def replace_posix_private_bytes(path: Path, content: bytes, *, expected_content:
             raise PosixPrivateReplaceError("posix_replace_original_changed")
         _check_original(bound, path.name, old_fd, original, uid, expected_content)
         bound.revalidate()
+        yield bound, old_fd, original, uid, no_follow | close_on_exec
+    finally:
+        try:
+            if old_fd >= 0:
+                with suppress(OSError):
+                    os.close(old_fd)
+        finally:
+            if bound is not None:
+                bound.close()
 
+
+def preflight_posix_private_replace(path: Path, *, expected_content: bytes) -> None:
+    """Verify the current parent and prior private bytes without modifying the filesystem."""
+
+    _validate_replace_path(path)
+    _validate_bounded_content(expected_content)
+    try:
+        with _open_verified_original(path, expected_content):
+            pass
+    except PosixPrivateReplaceError as exc:
+        raise PosixPrivateReplaceError(exc.code) from None
+    except Exception:
+        raise PosixPrivateReplaceError("posix_replace_unverified") from None
+
+
+def replace_posix_private_bytes(path: Path, content: bytes, *, expected_content: bytes) -> None:
+    """Replace an observed existing private file through a retained 0700 parent.
+
+    Require bounded exact prior bytes, not a hash or a missing-file create. Keep
+    both leaf descriptors and the root-to-parent binding until verification ends.
+    Before replacement, both names and contents are rechecked. After an attempted
+    rename, True evidence never promises the old or new bytes exist at that name.
+    Failures may leave a private temporary; no failure cleanup touches any name.
+    Unit 4L routes validated POSIX token refresh here; generic writers remain unchanged.
+    """
+    _validate_replace_path(path)
+    _validate_bounded_content(content)
+    _validate_bounded_content(expected_content)
+
+    original_resources = ExitStack()
+    new_fd = -1
+    publication_possible = False
+    try:
+        bound, old_fd, original, uid, no_follow_flags = original_resources.enter_context(
+            _open_verified_original(path, expected_content)
+        )
         temporary: str | None = None
         for _ in range(16):
             name = ".private-replace-" + secrets.token_hex(16)
@@ -127,7 +166,7 @@ def replace_posix_private_bytes(path: Path, content: bytes, *, expected_content:
             try:
                 new_fd = os.open(
                     name,
-                    os.O_RDWR | os.O_CREAT | os.O_EXCL | no_follow | close_on_exec,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | no_follow_flags,
                     0o600,
                     dir_fd=bound.descriptor,
                 )
@@ -187,9 +226,9 @@ def replace_posix_private_bytes(path: Path, content: bytes, *, expected_content:
         ) from None
     finally:
         # No unlink/chmod/path-repair: leave uncertain private residue alone.
-        for descriptor in (new_fd, old_fd):
-            if descriptor >= 0:
+        try:
+            if new_fd >= 0:
                 with suppress(OSError):
-                    os.close(descriptor)
-        if bound is not None:
-            bound.close()
+                    os.close(new_fd)
+        finally:
+            original_resources.close()
