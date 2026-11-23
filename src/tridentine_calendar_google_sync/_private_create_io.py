@@ -1,4 +1,4 @@
-"""Create-only adapter for planning files and rehearsal evidence, not token bundles.
+"""Create-only adapter for individual sensitive files and rehearsal evidence.
 
 POSIX always uses the private retained-directory publisher. Windows retains its
 existing private or integrity writer, according to the caller's artifact role.
@@ -27,6 +27,18 @@ class PrivateCreateIOError(ValueError):
         self.publication_possible = publication_possible
         self.public_message = "private create-only output could not be verified"
         super().__init__(self.public_message)
+
+
+def preflight_posix_private_text_create(value: str | Path) -> None:
+    """Check a POSIX create-only destination without creating or changing files."""
+
+    if os.name != "posix":
+        raise PrivateCreateIOError(publication_possible=False)
+    try:
+        path = validate_sensitive_output_path(value, overwrite=False)
+        posix_create.preflight_posix_private_create(path)
+    except Exception:
+        raise PrivateCreateIOError(publication_possible=False) from None
 
 
 def _create_text(value: str | Path, text: str, *, max_size: int, private: bool) -> None:

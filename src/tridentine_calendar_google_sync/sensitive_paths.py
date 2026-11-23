@@ -733,18 +733,9 @@ def remove_sensitive_file_if_matches(
 JsonValue = None | bool | int | float | str | Sequence["JsonValue"] | Mapping[str, "JsonValue"]
 
 
-def atomic_write_private_json(
-    value: str | Path,
-    payload: Mapping[str, JsonValue],
-    *,
-    overwrite: bool = False,
-    max_size: int = MAX_SENSITIVE_FILE_BYTES,
-    windows_require_existing_protected_acl: bool = False,
-) -> None:
-    """Atomically write deterministic private JSON without logging its values."""
-
+def _render_private_json(payload: Mapping[str, JsonValue]) -> str:
     try:
-        text = (
+        return (
             json.dumps(
                 payload,
                 ensure_ascii=False,
@@ -759,9 +750,21 @@ def atomic_write_private_json(
             "invalid_sensitive_json",
             "sensitive JSON payload is invalid",
         ) from exc
+
+
+def atomic_write_private_json(
+    value: str | Path,
+    payload: Mapping[str, JsonValue],
+    *,
+    overwrite: bool = False,
+    max_size: int = MAX_SENSITIVE_FILE_BYTES,
+    windows_require_existing_protected_acl: bool = False,
+) -> None:
+    """Atomically write deterministic private JSON without logging its values."""
+
     atomic_write_private_text(
         value,
-        text,
+        _render_private_json(payload),
         overwrite=overwrite,
         max_size=max_size,
         windows_require_existing_protected_acl=windows_require_existing_protected_acl,

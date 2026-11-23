@@ -77,6 +77,10 @@ Test target config, credentials, Test write token, snapshot, trusted Test baseli
 
 Initial Test write authorization creates a new dedicated token file atomically. It rejects an existing destination, reuse of the Production read-only token, and scope expansion.
 
+For an initial Test write save on POSIX, prepare an existing repository-external parent directory owned by the effective user with mode exactly `0700`. Use an unused filename and a directory chain that passes the no-follow ancestor checks. The command checks the destination before starting OAuth without creating output and rechecks it through the retained parent directory at save time.
+
+A failure before the publication attempt means this invocation did not attempt to create the final file. A failure after the attempt, or with unknown publication status, means the output may exist. OAuth may already have issued credentials if the flow ran. Review the designated destination locally without displaying token contents before deciding what to do. The command does not automatically reauthorize, retry the save, or delete an output.
+
 Loading valid Test write credentials leaves the token file untouched. When an existing Test token is expired and refreshable, the loader writes the refreshed token back to its designated Test token path only after a successful refresh and checks of credential validity and exact scope. Before saving, it rechecks the Test target policy and separation from the Production read-only token file.
 
 `inspect-test-calendar-prewrite` can perform this local token update while its Calendar event access remains list-only.

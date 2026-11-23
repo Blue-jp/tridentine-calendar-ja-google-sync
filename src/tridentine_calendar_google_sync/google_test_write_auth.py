@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, Self, cast
 
 from pydantic import Field, ValidationError, model_validator
 
+from tridentine_calendar_google_sync._private_create_io import (
+    PrivateCreateIOError,
+    create_private_text,
+    preflight_posix_private_text_create,
+)
 from tridentine_calendar_google_sync.google_auth import load_desktop_client_config
 from tridentine_calendar_google_sync.google_optional import (
     GoogleOptionalBindings,
@@ -18,6 +24,7 @@ from tridentine_calendar_google_sync.models import StrictFrozenModel
 from tridentine_calendar_google_sync.sensitive_paths import (
     JsonValue,
     SensitivePathError,
+    _render_private_json,
     atomic_write_private_json,
     read_private_sensitive_bytes,
     sensitive_path_identity,
@@ -62,6 +69,32 @@ class TestWriteAuthorizationError(TestWriteAuthError):
 
 class TestWriteCredentialRefreshError(TestWriteAuthError):
     """Existing exact-scope Test write credentials could not be refreshed."""
+
+
+class TestWriteTokenPersistenceError(TestWriteAuthConfigError):
+    """A POSIX initial-save failure with conservative publication evidence."""
+
+    def __init__(self, *, publication_possible: bool | None, preflight: bool = False) -> None:
+        self.publication_possible = publication_possible
+        message = "Test write credentials could not be persisted safely."
+        if publication_possible is False:
+            message += " This call did not attempt to create the final file."
+        else:
+            state = (
+                "This call attempted to create the final file."
+                if publication_possible is True
+                else "The final file creation state is unknown."
+            )
+            message += (
+                f" {state} Output may exist. Check the destination before reauthorizing, retrying, "
+                "or deleting files."
+            )
+        if preflight:
+            message += (
+                " Use an unused filename under an existing POSIX parent owned by "
+                "the effective user with mode 0700."
+            )
+        super().__init__("test_write_token_persistence_failed", message)
 
 
 class TestWriteAuthorizedUserToken(StrictFrozenModel):
@@ -309,17 +342,31 @@ def persist_test_write_authorized_user_credentials(
     """Persist only exact-scope Test credentials to the isolated token path."""
 
     validate_test_write_target_config(target)
-    validate_test_write_token_separation(
+    paths = validate_test_write_token_separation(
         token_path,
         production_read_token_path,
         test_token_exists=overwrite_for_refresh,
     )
     _validate_runtime_scopes(credentials)
     token, value = _credentials_document(credentials)
+    payload = cast(Mapping[str, JsonValue], value)
+    if os.name == "posix" and not overwrite_for_refresh:
+        try:
+            text = _render_private_json(payload)
+        except SensitivePathError:
+            raise TestWriteTokenPersistenceError(publication_possible=False) from None
+        try:
+            create_private_text(paths[0], text)
+        except PrivateCreateIOError as exc:
+            raise TestWriteTokenPersistenceError(
+                publication_possible=exc.publication_possible,
+            ) from None
+        return token
+
     try:
         atomic_write_private_json(
             token_path,
-            cast(Mapping[str, JsonValue], value),
+            payload,
             overwrite=overwrite_for_refresh,
         )
         return token
@@ -435,11 +482,18 @@ def authorize_test_google_write(
 
     validate_test_write_target_config(target)
     _check_cancelled(cancellation_check)
-    validate_test_write_token_separation(
+    paths = validate_test_write_token_separation(
         token_path,
         production_read_token_path,
         test_token_exists=False,
     )
+    if os.name == "posix":
+        try:
+            preflight_posix_private_text_create(paths[0])
+        except PrivateCreateIOError as exc:
+            raise TestWriteTokenPersistenceError(
+                publication_possible=exc.publication_possible, preflight=True
+            ) from None
     config = load_desktop_client_config(client_config_path)
     resolved_bindings = bindings or load_google_optional_bindings()
     try:
@@ -481,6 +535,7 @@ __all__ = [
     "TestWriteAuthorizationError",
     "TestWriteAuthorizedUserToken",
     "TestWriteCredentialRefreshError",
+    "TestWriteTokenPersistenceError",
     "authorize_test_google_write",
     "credentials_from_test_write_token",
     "load_test_write_authorized_user_token",

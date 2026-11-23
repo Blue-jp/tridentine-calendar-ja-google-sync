@@ -227,6 +227,32 @@ def test_adapter_retains_exact_utf8_bytes_and_platform_selection(
     assert calls == [expected]
 
 
+def test_adapter_counts_final_lf_in_four_mib_utf8_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "dispatch.json"
+    limit = 4 * 1024 * 1024
+    prefix, suffix = '{"synthetic":"', '\u30b2"}\n'
+    padding = "x" * (limit - len((prefix + suffix).encode("utf-8")))
+    value = prefix + padding + suffix
+    writes: list[tuple[Path, bytes]] = []
+
+    def writer(output: Path, content: bytes) -> None:
+        writes.append((output, content))
+
+    monkeypatch.setattr(adapter, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(adapter, "validate_sensitive_output_path", lambda value, **_kw: value)
+    monkeypatch.setattr(adapter.posix_create, "create_posix_private_bytes", writer)
+    monkeypatch.setattr(adapter, "atomic_write_private_text", _no_legacy)
+
+    adapter.create_private_text(path, value)
+    with pytest.raises(adapter.PrivateCreateIOError) as caught:
+        adapter.create_private_text(path, prefix + padding + "x" + suffix)
+
+    assert caught.value.publication_possible is False
+    assert writes == [(path, value.encode("utf-8"))]
+
+
 @pytest.mark.parametrize("state", (False, True), ids=("before", "after"))
 def test_adapter_preserves_posix_error_evidence_without_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: bool
@@ -363,6 +389,7 @@ def test_only_reviewed_callers_opt_in_and_common_writer_has_no_new_backend() -> 
         ):
             consumers.add(path.name)
     assert consumers == {
+        "google_test_write_auth.py",
         "production_single_update_plan_io.py",
         "production_single_update_run_spec_io.py",
         "production_write_token_rehearsal_io.py",

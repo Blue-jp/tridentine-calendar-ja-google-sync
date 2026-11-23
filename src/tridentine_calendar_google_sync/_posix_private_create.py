@@ -109,14 +109,7 @@ def _remove_own_temporary(
     raise PosixPrivateCreateError("posix_create_temporary_still_present")
 
 
-def create_posix_private_bytes(path: Path, content: bytes) -> None:
-    """Publish bytes under an absent name in a retained, effective-user-owned 0700 parent.
-
-    Only local POSIX semantics supported by dir_fd, no-follow, link and pread are
-    used. No path fallback, destination replacement, automatic final rollback,
-    permission repair, or generic public-writer dispatch is part of this increment.
-    Errors after a link attempt can leave a published artifact and/or private temp.
-    """
+def _validate_create_path(path: Path) -> None:
     if os.name != "posix":
         raise PosixPrivateCreateError("posix_create_unavailable")
     if (
@@ -127,6 +120,49 @@ def create_posix_private_bytes(path: Path, content: bytes) -> None:
         or "\x00" in str(path)
     ):
         raise PosixPrivateCreateError("posix_create_path_invalid")
+
+
+def _temporary_open_flags() -> int:
+    no_follow: int = getattr(os, "O_NOFOLLOW", 0)
+    close_on_exec: int = getattr(os, "O_CLOEXEC", 0)
+    if not no_follow or not close_on_exec or not callable(getattr(os, "pread", None)):
+        raise PosixPrivateCreateError("posix_create_unavailable")
+    return os.O_RDWR | os.O_CREAT | os.O_EXCL | no_follow | close_on_exec
+
+
+def _require_absent_destination(bound: directory._BoundPrivateDirectory, name: str) -> None:
+    bound.revalidate()
+    try:
+        os.stat(name, dir_fd=bound.descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise PosixPrivateCreateError("posix_create_output_exists")
+
+
+def preflight_posix_private_create(path: Path) -> None:
+    """Check the current parent policy and destination without publishing anything."""
+
+    _validate_create_path(path)
+    try:
+        _temporary_open_flags()
+        with directory.open_posix_private_directory(path.parent) as bound:
+            _require_absent_destination(bound, path.name)
+    except PosixPrivateCreateError:
+        raise
+    except (OSError, ValueError, AttributeError, NotImplementedError):
+        raise PosixPrivateCreateError("posix_create_unverified") from None
+
+
+def create_posix_private_bytes(path: Path, content: bytes) -> None:
+    """Publish bytes under an absent name in a retained, effective-user-owned 0700 parent.
+
+    Only local POSIX semantics supported by dir_fd, no-follow, link and pread are
+    used. No path fallback, destination replacement, automatic final rollback,
+    permission repair, or generic public-writer dispatch is part of this increment.
+    Errors after a link attempt can leave a published artifact and/or private temp.
+    """
+
+    _validate_create_path(path)
     if not isinstance(content, bytes) or len(content) > MAX_SENSITIVE_FILE_BYTES:
         raise PosixPrivateCreateError("posix_create_content_invalid")
     bound: directory._BoundPrivateDirectory | None = None
@@ -136,19 +172,10 @@ def create_posix_private_bytes(path: Path, content: bytes) -> None:
     uid = -1
     publication_possible = False
     try:
-        no_follow = getattr(os, "O_NOFOLLOW", 0)
-        close_on_exec = getattr(os, "O_CLOEXEC", 0)
-        if not no_follow or not close_on_exec or not callable(getattr(os, "pread", None)):
-            raise PosixPrivateCreateError("posix_create_unavailable")
+        flags = _temporary_open_flags()
         bound = directory.open_posix_private_directory(path.parent)
         uid = directory._effective_uid()
-        bound.revalidate()
-        try:
-            os.stat(path.name, dir_fd=bound.descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise PosixPrivateCreateError("posix_create_output_exists")
+        _require_absent_destination(bound, path.name)
         for _ in range(16):
             name = ".private-create-" + secrets.token_hex(16)
             if name == path.name:
@@ -157,7 +184,7 @@ def create_posix_private_bytes(path: Path, content: bytes) -> None:
             try:
                 descriptor = os.open(
                     name,
-                    os.O_RDWR | os.O_CREAT | os.O_EXCL | no_follow | close_on_exec,
+                    flags,
                     0o600,
                     dir_fd=bound.descriptor,
                 )
