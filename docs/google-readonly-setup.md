@@ -50,6 +50,14 @@ POSIX環境ではsecretとsnapshotをowner-only mode `0600`で保存します。
 
 Sanitized snapshotはcredentialsを含みませんが、event title、description、opaque event IDを含むためsensitive runtime dataとして扱います。
 
+### POSIXでのread token新規保存
+
+`authorize-google-readonly` で新規保存する場合は、認可前にrepository外へ専用ディレクトリと未使用のファイル名を用意してください。保存先の直上の親は、実効ユーザー所有でmodeが正確に `0700` の既存ディレクトリである必要があります。祖先はrootまたは実効ユーザー所有とし、root所有でsticky bitが設定された祖先を除き、group/otherに書込み権限を付与できません。symbolic linkや `.git` マーカーを含む経路は拒否します。
+
+認可前に保存先が未作成だった場合は、`--overwrite-token` を指定していても新規作成専用です。OAuthフローの前に保存条件を検査し、保存時にもう一度検査します。認可中に同名のファイルが作られた場合、そのファイルを保持して保存に失敗します。認可前から存在する通常ファイルは、`--overwrite-token` を指定した場合に従来の上書き経路で保存できます。この上書きでは、認可開始時と同じファイルに対する置換は保証されません。元のファイルがなくなった場合は、同じ名前で保存されることがあります。
+
+OAuth後に保存に失敗した場合、資格情報が発行済みの可能性があります。最終名での保存を試みた、または試行状態が不明と表示された場合は、再認可・再試行・ファイル削除の前に保存先の状態を確認してください。
+
 ## Private target contract
 
 Target TOMLは次のclosed structureを使用します。値はすべてplaceholderであり、repositoryへ保存してはいけません。

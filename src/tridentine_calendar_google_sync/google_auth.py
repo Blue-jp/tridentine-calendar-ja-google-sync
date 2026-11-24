@@ -3,20 +3,31 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Literal, Self, cast
 
 from pydantic import Field, ValidationError, model_validator
 
+from tridentine_calendar_google_sync._private_create_io import (
+    PrivateCreateIOError,
+    create_private_text,
+    preflight_posix_private_text_create,
+)
 from tridentine_calendar_google_sync.google_optional import (
     GoogleOptionalBindings,
     load_google_optional_bindings,
 )
 from tridentine_calendar_google_sync.models import StrictFrozenModel
 from tridentine_calendar_google_sync.sensitive_paths import (
+    MAX_SENSITIVE_FILE_BYTES,
     JsonValue,
     SensitivePathError,
+    _absolute_local_path,
+    _render_private_json,
     atomic_write_private_json,
     read_private_sensitive_bytes,
     validate_sensitive_output_path,
@@ -58,6 +69,39 @@ class GoogleAuthorizationError(GoogleAuthError):
 
 class GoogleCredentialRefreshError(GoogleAuthError):
     """Existing read-only credentials could not be refreshed safely."""
+
+
+class GoogleReadonlyTokenPersistenceError(SensitivePathError):
+    """Safe failure of a POSIX create-only authorization save."""
+
+    def __init__(
+        self,
+        *,
+        publication_possible: bool | None,
+        preflight: bool = False,
+        code: str = "sensitive_write_failed",
+        public_message: str = "Google read-only credentials could not be persisted safely",
+    ) -> None:
+        self.publication_possible = publication_possible
+        if preflight:
+            message = (
+                "Google read-only token destination could not be verified before authorization."
+            )
+        else:
+            message = f"{public_message}. Google authorization may already have issued credentials."
+        if publication_possible is False:
+            message += " This call did not attempt to create the final file."
+        else:
+            state = (
+                "This call attempted to create the final file."
+                if publication_possible is True
+                else "The final file creation state is unknown."
+            )
+            message += (
+                f" {state} Output may exist. Check the destination before reauthorizing, retrying, "
+                "or deleting files."
+            )
+        super().__init__(code, message)
 
 
 class DesktopInstalledClient(StrictFrozenModel):
@@ -410,6 +454,65 @@ def _default_flow_runner(flow: Any) -> Any:
     )
 
 
+def _posix_authorization_destination_exists(value: str | Path) -> bool:
+    path = _absolute_local_path(value)
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    # Search-only descriptors preserve access to searchable but unreadable directories.
+    search = getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY))
+    try:
+        if not no_follow or not directory:
+            raise NotImplementedError
+        flags = search | no_follow | directory
+        with ExitStack() as directories:
+            parent_fd: int | None = None
+            for part in path.parent.parts:
+                parent_fd = os.open(part, flags, dir_fd=parent_fd)
+                directories.callback(os.close, parent_fd)
+            try:
+                info = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return False
+    except (OSError, NotImplementedError, ValueError):
+        raise SensitivePathError(
+            "sensitive_output_unavailable",
+            "sensitive output cannot be safely inspected",
+        ) from None
+    if stat.S_ISLNK(info.st_mode):
+        raise SensitivePathError(
+            "sensitive_path_symlink",
+            "symbolic links are not accepted for sensitive data",
+        )
+    if not stat.S_ISREG(info.st_mode):
+        raise SensitivePathError(
+            "sensitive_output_not_file",
+            "sensitive output is not a regular local file",
+        )
+    return True
+
+
+def _create_posix_readonly_token(path: Path, payload: Mapping[str, JsonValue]) -> None:
+    try:
+        text = _render_private_json(payload)
+        if len(text.encode("utf-8", errors="strict")) > MAX_SENSITIVE_FILE_BYTES:
+            raise SensitivePathError(
+                "sensitive_output_too_large",
+                "sensitive output exceeds the size limit",
+            )
+    except SensitivePathError as exc:
+        raise GoogleReadonlyTokenPersistenceError(
+            publication_possible=False, code=exc.code, public_message=exc.public_message
+        ) from None
+    except UnicodeEncodeError:
+        raise GoogleReadonlyTokenPersistenceError(publication_possible=False) from None
+    try:
+        create_private_text(path, text)
+    except PrivateCreateIOError as exc:
+        raise GoogleReadonlyTokenPersistenceError(
+            publication_possible=exc.publication_possible,
+        ) from None
+
+
 def authorize_google_readonly(
     client_config_path: str | Path,
     token_path: str | Path,
@@ -421,12 +524,22 @@ def authorize_google_readonly(
 ) -> Any:
     """Run an explicit localhost desktop flow and create a new token atomically.
 
-    Existing tokens are rejected by default.  Replacement requires the caller
-    to pass the separate explicit ``overwrite=True`` flag.
+    Existing tokens are rejected by default. On POSIX, ``overwrite=True``
+    permits replacement only when a regular file is observed before authorization.
     """
 
     _check_cancelled(cancellation_check)
-    validate_sensitive_output_path(token_path, overwrite=overwrite)
+    create_only = os.name == "posix" and (
+        not overwrite or not _posix_authorization_destination_exists(token_path)
+    )
+    path = validate_sensitive_output_path(token_path, overwrite=overwrite and not create_only)
+    if create_only:
+        try:
+            preflight_posix_private_text_create(path)
+        except PrivateCreateIOError as exc:
+            raise GoogleReadonlyTokenPersistenceError(
+                publication_possible=exc.publication_possible, preflight=True
+            ) from None
     config = load_desktop_client_config(client_config_path)
     resolved_bindings = bindings or load_google_optional_bindings()
     try:
@@ -450,7 +563,11 @@ def authorize_google_readonly(
         ) from exc
     _check_cancelled(cancellation_check)
     _validate_runtime_credential_scopes(credentials)
-    persist_authorized_user_credentials(credentials, token_path, overwrite=overwrite)
+    if create_only:
+        _, value = _credentials_payload(credentials)
+        _create_posix_readonly_token(path, cast(Mapping[str, JsonValue], value))
+    else:
+        persist_authorized_user_credentials(credentials, token_path, overwrite=overwrite)
     return credentials
 
 

@@ -389,6 +389,7 @@ def test_only_reviewed_callers_opt_in_and_common_writer_has_no_new_backend() -> 
         ):
             consumers.add(path.name)
     assert consumers == {
+        "google_auth.py",
         "google_test_write_auth.py",
         "production_single_update_plan_io.py",
         "production_single_update_run_spec_io.py",
