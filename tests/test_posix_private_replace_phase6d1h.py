@@ -483,4 +483,8 @@ def test_backend_has_only_reviewed_token_io_consumer_and_no_cleanup_or_path_repa
         if module.name != "_posix_private_replace.py"
         and "_posix_private_replace" in module.read_text(encoding="utf-8")
     }
-    assert consumers == {"google_test_write_auth.py", "production_write_token_io.py"}
+    assert consumers == {
+        "google_auth.py",
+        "google_test_write_auth.py",
+        "production_write_token_io.py",
+    }

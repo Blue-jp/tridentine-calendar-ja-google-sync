@@ -7,11 +7,13 @@ import os
 import stat
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Self, cast
 
 from pydantic import Field, ValidationError, model_validator
 
+from tridentine_calendar_google_sync import _posix_private_replace as posix_replace
 from tridentine_calendar_google_sync._private_create_io import (
     PrivateCreateIOError,
     create_private_text,
@@ -69,6 +71,41 @@ class GoogleAuthorizationError(GoogleAuthError):
 
 class GoogleCredentialRefreshError(GoogleAuthError):
     """Existing read-only credentials could not be refreshed safely."""
+
+
+class GoogleReadonlyRefreshRequestError(GoogleCredentialRefreshError):
+    """A POSIX OAuth refresh request failed before local persistence."""
+
+
+class GoogleReadonlyRefreshPersistenceError(SensitivePathError):
+    """A POSIX refresh stopped at local preflight or persistence."""
+
+    def __init__(self, *, publication_possible: bool | None, preflight: bool = False) -> None:
+        self.publication_possible = publication_possible
+        self.preflight = preflight
+        if preflight:
+            message = (
+                "Read-only token replacement could not be verified "
+                "before the Google refresh request."
+            )
+        else:
+            message = (
+                "Google refresh succeeded, but local read-only token persistence "
+                "could not be verified."
+            )
+        if publication_possible is False:
+            message += " This call did not attempt to replace the final file."
+        else:
+            state = (
+                "This call attempted to replace the final file."
+                if publication_possible is True
+                else "The final file replacement state is unknown."
+            )
+            message += (
+                f" {state} Check the destination before retrying, reauthorizing, restoring, "
+                "or deleting files."
+            )
+        super().__init__("sensitive_write_failed", message)
 
 
 class GoogleReadonlyTokenPersistenceError(SensitivePathError):
@@ -246,16 +283,14 @@ def load_desktop_client_config(path: str | Path) -> DesktopInstalledClientConfig
         ) from exc
 
 
-def load_authorized_user_token(path: str | Path) -> AuthorizedUserToken:
-    """Load one explicit authorized-user JSON file and enforce the exact scope."""
-
+def _read_authorized_user_token(path: str | Path) -> tuple[AuthorizedUserToken, bytes]:
     try:
         raw = read_private_sensitive_bytes(
             path,
             windows_require_protected_acl=False,
         )
         value = _normalize_token_payload(_decode_json_object(raw, kind="authorized_user_token"))
-        return AuthorizedUserToken.model_validate(value, strict=True)
+        return AuthorizedUserToken.model_validate(value, strict=True), raw
     except GoogleAuthError:
         raise
     except SensitivePathError:
@@ -268,6 +303,12 @@ def load_authorized_user_token(path: str | Path) -> AuthorizedUserToken:
             "invalid_authorized_user_token",
             "authorized-user token is invalid",
         ) from exc
+
+
+def load_authorized_user_token(path: str | Path) -> AuthorizedUserToken:
+    """Load one explicit authorized-user JSON file and enforce the exact scope."""
+
+    return _read_authorized_user_token(path)[0]
 
 
 def _client_config_payload(config: DesktopInstalledClientConfig) -> dict[str, object]:
@@ -393,25 +434,7 @@ def credentials_from_authorized_user_token(
     return credentials
 
 
-def load_readonly_credentials(
-    token_path: str | Path,
-    *,
-    bindings: GoogleOptionalBindings | None = None,
-    cancellation_check: CancellationCheck | None = None,
-) -> Any:
-    """Load and, only if required, refresh exact-scope credentials.
-
-    Calling this function may perform a token refresh through the injected
-    official Request class.  Merely importing this module performs no OAuth or
-    network work.
-    """
-
-    _check_cancelled(cancellation_check)
-    token = load_authorized_user_token(token_path)
-    resolved_bindings = bindings or load_google_optional_bindings()
-    credentials = credentials_from_authorized_user_token(token, bindings=resolved_bindings)
-    if getattr(credentials, "valid", False) is True:
-        return credentials
+def _require_refreshable(credentials: Any) -> None:
     if getattr(credentials, "expired", False) is not True or not getattr(
         credentials,
         "refresh_token",
@@ -421,26 +444,127 @@ def load_readonly_credentials(
             "google_credentials_not_refreshable",
             "Google read-only credentials are invalid and cannot be refreshed",
         )
-    _check_cancelled(cancellation_check)
+
+
+def _request_readonly_refresh(
+    credentials: Any,
+    bindings: GoogleOptionalBindings,
+    *,
+    error_type: type[GoogleCredentialRefreshError] = GoogleCredentialRefreshError,
+) -> None:
     try:
-        credentials.refresh(resolved_bindings.request_class())
+        credentials.refresh(bindings.request_class())
     except KeyboardInterrupt as exc:
         raise GoogleAuthorizationCancelled(
             "google_refresh_cancelled",
             "Google credential refresh was cancelled",
-        ) from exc
+        ) from (exc if error_type is GoogleCredentialRefreshError else None)
     except Exception as exc:
-        raise GoogleCredentialRefreshError(
+        raise error_type(
             "google_credential_refresh_failed",
             "Google read-only credentials could not be refreshed",
-        ) from exc
-    _check_cancelled(cancellation_check)
+        ) from (exc if error_type is GoogleCredentialRefreshError else None)
+
+
+def _check_refreshed_credentials(credentials: Any) -> None:
     _validate_runtime_credential_scopes(credentials)
     if getattr(credentials, "valid", False) is not True:
         raise GoogleCredentialRefreshError(
             "google_credentials_invalid_after_refresh",
             "Google read-only credentials remain invalid after refresh",
         )
+
+
+@dataclass(repr=False)
+class _PosixReadonlyCredentials:
+    """Keep the read or last verified saved bytes for this credentials instance."""
+
+    credentials: Any
+    _token_path: Path
+    _expected_content: bytes
+    _bindings: GoogleOptionalBindings
+    _cancellation_check: CancellationCheck | None
+
+    def refresh(self) -> None:
+        _check_cancelled(self._cancellation_check)
+        try:
+            posix_replace.preflight_posix_private_replace(
+                self._token_path, expected_content=self._expected_content
+            )
+        except Exception:
+            raise GoogleReadonlyRefreshPersistenceError(
+                publication_possible=False, preflight=True
+            ) from None
+        _check_cancelled(self._cancellation_check)
+        _request_readonly_refresh(
+            self.credentials, self._bindings, error_type=GoogleReadonlyRefreshRequestError
+        )
+        _check_cancelled(self._cancellation_check)
+        _check_refreshed_credentials(self.credentials)
+        try:
+            _, value = _credentials_payload(self.credentials)
+            content = _render_private_json(cast(Mapping[str, JsonValue], value)).encode("utf-8")
+        except Exception:
+            raise GoogleReadonlyRefreshPersistenceError(publication_possible=False) from None
+        try:
+            posix_replace.replace_posix_private_bytes(
+                self._token_path, content, expected_content=self._expected_content
+            )
+        except posix_replace.PosixPrivateReplaceError as exc:
+            raise GoogleReadonlyRefreshPersistenceError(
+                publication_possible=exc.publication_possible,
+            ) from None
+        except Exception:
+            raise GoogleReadonlyRefreshPersistenceError(publication_possible=None) from None
+        self._expected_content = content
+
+
+def _load_posix_readonly_credentials(
+    token_path: str | Path,
+    *,
+    bindings: GoogleOptionalBindings | None = None,
+    cancellation_check: CancellationCheck | None = None,
+) -> _PosixReadonlyCredentials:
+    _check_cancelled(cancellation_check)
+    token, original = _read_authorized_user_token(token_path)
+    resolved_bindings = bindings or load_google_optional_bindings()
+    credentials = credentials_from_authorized_user_token(token, bindings=resolved_bindings)
+    state = _PosixReadonlyCredentials(
+        credentials, Path(token_path), original, resolved_bindings, cancellation_check
+    )
+    if getattr(credentials, "valid", False) is not True:
+        _require_refreshable(credentials)
+        state.refresh()
+    return state
+
+
+def load_readonly_credentials(
+    token_path: str | Path,
+    *,
+    bindings: GoogleOptionalBindings | None = None,
+    cancellation_check: CancellationCheck | None = None,
+) -> Any:
+    """Load and, only if required, refresh exact-scope credentials.
+
+    Calling this function may perform a token refresh through the injected
+    official Request class. Merely importing this module performs no network work.
+    """
+
+    if os.name == "posix":
+        return _load_posix_readonly_credentials(
+            token_path, bindings=bindings, cancellation_check=cancellation_check
+        ).credentials
+    _check_cancelled(cancellation_check)
+    token = load_authorized_user_token(token_path)
+    resolved_bindings = bindings or load_google_optional_bindings()
+    credentials = credentials_from_authorized_user_token(token, bindings=resolved_bindings)
+    if getattr(credentials, "valid", False) is True:
+        return credentials
+    _require_refreshable(credentials)
+    _check_cancelled(cancellation_check)
+    _request_readonly_refresh(credentials, resolved_bindings)
+    _check_cancelled(cancellation_check)
+    _check_refreshed_credentials(credentials)
     persist_authorized_user_credentials(credentials, token_path, overwrite=True)
     return credentials
 

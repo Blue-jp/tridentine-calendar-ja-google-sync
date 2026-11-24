@@ -261,12 +261,15 @@ def test_secret_loaders_have_no_generic_read_fallback(kind: str) -> None:
 
     calls = function_calls(loader.__name__)
     assert "read_sensitive_bytes" not in calls
-    if kind == "test_token":
-        assert "_read_test_write_token" in calls
-        helper_calls = function_calls("_read_test_write_token")
-        assert "read_private_sensitive_bytes" in helper_calls
-        assert "read_sensitive_bytes" not in helper_calls
-    else:
-        assert "read_private_sensitive_bytes" in calls
+    helper = {
+        "read_token": "_read_authorized_user_token",
+        "test_token": "_read_test_write_token",
+    }.get(kind)
+    reader_calls = calls
+    if helper is not None:
+        assert helper in calls
+        reader_calls = function_calls(helper)
+        assert "read_sensitive_bytes" not in reader_calls
+    assert "read_private_sensitive_bytes" in reader_calls
     if kind == "production_token":
         assert "_require_private_file_mode" not in calls

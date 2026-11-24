@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import os
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -85,6 +86,8 @@ from tridentine_calendar_google_sync.google_auth import (
     GoogleAuthConfigError,
     GoogleAuthError,
     GoogleCredentialRefreshError,
+    GoogleReadonlyRefreshPersistenceError,
+    _load_posix_readonly_credentials,
     authorize_google_readonly,
     load_readonly_credentials,
     persist_authorized_user_credentials,
@@ -1966,13 +1969,18 @@ def _fetch_google_command(args: argparse.Namespace) -> int:
     target_fingerprint = verify_target_fingerprint(target)
     validate_snapshot_output(args.output)
     bindings = load_google_optional_bindings()
-    credentials = load_readonly_credentials(args.token_file, bindings=bindings)
+    posix_credentials = None
+    if os.name == "posix":
+        posix_credentials = _load_posix_readonly_credentials(args.token_file, bindings=bindings)
+        credentials = posix_credentials.credentials
+    else:
+        credentials = load_readonly_credentials(args.token_file, bindings=bindings)
     client = build_read_only_calendar_client(
         credentials,
         build_service=bindings.build_service,
     )
 
-    def refresh_credentials() -> None:
+    def refresh_legacy_credentials() -> None:
         try:
             credentials.refresh(bindings.request_class())
             persist_authorized_user_credentials(credentials, args.token_file, overwrite=True)
@@ -2003,14 +2011,21 @@ def _fetch_google_command(args: argparse.Namespace) -> int:
             ),
         )
 
-    fetched = fetch_google_event_pages(
-        client,
-        calendar_id=target.calendar_id,
-        target_fingerprint=target_fingerprint,
-        expected_target_fingerprint=target.expected_fingerprint,
-        refresh_credentials=refresh_credentials,
-        validate_metadata=validate_metadata,
+    refresh_credentials = (
+        posix_credentials.refresh if posix_credentials is not None else refresh_legacy_credentials
     )
+    try:
+        fetched = fetch_google_event_pages(
+            client,
+            calendar_id=target.calendar_id,
+            target_fingerprint=target_fingerprint,
+            expected_target_fingerprint=target.expected_fingerprint,
+            refresh_credentials=refresh_credentials,
+            validate_metadata=validate_metadata,
+        )
+    except GoogleReadonlyRefreshPersistenceError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_GOOGLE_READ_ERROR
     snapshot = sanitize_fetched_pages(fetched, captured_at=datetime.now(UTC))
     write_google_snapshot(snapshot, args.output)
     target_reference = short_target_reference(target_fingerprint)

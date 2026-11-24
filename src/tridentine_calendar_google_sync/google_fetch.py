@@ -10,6 +10,10 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
+from tridentine_calendar_google_sync.google_auth import (
+    GoogleReadonlyRefreshPersistenceError,
+    GoogleReadonlyRefreshRequestError,
+)
 from tridentine_calendar_google_sync.google_client import ReadOnlyCalendarClient
 from tridentine_calendar_google_sync.google_errors import (
     SafeGoogleError,
@@ -144,6 +148,8 @@ def _default_jitter(maximum: float) -> float:
 def _refresh_once(refresh_credentials: Callable[[], None], *, attempt: int) -> None:
     try:
         refresh_credentials()
+    except (GoogleReadonlyRefreshPersistenceError, GoogleReadonlyRefreshRequestError):
+        raise
     except Exception as exc:
         raise safe_google_error_from_exception(
             exc,
