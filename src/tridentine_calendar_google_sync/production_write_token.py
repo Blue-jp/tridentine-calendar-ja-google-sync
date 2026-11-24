@@ -1975,6 +1975,7 @@ class _BoundMockRehearsalSessionProvider(_NoCredentialSessionCopy):
     __slots__ = (
         "_active",
         "_factory_identity",
+        "_load_attempt",
         "_make_refresher",
         "_now_utc",
         "_pid",
@@ -1984,6 +1985,7 @@ class _BoundMockRehearsalSessionProvider(_NoCredentialSessionCopy):
     )
     _active: bool
     _factory_identity: _BoundMockRehearsalSessionProvider
+    _load_attempt: object
     _make_refresher: Callable[[], ProductionWriteTokenRefresher]
     _now_utc: Callable[[], datetime]
     _pid: int
@@ -2008,6 +2010,7 @@ class _BoundMockRehearsalSessionProvider(_NoCredentialSessionCopy):
             valid = (
                 type(self) is _BoundMockRehearsalSessionProvider
                 and self._factory_identity is self
+                and type(self._load_attempt) is object
                 and type(self._snapshot) is _BoundMockRehearsalSnapshot
                 and type(self._pid) is int
                 and isinstance(self._thread, threading.Thread)
@@ -2021,6 +2024,15 @@ class _BoundMockRehearsalSessionProvider(_NoCredentialSessionCopy):
             raise _invalid_bound_mock_provider() from None
         if not valid:
             raise _invalid_bound_mock_provider()
+
+    def _load_attempt_for_current_actor(self) -> object | None:
+        if (
+            self._pid == getpid()
+            and self._thread is threading.current_thread()
+            and self._thread.is_alive()
+        ):
+            return self._load_attempt
+        return None
 
     def load_session(
         self, *, target: ProductionWriteTargetConfig
@@ -2048,6 +2060,8 @@ class _BoundMockRehearsalSessionProvider(_NoCredentialSessionCopy):
         try:
             object.__setattr__(self, "_active", True)
             object.__setattr__(self, "refresh_attempt_count", 0)
+            # Publish a new identity only after this load passes admission.
+            object.__setattr__(self, "_load_attempt", object())
             now = self._now_utc()
             refresher = _BoundMockRehearsalRefresher(self._make_refresher(), self)
             return _prepare_start_linked_session_mock(
@@ -2206,6 +2220,7 @@ def _bind_mock_rehearsal_session_provider(
     object.__setattr__(provider, "_active", False)
     object.__setattr__(provider, "refresh_attempt_count", 0)
     object.__setattr__(provider, "_factory_identity", provider)
+    object.__setattr__(provider, "_load_attempt", object())
     return provider
 
 

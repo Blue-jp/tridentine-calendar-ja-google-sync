@@ -1154,6 +1154,190 @@ def test_bound_writer_w_and_held_p_keep_publication_and_safe_attempt_count(
     fake.calibrate()
 
 
+def test_bound_refresh_dispatch_that_raises_is_reported_without_save_or_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trial = _BoundTrial(tmp_path, expired=True)
+    storage = trial.storage
+    provider = trial.bind()
+    storage.faults["refresh"] = RuntimeError("Synthetic refresh dispatch failure")
+
+    with storage.installed(monkeypatch) as local, _bound_denials(local) as denied:
+        trial.observe(local)
+        outcome = trial.run(provider)
+
+    assert not denied and not provider._active
+    assert trial.calls == Counter(clock=1, factory=1, linked=1)
+    assert outcome.report.token_refresh_count == provider.refresh_attempt_count == 1
+    assert storage.calls["refresh"] == 1
+    assert storage.calls["writer"] == storage.published == 0
+    assert storage.calls["acquire"] == storage.calls["entry"] == storage.calls["exit"] == 1
+    assert storage.raw is not None and not trial.delivered
+    assert len(trial.lower_errors) == 1
+    error = trial.lower_errors[0]
+    assert type(error) is tokens.ProductionWriteTokenRefreshError
+    assert outcome.report.safe_code == error.code == "production_write_token_refresh_failed"
+    assert (
+        outcome.report.result_state is ProductionWriteTokenRehearsalResultState.TOKEN_REFRESH_FAILED
+    )
+    assert storage.snapshot().record_publication is True
+    assert storage.snapshot().credential_publication is False
+    trial.assert_no_reads(outcome)
+
+
+@pytest.mark.parametrize("boundary", ("checkpoint_9", "exit"), ids=("final-checkpoint", "exit"))
+def test_bound_late_failure_reports_refresh_dispatch_after_successful_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    trial = _BoundTrial(tmp_path, expired=True)
+    storage = trial.storage
+    fake = _CounterTripwireRefresher(storage)
+    trial.refresher_factory = lambda: fake
+    provider = trial.bind()
+    failure = RuntimeError("Synthetic late preparation failure")
+    storage.faults[boundary] = failure
+
+    def writer(*args, **kwargs):
+        result = storage._save(*args, **kwargs)
+        fake.reject_late_reads = True
+        return result
+
+    with storage.installed(monkeypatch) as local, _bound_denials(local) as denied:
+        trial.observe(local)
+        local.setattr(token_io, "persist_refreshed_production_write_token", writer)
+        outcome = trial.run(provider)
+
+    assert not denied and not provider._active
+    assert trial.calls == Counter(clock=1, factory=1, linked=1)
+    assert provider.refresh_attempt_count == 1
+    assert storage.calls["refresh"] == storage.calls["writer"] == storage.published == 1
+    assert storage.calls["acquire"] == storage.calls["entry"] == storage.calls["exit"] == 1
+    assert storage.raw is not None and not trial.delivered
+    assert len(trial.lower_errors) == 1
+    if boundary == "checkpoint_9":
+        assert type(trial.lower_errors[0]) is records._LinkedCheckpointFailure
+    else:
+        assert trial.lower_errors[0] is failure
+    diagnostics = storage.snapshot()
+    assert diagnostics.record_publication is True
+    assert diagnostics.credential_publication is True
+    assert diagnostics.candidate_constructed and diagnostics.delivery == "withheld"
+    assert (
+        outcome.report.result_state
+        is ProductionWriteTokenRehearsalResultState.INPUT_BINDING_MISMATCH
+    )
+    assert outcome.report.safe_code == _SESSION_FAILED
+    trial.assert_no_reads(outcome)
+    fake.calibrate()
+    assert outcome.report.token_refresh_count == 1
+
+
+def test_bound_rejected_load_does_not_report_or_reset_previous_refresh_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trial = _BoundTrial(tmp_path, expired=True)
+    storage = trial.storage
+    provider = trial.bind()
+    target = storage.target
+    mismatched_target = target.model_copy(update={"expected_summary": "Another fixture summary"})
+    assert production_write_target_reference(
+        mismatched_target
+    ) == production_write_target_reference(target)
+    assert calculate_production_write_target_hash(
+        mismatched_target
+    ) != calculate_production_write_target_hash(target)
+    load = type(provider).load_session
+    load_calls = []
+
+    def observe_load(self, *, target):
+        load_calls.append("load")
+        return load(self, target=target)
+
+    with storage.installed(monkeypatch) as local, _bound_denials(local) as denied:
+        trial.observe(local)
+        local.setattr(type(provider), "load_session", observe_load)
+        first = trial.run(provider)
+        assert first.report.result_state is ProductionWriteTokenRehearsalResultState.READY
+        assert first.report.token_refresh_count == provider.refresh_attempt_count == 1
+        assert storage.calls["refresh"] == storage.calls["writer"] == storage.published == 1
+        previous_calls = trial.calls.copy()
+        previous_storage_calls = storage.calls.copy()
+        previous_start = storage.raw
+        with _bound_denials(local, (*_BOUND_DENIED, *_SETUP_DENIED)) as pre_load_denied:
+            outcome = trial.run(provider, target=mismatched_target)
+        assert not pre_load_denied
+        assert load_calls == ["load", "load"]
+        assert trial.calls == previous_calls and storage.calls == previous_storage_calls
+        assert storage.raw == previous_start
+        assert provider.refresh_attempt_count == 1 and not provider._active
+        assert len(trial.delivered) == len(trial.fakes) == 1 and not trial.lower_errors
+        trial.assert_no_reads(outcome, earlier_reads=1)
+    assert not denied and outcome.report.token_refresh_count == 0
+    assert outcome.report.safe_code == _BOUND_TARGET_MISMATCH
+    assert outcome.report.result_state is ProductionWriteTokenRehearsalResultState.TARGET_MISMATCH
+
+
+@pytest.mark.parametrize("refusal", ("confirmation", "transport", "manifest", "source", "baseline"))
+def test_bound_pre_load_refusal_does_not_report_or_reset_previous_refresh_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    trial = _BoundTrial(tmp_path, expired=True)
+    other = build_rehearsal_artifacts(tmp_path / "drift", updated_indexes=(1,)).inputs
+    storage = trial.storage
+    provider = trial.bind()
+    overrides = {
+        "confirmation": {"confirmation": "wrong"},
+        "transport": {"transport_provider": object()},
+        "manifest": {"manifest": other.manifest},
+        "source": {"accepted_source": other.updated.source},
+        "baseline": {"trusted_baseline": other.baseline},
+    }
+    with storage.installed(monkeypatch) as local, _bound_denials(local) as denied:
+        trial.observe(local)
+        first = trial.run(provider)
+        assert first.report.result_state is ProductionWriteTokenRehearsalResultState.READY
+        assert first.report.token_refresh_count == provider.refresh_attempt_count == 1
+        assert storage.calls["refresh"] == storage.calls["writer"] == storage.published == 1
+        previous_calls = trial.calls.copy()
+        previous_storage_calls = storage.calls.copy()
+        previous_start = storage.raw
+        targets = (
+            *_BOUND_DENIED,
+            *_SETUP_DENIED,
+            (type(provider), "load_session"),
+        )
+        with _bound_denials(local, targets) as pre_load_denied:
+            outcome = trial.run(provider, **overrides[refusal])
+        assert not pre_load_denied
+        assert trial.calls == previous_calls and storage.calls == previous_storage_calls
+        assert storage.raw == previous_start
+        assert provider.refresh_attempt_count == 1 and not provider._active
+        assert len(trial.delivered) == len(trial.fakes) == 1 and not trial.lower_errors
+        trial.assert_no_reads(outcome, earlier_reads=1)
+    assert not denied and outcome.report.token_refresh_count == 0
+    if refusal == "confirmation":
+        assert outcome.report.safe_code == "production_rehearsal_confirmation_mismatch"
+        assert (
+            outcome.report.result_state is ProductionWriteTokenRehearsalResultState.TARGET_MISMATCH
+        )
+    elif refusal == "transport":
+        assert outcome.report.safe_code == "production_rehearsal_fake_transport_required"
+        assert (
+            outcome.report.result_state is ProductionWriteTokenRehearsalResultState.TRANSPORT_FAILED
+        )
+    else:
+        assert outcome.report.safe_code is not None
+        assert (
+            "baseline" if refusal == "baseline" else "manifest_source"
+        ) in outcome.report.safe_code
+        expected_state = (
+            ProductionWriteTokenRehearsalResultState.PRODUCTION_FULL_SNAPSHOT_DRIFT
+            if refusal == "baseline"
+            else ProductionWriteTokenRehearsalResultState.INPUT_BINDING_MISMATCH
+        )
+        assert outcome.report.result_state is expected_state
+
+
 def test_bound_pre_save_cancel_keeps_first_identity_even_if_exit_also_cancels(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1315,6 +1499,127 @@ def test_bound_unauthorized_actor_does_not_reset_an_active_request(
     assert not denied and not provider._active
     assert trial.calls == Counter(clock=1, factory=1, linked=1)
     assert trial.storage.calls["refresh"] == trial.storage.calls["writer"] == 1
+
+
+@pytest.mark.parametrize("actor", ("reentry", "other_thread", "wrong_pid"))
+def test_bound_wrapper_rejected_actor_does_not_report_active_attempt_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str
+) -> None:
+    trial = _BoundTrial(tmp_path, expired=True)
+    provider = trial.bind()
+    nested_outcomes = []
+    nested_errors = []
+
+    def nested_run() -> None:
+        try:
+            nested_outcomes.append(trial.run(provider))
+        except BaseException as error:
+            nested_errors.append(error)
+
+    class CallbackFake(linked_tests._Refresher):
+        def refresh(self, token, scopes):
+            result = super().refresh(token, scopes)
+            previous_calls = trial.calls.copy()
+            previous_storage_calls = trial.storage.calls.copy()
+            assert provider._active and provider.refresh_attempt_count == 1
+            if actor == "other_thread":
+                thread = threading.Thread(target=nested_run)
+                thread.start()
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+            elif actor == "wrong_pid":
+                with monkeypatch.context() as local:
+                    other_pid = tokens.getpid() + 1
+                    local.setattr(tokens, "getpid", lambda: other_pid)
+                    nested_run()
+            else:
+                nested_run()
+            assert not nested_errors and len(nested_outcomes) == 1
+            rejected = nested_outcomes[0]
+            assert rejected.report.token_refresh_count == 0
+            assert rejected.report.safe_code == _BOUND_USE_INVALID
+            assert (
+                rejected.report.result_state
+                is ProductionWriteTokenRehearsalResultState.INPUT_BINDING_MISMATCH
+            )
+            trial.assert_no_reads(rejected)
+            assert provider._active and provider.refresh_attempt_count == 1
+            assert trial.calls == previous_calls
+            assert trial.storage.calls == previous_storage_calls
+            return result
+
+    trial.refresher_factory = lambda: CallbackFake(trial.storage)
+    with trial.storage.installed(monkeypatch) as local, _bound_denials(local) as denied:
+        trial.observe(local)
+        outcome = trial.run(provider)
+    assert not denied and not provider._active
+    assert outcome.report.result_state is ProductionWriteTokenRehearsalResultState.READY
+    assert outcome.report.token_refresh_count == provider.refresh_attempt_count == 1
+    assert trial.storage.calls["refresh"] == trial.storage.calls["writer"] == 1
+    assert trial.calls == Counter(clock=1, factory=1, linked=1)
+    assert len(trial.delivered) == 1 and not trial.lower_errors
+
+
+def test_bound_foreign_wrapper_does_not_report_interleaved_creator_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trial = _BoundTrial(tmp_path, expired=True)
+    provider = trial.bind()
+    creator = threading.current_thread()
+    foreign_waiting = threading.Event()
+    creator_finished = threading.Event()
+    foreign_outcomes = []
+    foreign_errors = []
+    load = type(provider).load_session
+    load_calls = []
+
+    def interleaved_load(self, *, target):
+        is_creator = threading.current_thread() is creator
+        load_calls.append("creator" if is_creator else "foreign")
+        if not is_creator:
+            # The wrapper has captured diagnostics, but this actor has not loaded.
+            foreign_waiting.set()
+            assert creator_finished.wait(timeout=5)
+        return load(self, target=target)
+
+    def foreign_run() -> None:
+        try:
+            foreign_outcomes.append(trial.run(provider))
+        except BaseException as error:
+            foreign_errors.append(error)
+
+    with trial.storage.installed(monkeypatch) as local, _bound_denials(local) as denied:
+        trial.observe(local)
+        local.setattr(type(provider), "load_session", interleaved_load)
+        thread = threading.Thread(target=foreign_run)
+        thread.start()
+        try:
+            assert foreign_waiting.wait(timeout=5)
+            assert not provider._active and provider.refresh_attempt_count == 0
+            outcome = trial.run(provider)
+            previous_calls = trial.calls.copy()
+            previous_storage_calls = trial.storage.calls.copy()
+        finally:
+            creator_finished.set()
+            thread.join(timeout=5)
+        assert not thread.is_alive() and not foreign_errors
+        assert load_calls == ["foreign", "creator"]
+        assert len(foreign_outcomes) == 1
+        refused = foreign_outcomes[0]
+        assert refused.report.token_refresh_count == 0
+        assert refused.report.safe_code == _BOUND_USE_INVALID
+        assert (
+            refused.report.result_state
+            is ProductionWriteTokenRehearsalResultState.INPUT_BINDING_MISMATCH
+        )
+        trial.assert_no_reads(refused, earlier_reads=1)
+        assert provider.refresh_attempt_count == 1 and not provider._active
+        assert trial.calls == previous_calls and trial.storage.calls == previous_storage_calls
+    assert not denied
+    assert outcome.report.result_state is ProductionWriteTokenRehearsalResultState.READY
+    assert outcome.report.token_refresh_count == 1
+    assert trial.storage.calls["refresh"] == trial.storage.calls["writer"] == 1
+    assert len(trial.delivered) == 1 and not trial.lower_errors
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="actual Windows START-linked platform refusal")

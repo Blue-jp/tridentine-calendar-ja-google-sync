@@ -755,6 +755,8 @@ def run_production_write_token_readonly_rehearsal_mock(
     except Exception as exc:
         code = getattr(exc, "code", "production_rehearsal_confirmation_mismatch")
         return _finish(context, state=_state_for_error(code), safe_code=code)
+    bound_provider: _BoundMockRehearsalSessionProvider | None = None
+    prior_load_attempt: object | None = None
     try:
         require_phase6d0_rehearsal_providers(
             credential_session_provider,
@@ -769,6 +771,8 @@ def run_production_write_token_readonly_rehearsal_mock(
                 accepted_profile,
                 accepted_source,
             )
+            bound_provider = credential_session_provider
+            prior_load_attempt = bound_provider._load_attempt_for_current_actor()
         session = credential_session_provider.load_session(target=target)
     except ProductionWriteTokenRefreshError as exc:
         context.refresh_count = credential_session_provider.refresh_attempt_count
@@ -779,6 +783,13 @@ def run_production_write_token_readonly_rehearsal_mock(
             safe_code=exc.code,
         )
     except Exception as exc:
+        if (
+            bound_provider is not None
+            and prior_load_attempt is not None
+            and bound_provider._load_attempt is not prior_load_attempt
+        ):
+            # A rejected load can still retain the previous accepted attempt's count.
+            context.refresh_count = bound_provider.refresh_attempt_count
         code = getattr(exc, "code", "production_rehearsal_token_session_failed")
         return _finish(context, state=_state_for_error(code), safe_code=code)
     try:
