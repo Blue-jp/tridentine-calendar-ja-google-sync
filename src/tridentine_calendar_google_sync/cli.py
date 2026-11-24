@@ -87,6 +87,7 @@ from tridentine_calendar_google_sync.google_auth import (
     GoogleAuthError,
     GoogleCredentialRefreshError,
     GoogleReadonlyRefreshPersistenceError,
+    _authorize_google_readonly,
     _load_posix_readonly_credentials,
     authorize_google_readonly,
     load_readonly_credentials,
@@ -1954,11 +1955,16 @@ def _authorize_google_command(args: argparse.Namespace) -> int:
         "scope=calendar.events.owned.readonly; credentials-configured=yes; "
         f"token-output-configured=yes; overwrite={overwrite_text}.\n"
     )
-    authorize_google_readonly(
-        args.credentials_file,
-        args.token_file,
-        overwrite=args.overwrite_token,
-    )
+    if os.name == "posix" and args.overwrite_token:
+        _authorize_google_readonly(
+            args.credentials_file, args.token_file, overwrite=True, replace_existing=True
+        )
+    else:
+        authorize_google_readonly(
+            args.credentials_file,
+            args.token_file,
+            overwrite=args.overwrite_token,
+        )
     sys.stdout.write("Google read-only authorization completed; token content was not displayed.\n")
     return EXIT_VALID
 

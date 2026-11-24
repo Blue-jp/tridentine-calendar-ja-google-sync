@@ -141,6 +141,33 @@ class GoogleReadonlyTokenPersistenceError(SensitivePathError):
         super().__init__(code, message)
 
 
+class GoogleReadonlyAuthorizationReplaceError(SensitivePathError):
+    """Safe failure of local replacement during POSIX CLI authorization."""
+
+    def __init__(self, *, publication_possible: bool | None, preflight: bool = False) -> None:
+        self.publication_possible = publication_possible
+        if preflight:
+            message = "Read-only token replacement could not be verified before authorization."
+        else:
+            message = (
+                "Local read-only token replacement could not be verified. "
+                "Google authorization may already have issued credentials."
+            )
+        if publication_possible is False:
+            message += " This call did not attempt to replace the final file."
+        else:
+            state = (
+                "This call attempted to replace the final file."
+                if publication_possible is True
+                else "The final file replacement state is unknown."
+            )
+            message += (
+                f" {state} Check the destination before reauthorizing, retrying, restoring, "
+                "or deleting files."
+            )
+        super().__init__("sensitive_write_failed", message)
+
+
 class DesktopInstalledClient(StrictFrozenModel):
     """Strict ``installed`` section of a Google desktop OAuth client file."""
 
@@ -637,6 +664,23 @@ def _create_posix_readonly_token(path: Path, payload: Mapping[str, JsonValue]) -
         ) from None
 
 
+def _replace_posix_readonly_token(
+    path: Path, payload: Mapping[str, JsonValue], *, expected_content: bytes
+) -> None:
+    try:
+        content = _render_private_json(payload).encode("utf-8")
+    except (SensitivePathError, UnicodeEncodeError):
+        raise GoogleReadonlyAuthorizationReplaceError(publication_possible=False) from None
+    try:
+        posix_replace.replace_posix_private_bytes(path, content, expected_content=expected_content)
+    except posix_replace.PosixPrivateReplaceError as exc:
+        raise GoogleReadonlyAuthorizationReplaceError(
+            publication_possible=exc.publication_possible
+        ) from None
+    except (Exception, KeyboardInterrupt):
+        raise GoogleReadonlyAuthorizationReplaceError(publication_possible=None) from None
+
+
 def authorize_google_readonly(
     client_config_path: str | Path,
     token_path: str | Path,
@@ -652,11 +696,33 @@ def authorize_google_readonly(
     permits replacement only when a regular file is observed before authorization.
     """
 
+    return _authorize_google_readonly(
+        client_config_path,
+        token_path,
+        bindings=bindings,
+        flow_runner=flow_runner,
+        cancellation_check=cancellation_check,
+        overwrite=overwrite,
+        replace_existing=False,
+    )
+
+
+def _authorize_google_readonly(
+    client_config_path: str | Path,
+    token_path: str | Path,
+    *,
+    bindings: GoogleOptionalBindings | None = None,
+    flow_runner: AuthorizationFlowRunner = _default_flow_runner,
+    cancellation_check: CancellationCheck | None = None,
+    overwrite: bool,
+    replace_existing: bool,
+) -> Any:
     _check_cancelled(cancellation_check)
     create_only = os.name == "posix" and (
         not overwrite or not _posix_authorization_destination_exists(token_path)
     )
     path = validate_sensitive_output_path(token_path, overwrite=overwrite and not create_only)
+    expected_content: bytes | None = None
     if create_only:
         try:
             preflight_posix_private_text_create(path)
@@ -664,6 +730,15 @@ def authorize_google_readonly(
             raise GoogleReadonlyTokenPersistenceError(
                 publication_possible=exc.publication_possible, preflight=True
             ) from None
+    elif replace_existing:
+        try:
+            expected_content = read_private_sensitive_bytes(path)
+            posix_replace.preflight_posix_private_replace(path, expected_content=expected_content)
+        except Exception:
+            raise GoogleReadonlyAuthorizationReplaceError(
+                publication_possible=False, preflight=True
+            ) from None
+        _check_cancelled(cancellation_check)
     config = load_desktop_client_config(client_config_path)
     resolved_bindings = bindings or load_google_optional_bindings()
     try:
@@ -687,9 +762,13 @@ def authorize_google_readonly(
         ) from exc
     _check_cancelled(cancellation_check)
     _validate_runtime_credential_scopes(credentials)
-    if create_only:
+    if create_only or expected_content is not None:
         _, value = _credentials_payload(credentials)
-        _create_posix_readonly_token(path, cast(Mapping[str, JsonValue], value))
+        payload = cast(Mapping[str, JsonValue], value)
+        if expected_content is None:
+            _create_posix_readonly_token(path, payload)
+        else:
+            _replace_posix_readonly_token(path, payload, expected_content=expected_content)
     else:
         persist_authorized_user_credentials(credentials, token_path, overwrite=overwrite)
     return credentials
