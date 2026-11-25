@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, Self, cast
 
 from pydantic import Field, ValidationError, model_validator
 
+from tridentine_calendar_google_sync import _posix_private_replace as posix_replace
+from tridentine_calendar_google_sync._private_create_io import (
+    PrivateCreateIOError,
+    create_private_text,
+    preflight_posix_private_text_create,
+)
 from tridentine_calendar_google_sync.google_auth import load_desktop_client_config
 from tridentine_calendar_google_sync.google_optional import (
     GoogleOptionalBindings,
@@ -16,10 +23,12 @@ from tridentine_calendar_google_sync.google_optional import (
 )
 from tridentine_calendar_google_sync.models import StrictFrozenModel
 from tridentine_calendar_google_sync.sensitive_paths import (
+    MAX_SENSITIVE_FILE_BYTES,
     JsonValue,
     SensitivePathError,
+    _render_private_json,
     atomic_write_private_json,
-    read_sensitive_bytes,
+    read_private_sensitive_bytes,
     sensitive_path_identity,
     validate_sensitive_input_path,
     validate_sensitive_output_path,
@@ -62,6 +71,54 @@ class TestWriteAuthorizationError(TestWriteAuthError):
 
 class TestWriteCredentialRefreshError(TestWriteAuthError):
     """Existing exact-scope Test write credentials could not be refreshed."""
+
+
+class TestWriteTokenPersistenceError(TestWriteAuthConfigError):
+    """A POSIX initial-save failure with conservative publication evidence."""
+
+    def __init__(self, *, publication_possible: bool | None, preflight: bool = False) -> None:
+        self.publication_possible = publication_possible
+        message = "Test write credentials could not be persisted safely."
+        if publication_possible is False:
+            message += " This call did not attempt to create the final file."
+        else:
+            state = (
+                "This call attempted to create the final file."
+                if publication_possible is True
+                else "The final file creation state is unknown."
+            )
+            message += (
+                f" {state} Output may exist. Check the destination before reauthorizing, retrying, "
+                "or deleting files."
+            )
+        if preflight:
+            message += (
+                " Use an unused filename under an existing POSIX parent owned by "
+                "the effective user with mode 0700."
+            )
+        super().__init__("test_write_token_persistence_failed", message)
+
+
+class TestWriteTokenRefreshPersistenceError(TestWriteAuthConfigError):
+    """A POSIX replacement failure with conservative publication evidence."""
+
+    def __init__(
+        self,
+        *,
+        publication_possible: bool | None,
+        message: str = "Test write credentials could not be persisted safely.",
+    ) -> None:
+        self.publication_possible = publication_possible
+        if publication_possible is False:
+            message += " This call did not attempt to replace the local token file."
+        elif publication_possible is True:
+            message += " This call attempted to replace the local token file."
+        else:
+            message += " It is unknown whether this call attempted to replace the local token file."
+        message += (
+            " Check the destination before reauthorizing, retrying, restoring, or deleting files."
+        )
+        super().__init__("test_write_token_persistence_failed", message)
 
 
 class TestWriteAuthorizedUserToken(StrictFrozenModel):
@@ -190,33 +247,34 @@ def validate_test_write_token_separation(
         ) from exc
 
 
-def load_test_write_authorized_user_token(
-    path: str | Path,
-) -> TestWriteAuthorizedUserToken:
-    """Load one explicit repository-external Test-write token with exact scope."""
-
+def _parse_test_write_token(raw_bytes: bytes) -> TestWriteAuthorizedUserToken:
     try:
-        value = _normalize_token_payload(
-            _decode_json_object(
-                read_sensitive_bytes(
-                    path,
-                    windows_private_acl=True,
-                )
-            )
-        )
+        value = _normalize_token_payload(_decode_json_object(raw_bytes))
         return TestWriteAuthorizedUserToken.model_validate(value, strict=True)
-    except TestWriteAuthError:
-        raise
-    except SensitivePathError as exc:
-        raise TestWriteAuthConfigError(
-            "unsafe_test_write_authorized_user_path",
-            "Test write authorized-user token path is unsafe or unavailable",
-        ) from exc
     except ValidationError as exc:
         raise TestWriteAuthConfigError(
             "invalid_test_write_authorized_user_token",
             "Test write authorized-user token is invalid",
         ) from exc
+
+
+def _read_test_write_token(path: str | Path) -> tuple[TestWriteAuthorizedUserToken, bytes]:
+    try:
+        raw_bytes = read_private_sensitive_bytes(path, windows_require_protected_acl=False)
+    except SensitivePathError:
+        raise TestWriteAuthConfigError(
+            "unsafe_test_write_authorized_user_path",
+            "Test write authorized-user token path is unsafe or unavailable",
+        ) from None
+    return _parse_test_write_token(raw_bytes), raw_bytes
+
+
+def load_test_write_authorized_user_token(
+    path: str | Path,
+) -> TestWriteAuthorizedUserToken:
+    """Load one explicit repository-external Test-write token with exact scope."""
+
+    return _read_test_write_token(path)[0]
 
 
 def _client_config_payload(config: Any) -> dict[str, object]:
@@ -298,6 +356,41 @@ def _credentials_document(credentials: Any) -> tuple[TestWriteAuthorizedUserToke
         ) from exc
 
 
+def _validated_expected_token_bytes(expected: bytes | None) -> bytes:
+    if type(expected) is bytes and len(expected) <= MAX_SENSITIVE_FILE_BYTES:
+        try:
+            _parse_test_write_token(expected)
+        except TestWriteAuthConfigError:
+            pass
+        else:
+            return expected
+    raise TestWriteTokenRefreshPersistenceError(
+        publication_possible=False,
+        message="POSIX Test write refresh requires valid original token bytes within 4 MiB.",
+    ) from None
+
+
+def _persist_posix_test_write_refresh(
+    path: Path, payload: Mapping[str, JsonValue], expected_token_bytes: bytes | None
+) -> None:
+    expected = _validated_expected_token_bytes(expected_token_bytes)
+    try:
+        content = _render_private_json(payload).encode("utf-8", errors="strict")
+    except (SensitivePathError, UnicodeEncodeError):
+        raise TestWriteTokenRefreshPersistenceError(publication_possible=False) from None
+    if len(content) > MAX_SENSITIVE_FILE_BYTES:
+        raise TestWriteTokenRefreshPersistenceError(publication_possible=False)
+    try:
+        posix_replace.replace_posix_private_bytes(path, content, expected_content=expected)
+    except posix_replace.PosixPrivateReplaceError as exc:
+        evidence = exc.publication_possible
+        raise TestWriteTokenRefreshPersistenceError(
+            publication_possible=evidence if type(evidence) is bool else None
+        ) from None
+    except Exception:
+        raise TestWriteTokenRefreshPersistenceError(publication_possible=None) from None
+
+
 def persist_test_write_authorized_user_credentials(
     credentials: Any,
     token_path: str | Path,
@@ -305,21 +398,46 @@ def persist_test_write_authorized_user_credentials(
     target: TestWriteTargetConfig,
     *,
     overwrite_for_refresh: bool = False,
+    expected_token_bytes: bytes | None = None,
 ) -> TestWriteAuthorizedUserToken:
-    """Persist only exact-scope Test credentials to the isolated token path."""
+    """Persist exact-scope Test credentials using original bytes for a POSIX refresh."""
 
     validate_test_write_target_config(target)
-    validate_test_write_token_separation(
-        token_path,
-        production_read_token_path,
-        test_token_exists=overwrite_for_refresh,
-    )
+    posix_refresh = os.name == "posix" and overwrite_for_refresh
+    try:
+        paths = validate_test_write_token_separation(
+            token_path,
+            production_read_token_path,
+            test_token_exists=overwrite_for_refresh,
+        )
+    except TestWriteAuthConfigError as exc:
+        if posix_refresh and exc.code == "unsafe_test_write_token_path":
+            raise TestWriteTokenRefreshPersistenceError(publication_possible=False) from None
+        raise
     _validate_runtime_scopes(credentials)
     token, value = _credentials_document(credentials)
+    payload = cast(Mapping[str, JsonValue], value)
+    if posix_refresh:
+        _persist_posix_test_write_refresh(paths[0], payload, expected_token_bytes)
+        return token
+
+    if os.name == "posix" and not overwrite_for_refresh:
+        try:
+            text = _render_private_json(payload)
+        except SensitivePathError:
+            raise TestWriteTokenPersistenceError(publication_possible=False) from None
+        try:
+            create_private_text(paths[0], text)
+        except PrivateCreateIOError as exc:
+            raise TestWriteTokenPersistenceError(
+                publication_possible=exc.publication_possible,
+            ) from None
+        return token
+
     try:
         atomic_write_private_json(
             token_path,
-            cast(Mapping[str, JsonValue], value),
+            payload,
             overwrite=overwrite_for_refresh,
         )
         return token
@@ -363,12 +481,16 @@ def load_test_write_credentials(
 
     validate_test_write_target_config(target)
     _check_cancelled(cancellation_check)
-    validate_test_write_token_separation(
+    paths = validate_test_write_token_separation(
         token_path,
         production_read_token_path,
         test_token_exists=True,
     )
-    token = load_test_write_authorized_user_token(token_path)
+    original: bytes | None = None
+    if os.name == "posix":
+        token, original = _read_test_write_token(paths[0])
+    else:
+        token = load_test_write_authorized_user_token(token_path)
     resolved_bindings = bindings or load_google_optional_bindings()
     credentials = credentials_from_test_write_token(token, bindings=resolved_bindings)
     if getattr(credentials, "valid", False) is True:
@@ -383,6 +505,18 @@ def load_test_write_credentials(
             "Test write credentials are invalid and cannot be refreshed",
         )
     _check_cancelled(cancellation_check)
+    if original is not None:
+        try:
+            posix_replace.preflight_posix_private_replace(paths[0], expected_content=original)
+        except Exception:
+            raise TestWriteTokenRefreshPersistenceError(
+                publication_possible=False,
+                message=(
+                    "Test write token replacement could not be verified before "
+                    "the Google refresh request."
+                ),
+            ) from None
+        _check_cancelled(cancellation_check)
     try:
         credentials.refresh(resolved_bindings.request_class())
     except KeyboardInterrupt as exc:
@@ -402,13 +536,32 @@ def load_test_write_credentials(
             "test_write_credentials_invalid_after_refresh",
             "Test write credentials remain invalid after refresh",
         )
-    persist_test_write_authorized_user_credentials(
-        credentials,
-        token_path,
-        production_read_token_path,
-        target,
-        overwrite_for_refresh=True,
-    )
+    if original is None:
+        persist_test_write_authorized_user_credentials(
+            credentials,
+            token_path,
+            production_read_token_path,
+            target,
+            overwrite_for_refresh=True,
+        )
+    else:
+        try:
+            persist_test_write_authorized_user_credentials(
+                credentials,
+                token_path,
+                production_read_token_path,
+                target,
+                overwrite_for_refresh=True,
+                expected_token_bytes=original,
+            )
+        except TestWriteTokenRefreshPersistenceError as exc:
+            raise TestWriteTokenRefreshPersistenceError(
+                publication_possible=exc.publication_possible,
+                message=(
+                    "Google refresh succeeded, but local Test write token persistence "
+                    "could not be verified."
+                ),
+            ) from None
     return credentials
 
 
@@ -435,11 +588,18 @@ def authorize_test_google_write(
 
     validate_test_write_target_config(target)
     _check_cancelled(cancellation_check)
-    validate_test_write_token_separation(
+    paths = validate_test_write_token_separation(
         token_path,
         production_read_token_path,
         test_token_exists=False,
     )
+    if os.name == "posix":
+        try:
+            preflight_posix_private_text_create(paths[0])
+        except PrivateCreateIOError as exc:
+            raise TestWriteTokenPersistenceError(
+                publication_possible=exc.publication_possible, preflight=True
+            ) from None
     config = load_desktop_client_config(client_config_path)
     resolved_bindings = bindings or load_google_optional_bindings()
     try:
@@ -481,6 +641,8 @@ __all__ = [
     "TestWriteAuthorizationError",
     "TestWriteAuthorizedUserToken",
     "TestWriteCredentialRefreshError",
+    "TestWriteTokenPersistenceError",
+    "TestWriteTokenRefreshPersistenceError",
     "authorize_test_google_write",
     "credentials_from_test_write_token",
     "load_test_write_authorized_user_token",

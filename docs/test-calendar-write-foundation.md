@@ -73,6 +73,20 @@ Every successful mutation requires post-write read-back. A mismatch stops the ru
 
 ## Storage and public output
 
-Test target config, credentials, Test write token, snapshot, trusted Test baseline, plan, run spec, journal, report, and receipt belong outside the repository. Writes are no-overwrite and atomic.
+Test target config, credentials, Test write token, snapshot, trusted Test baseline, plan, run spec, journal, report, and receipt belong outside the repository. New output files, including run specs and operation journals, must be written atomically without overwriting an existing destination.
+
+Initial Test write authorization creates a new dedicated token file atomically. It rejects an existing destination, reuse of the Production read-only token, and scope expansion.
+
+For an initial Test write save on POSIX, prepare an existing repository-external parent directory owned by the effective user with mode exactly `0700`. Use an unused filename and a directory chain that passes the no-follow ancestor checks. The command checks the destination before starting OAuth without creating output and rechecks it through the retained parent directory at save time.
+
+A failure before the publication attempt means this invocation did not attempt to create the final file. A failure after the attempt, or with unknown publication status, means the output may exist. OAuth may already have issued credentials if the flow ran. Review the designated destination locally without displaying token contents before deciding what to do. The command does not automatically reauthorize, retry the save, or delete an output.
+
+Loading valid Test write credentials leaves the token file untouched. When an existing Test token is expired and refreshable, the loader writes the refreshed token back to its designated Test token path only after a successful refresh and checks of credential validity and exact scope. Before saving, it rechecks the Test target policy and separation from the Production read-only token file.
+
+On POSIX, the loader applies the replacement checks when an expired Test write token requires a refresh. The destination must be an existing, single-link regular file owned by the effective user with mode exactly `0600`, under an existing parent directory owned by the effective user with mode exactly `0700`. The directory chain must pass the no-follow ancestor checks. The loader checks the destination and original bytes before making the refresh request, then rechecks them at save time. The expected bytes come from the first safe read before refresh and preserve any valid JSON whitespace, key order, and final newline as read. A direct POSIX call to `persist_test_write_authorized_user_credentials` with `overwrite_for_refresh=True` requires those original bytes in `expected_token_bytes`.
+
+A replacement file with identical contents can satisfy the byte comparison. The final checks and the replace operation are separate. The loader returns refreshed credentials only after a verified save. After a successful provider refresh, a local save failure leaves the provider and local file states to be reconciled. If replacement was attempted or its status is unknown, inspect the designated files locally without displaying token contents before reauthorizing, retrying, restoring, or deleting anything. Recovery requires separate operator action.
+
+`inspect-test-calendar-prewrite` can perform this local token update while its Calendar event access remains list-only.
 
 The private run spec may temporarily hold raw source and Google identity needed for the one operation. The journal and public report contain only safe target/UID references, hashes, allowlisted state, and counters. They exclude Calendar ID, raw UID, Google event ID, ETag, summary, description, payload, endpoint, token, credentials, and absolute paths.

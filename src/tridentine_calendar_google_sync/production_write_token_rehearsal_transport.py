@@ -301,7 +301,39 @@ def require_phase6d0_rehearsal_providers(
     credential_provider: object,
     transport_provider: object,
 ) -> None:
-    """Accept only the two exact synthetic lazy providers in Phase 6D.0."""
+    """Validate the synthetic providers before loading a session."""
+
+    from tridentine_calendar_google_sync.production_write_token import (
+        _BoundMockRehearsalSessionProvider,
+    )
+
+    if type(credential_provider) is _BoundMockRehearsalSessionProvider:
+        credential_provider._require_initialized()
+        browser_count = credential_provider.browser_launch_count
+        if (
+            type(transport_provider) is not FakeProductionWriteTokenReadOnlyTransportProvider
+            or credential_provider.mock_only is not True
+            or credential_provider.live_capable is not False
+            or type(browser_count) is not int
+            or browser_count != 0
+            or transport_provider.mock_only is not True
+            or transport_provider.live_capable is not False
+        ):
+            raise ProductionWriteTokenRehearsalTransportError(
+                "production_rehearsal_fake_transport_required"
+            )
+        try:
+            transport = transport_provider._transport
+        except AttributeError:
+            raise ProductionWriteTokenRehearsalTransportError(
+                "production_rehearsal_fake_transport_required"
+            ) from None
+        require_phase6d0_rehearsal_transport(transport)
+        return
+    if issubclass(type(credential_provider), _BoundMockRehearsalSessionProvider):
+        raise ProductionWriteTokenRehearsalTransportError(
+            "production_rehearsal_fake_transport_required"
+        )
 
     if (
         not isinstance(credential_provider, FakeProductionWriteCredentialSessionProvider)

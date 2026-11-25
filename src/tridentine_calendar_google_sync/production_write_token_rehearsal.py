@@ -30,6 +30,7 @@ from tridentine_calendar_google_sync.production_write_target import (
 )
 from tridentine_calendar_google_sync.production_write_token import (
     ProductionWriteTokenRefreshError,
+    _BoundMockRehearsalSessionProvider,
     _verify_mock_production_write_authorized_user_token,
     validate_production_token_role,
     validate_production_write_scopes,
@@ -246,7 +247,6 @@ def _verify_manifest_source(
         expected = build_accepted_production_source_manifest(
             profile,
             source,
-            repository_identity=manifest.repository_identity,
         )
     except Exception as exc:
         raise ProductionWriteTokenRehearsalError(
@@ -741,7 +741,7 @@ def run_production_write_token_readonly_rehearsal_mock(
 ) -> ProductionWriteTokenRehearsalOutcome:
     """Invoke credentials and fake client only after exact read confirmation."""
 
-    validate_production_write_target_config(target)
+    target_fingerprint = validate_production_write_target_config(target)
     context = _Context(
         target_safe_ref=production_write_target_reference(target),
         token_role="production_write",
@@ -755,11 +755,24 @@ def run_production_write_token_readonly_rehearsal_mock(
     except Exception as exc:
         code = getattr(exc, "code", "production_rehearsal_confirmation_mismatch")
         return _finish(context, state=_state_for_error(code), safe_code=code)
+    bound_provider: _BoundMockRehearsalSessionProvider | None = None
+    prior_load_attempt: object | None = None
     try:
         require_phase6d0_rehearsal_providers(
             credential_session_provider,
             transport_provider,
         )
+        if type(credential_session_provider) is _BoundMockRehearsalSessionProvider:
+            _verify_manifest_source(manifest, accepted_profile, accepted_source)
+            _verify_baseline_provenance(
+                trusted_baseline,
+                target_fingerprint,
+                manifest,
+                accepted_profile,
+                accepted_source,
+            )
+            bound_provider = credential_session_provider
+            prior_load_attempt = bound_provider._load_attempt_for_current_actor()
         session = credential_session_provider.load_session(target=target)
     except ProductionWriteTokenRefreshError as exc:
         context.refresh_count = credential_session_provider.refresh_attempt_count
@@ -770,6 +783,13 @@ def run_production_write_token_readonly_rehearsal_mock(
             safe_code=exc.code,
         )
     except Exception as exc:
+        if (
+            bound_provider is not None
+            and prior_load_attempt is not None
+            and bound_provider._load_attempt is not prior_load_attempt
+        ):
+            # A rejected load can still retain the previous accepted attempt's count.
+            context.refresh_count = bound_provider.refresh_attempt_count
         code = getattr(exc, "code", "production_rehearsal_token_session_failed")
         return _finish(context, state=_state_for_error(code), safe_code=code)
     try:

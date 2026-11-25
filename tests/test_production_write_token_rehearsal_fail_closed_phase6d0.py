@@ -7,7 +7,6 @@ import pytest
 from phase6b_helpers import (
     PRODUCTION_LIKE_CURRENT_COMMIT,
     PRODUCTION_LIKE_CURRENT_TAG,
-    PRODUCTION_LIKE_REPOSITORY,
     write_production_source,
 )
 from phase6d0_rehearsal_helpers import build_rehearsal_artifacts, run_rehearsal
@@ -146,7 +145,6 @@ def test_source_add_or_delete_provenance_mismatch_stops_before_list(
     manifest = build_accepted_production_source_manifest(
         source_fixture.profile,
         source_fixture.source,
-        repository_identity=PRODUCTION_LIKE_REPOSITORY,
     )
     outcome = _run_with_inputs(
         artifacts,

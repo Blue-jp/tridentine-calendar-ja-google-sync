@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal, Self
+from typing import Final, Literal, Self
 
 from pydantic import Field, model_validator
 
 from tridentine_calendar_google_sync.models import StrictFrozenModel
+
+ACCEPTED_PRODUCTION_SOURCE_REPOSITORY: Final = "Blue-jp/tridentine_calendar"
 
 _FORBIDDEN_MARKERS = ("test", "synthetic", "テスト")
 
@@ -25,10 +27,8 @@ class AcceptedProductionSourceManifest(StrictFrozenModel):
     production: Literal[True] = True
     acceptance_state: Literal["accepted"] = "accepted"
     synthetic: Literal[False] = False
-    repository_identity: str = Field(
-        pattern=r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
-        min_length=3,
-        max_length=201,
+    repository_identity: Literal["Blue-jp/tridentine_calendar"] = (
+        ACCEPTED_PRODUCTION_SOURCE_REPOSITORY
     )
     repository_tag: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
     repository_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -114,4 +114,4 @@ class AcceptedProductionSourceManifest(StrictFrozenModel):
         return self.recurring_event_count
 
 
-__all__ = ["AcceptedProductionSourceManifest"]
+__all__ = ["ACCEPTED_PRODUCTION_SOURCE_REPOSITORY", "AcceptedProductionSourceManifest"]

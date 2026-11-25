@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import os
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -85,6 +86,9 @@ from tridentine_calendar_google_sync.google_auth import (
     GoogleAuthConfigError,
     GoogleAuthError,
     GoogleCredentialRefreshError,
+    GoogleReadonlyRefreshPersistenceError,
+    _authorize_google_readonly,
+    _load_posix_readonly_credentials,
     authorize_google_readonly,
     load_readonly_credentials,
     persist_authorized_user_credentials,
@@ -170,7 +174,11 @@ from tridentine_calendar_google_sync.production_write_target import (
     ProductionWriteTargetError,
     load_production_write_target_config,
 )
-from tridentine_calendar_google_sync.profiles import ProfileError, load_profile
+from tridentine_calendar_google_sync.profiles import (
+    ProfileError,
+    load_accepted_production_profile,
+    load_profile,
+)
 from tridentine_calendar_google_sync.sensitive_paths import (
     SensitivePathError,
     atomic_write_private_text,
@@ -1152,7 +1160,6 @@ def build_parser() -> argparse.ArgumentParser:
     build_production_plan.add_argument("--manifest", required=True)
     build_production_plan.add_argument("--source", required=True)
     build_production_plan.add_argument("--profile", required=True)
-    build_production_plan.add_argument("--profiles-dir", required=True)
     build_production_plan.add_argument("--google-snapshot", required=True)
     build_production_plan.add_argument("--trusted-baseline", required=True)
     build_production_plan.add_argument("--target-config", required=True)
@@ -1182,7 +1189,6 @@ def build_parser() -> argparse.ArgumentParser:
     build_production_run_spec.add_argument("--manifest", required=True)
     build_production_run_spec.add_argument("--source", required=True)
     build_production_run_spec.add_argument("--profile", required=True)
-    build_production_run_spec.add_argument("--profiles-dir", required=True)
     build_production_run_spec.add_argument("--google-snapshot", required=True)
     build_production_run_spec.add_argument("--production-plan", required=True)
     build_production_run_spec.add_argument("--trusted-baseline", required=True)
@@ -1254,7 +1260,6 @@ def build_parser() -> argparse.ArgumentParser:
     rehearse_production_write_token.add_argument("--manifest", required=True)
     rehearse_production_write_token.add_argument("--source", required=True)
     rehearse_production_write_token.add_argument("--profile", required=True)
-    rehearse_production_write_token.add_argument("--profiles-dir", required=True)
     rehearse_production_write_token.add_argument("--trusted-baseline", required=True)
     rehearse_production_write_token.add_argument("--output-directory", required=True)
     rehearse_production_write_token.add_argument("--confirmation", required=True)
@@ -1599,7 +1604,7 @@ def _build_production_single_update_plan_command(args: argparse.Namespace) -> in
 
     load_active_accepted_production_baseline_pin()
     manifest = load_accepted_production_source_manifest(args.manifest)
-    profile = load_profile(args.profile, args.profiles_dir)
+    profile = load_accepted_production_profile(args.profile)
     source = inspect_source(args.source, profile)
     snapshot = load_google_snapshot(args.google_snapshot)
     baseline = load_production_trusted_baseline(args.trusted_baseline)
@@ -1644,7 +1649,7 @@ def _build_production_single_update_run_spec_command(args: argparse.Namespace) -
 
     load_active_accepted_production_baseline_pin()
     manifest = load_accepted_production_source_manifest(args.manifest)
-    profile = load_profile(args.profile, args.profiles_dir)
+    profile = load_accepted_production_profile(args.profile)
     source = inspect_source(args.source, profile)
     snapshot = load_google_snapshot(args.google_snapshot)
     plan = load_production_single_update_plan(args.production_plan)
@@ -1950,11 +1955,16 @@ def _authorize_google_command(args: argparse.Namespace) -> int:
         "scope=calendar.events.owned.readonly; credentials-configured=yes; "
         f"token-output-configured=yes; overwrite={overwrite_text}.\n"
     )
-    authorize_google_readonly(
-        args.credentials_file,
-        args.token_file,
-        overwrite=args.overwrite_token,
-    )
+    if os.name == "posix" and args.overwrite_token:
+        _authorize_google_readonly(
+            args.credentials_file, args.token_file, overwrite=True, replace_existing=True
+        )
+    else:
+        authorize_google_readonly(
+            args.credentials_file,
+            args.token_file,
+            overwrite=args.overwrite_token,
+        )
     sys.stdout.write("Google read-only authorization completed; token content was not displayed.\n")
     return EXIT_VALID
 
@@ -1965,13 +1975,18 @@ def _fetch_google_command(args: argparse.Namespace) -> int:
     target_fingerprint = verify_target_fingerprint(target)
     validate_snapshot_output(args.output)
     bindings = load_google_optional_bindings()
-    credentials = load_readonly_credentials(args.token_file, bindings=bindings)
+    posix_credentials = None
+    if os.name == "posix":
+        posix_credentials = _load_posix_readonly_credentials(args.token_file, bindings=bindings)
+        credentials = posix_credentials.credentials
+    else:
+        credentials = load_readonly_credentials(args.token_file, bindings=bindings)
     client = build_read_only_calendar_client(
         credentials,
         build_service=bindings.build_service,
     )
 
-    def refresh_credentials() -> None:
+    def refresh_legacy_credentials() -> None:
         try:
             credentials.refresh(bindings.request_class())
             persist_authorized_user_credentials(credentials, args.token_file, overwrite=True)
@@ -2002,14 +2017,21 @@ def _fetch_google_command(args: argparse.Namespace) -> int:
             ),
         )
 
-    fetched = fetch_google_event_pages(
-        client,
-        calendar_id=target.calendar_id,
-        target_fingerprint=target_fingerprint,
-        expected_target_fingerprint=target.expected_fingerprint,
-        refresh_credentials=refresh_credentials,
-        validate_metadata=validate_metadata,
+    refresh_credentials = (
+        posix_credentials.refresh if posix_credentials is not None else refresh_legacy_credentials
     )
+    try:
+        fetched = fetch_google_event_pages(
+            client,
+            calendar_id=target.calendar_id,
+            target_fingerprint=target_fingerprint,
+            expected_target_fingerprint=target.expected_fingerprint,
+            refresh_credentials=refresh_credentials,
+            validate_metadata=validate_metadata,
+        )
+    except GoogleReadonlyRefreshPersistenceError as exc:
+        sys.stderr.write(f"error: {exc.public_message}\n")
+        return EXIT_GOOGLE_READ_ERROR
     snapshot = sanitize_fetched_pages(fetched, captured_at=datetime.now(UTC))
     write_google_snapshot(snapshot, args.output)
     target_reference = short_target_reference(target_fingerprint)
