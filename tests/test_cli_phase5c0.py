@@ -1,21 +1,29 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import write_profile_directory
+from phase5a1_helpers import prewrite_page
 from phase5c0_helpers import build_bootstrap_bundle, write_test_target_config
+from test_test_bootstrap_add_transport_phase5c0 import _inputs as bootstrap_inputs
+from test_test_write_transport_phase5a import _Client
 
 import tridentine_calendar_google_sync.cli as cli
 from tridentine_calendar_google_sync.test_bootstrap_plan_io import (
     load_test_bootstrap_add_plan,
+    write_test_bootstrap_add_plan,
 )
 from tridentine_calendar_google_sync.test_bootstrap_run_spec_io import (
     load_test_bootstrap_add_run_spec,
+    write_test_bootstrap_add_run_spec,
 )
 from tridentine_calendar_google_sync.test_calendar_prewrite_io import (
     write_test_calendar_prewrite_snapshot,
 )
+from tridentine_calendar_google_sync.test_write_journal import load_test_write_journal
 
 COMMANDS = (
     "build-test-bootstrap-add-plan",
@@ -262,6 +270,65 @@ def test_existing_plan_output_and_normal_plan_missing_baseline_remain_rejected(
     assert bootstrap_result != cli.EXIT_VALID
     assert normal_result == cli.EXIT_CLI_ERROR
     assert output.read_text(encoding="utf-8") == "existing"
+
+
+@pytest.mark.google_test_write
+def test_write_cli_persists_preflight_budget_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle, spec, confirmation = bootstrap_inputs(tmp_path)
+    spec_path = write_test_bootstrap_add_run_spec(spec, tmp_path / "spec.json")
+    plan_path = write_test_bootstrap_add_plan(bundle.plan, tmp_path / "plan.json")
+    target_path = write_test_target_config(bundle.target, tmp_path / "target.toml")
+    journal_path, report_path = tmp_path / "journal.json", tmp_path / "report.json"
+    client = _Client(
+        list_queue=[prewrite_page(next_page_token=f"page-{i}") for i in range(8)]
+        + [prewrite_page()]
+    )
+    monkeypatch.setattr(
+        cli, "load_google_optional_bindings", lambda: SimpleNamespace(build_service=None)
+    )
+    monkeypatch.setattr(cli, "load_test_write_credentials", lambda *a, **kw: object())
+    monkeypatch.setattr(cli, "build_test_calendar_write_client", lambda *a, **kw: client)
+
+    exit_code = cli.main(
+        [
+            "run-test-calendar-write",
+            "--online",
+            "--run-spec",
+            str(spec_path),
+            "--plan",
+            str(plan_path),
+            "--target-config",
+            str(target_path),
+            "--token-file",
+            str(tmp_path / "unused-write.json"),
+            "--production-read-token-file",
+            str(tmp_path / "unused-read.json"),
+            "--confirmation",
+            confirmation,
+            "--journal-output",
+            str(journal_path),
+            "--report-output",
+            str(report_path),
+            "--format",
+            "json",
+        ]
+    )
+
+    assert exit_code == cli.EXIT_FATAL_GUARD
+    assert [method for method, _ in client.calls] == ["list"] * 9
+    journal = load_test_write_journal(journal_path)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert len(journal.entries) == 1
+    entry = journal.entries[0]
+    assert (entry.phase.value, entry.status.value) == ("preflight", "failed")
+    assert entry.safe_error_code == "test_write_api_call_budget_exceeded"
+    assert journal.state.value == report["state"] == "failed"
+    assert journal.api_call_count == report["api_call_count"] == 9
+    assert journal.mutation_attempt_count == report["mutation_attempt_count"] == 0
+    assert report["mutation_retry_count"] == 0 and report["read_back_verified"] is False
+    assert report["journal_hash"] == journal.journal_content_hash
 
 
 def test_generic_apply_sync_execute_aliases_remain_absent() -> None:
