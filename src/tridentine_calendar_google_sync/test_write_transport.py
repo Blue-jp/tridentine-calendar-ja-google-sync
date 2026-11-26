@@ -690,6 +690,15 @@ def _failed_result(
     phase: TestWriteJournalPhase,
 ) -> TestWriteExecutionResult:
     code = _safe_code(error)
+    if (
+        phase is TestWriteJournalPhase.READ_BACK
+        and isinstance(error, SafeGoogleError)
+        and error.operation == "events.get"
+        and code == "etag_conflict"
+    ):
+        # The mutation was acknowledged. In v1 this GET failure stops
+        # verification; etag_conflict would classify the mutation as rejected.
+        code = "test_write_guard_failed"
     state = (
         TestWriteExecutionState.ETAG_CONFLICT
         if code == "etag_conflict"

@@ -694,6 +694,73 @@ def _budget_inputs(tmp_path: Path, *, update: bool):
     return spec, bundle.target, bindings, challenge, snapshot_items, desired
 
 
+@pytest.mark.parametrize(
+    ("mutation", "failure_operation"),
+    [("patch", "events.patch"), ("patch", "events.get"), ("import", "events.get")],
+    ids=["patch-412", "get-412-after-patch", "get-412-after-import"],
+)
+def test_http_412_is_reported_at_the_phase_that_received_it(
+    tmp_path: Path, mutation: str, failure_operation: str
+) -> None:
+    update = mutation == "patch"
+    spec, target, bindings, challenge, items, desired = _budget_inputs(tmp_path, update=update)
+    readback_failed = failure_operation == "events.get"
+    failure = SafeGoogleError(
+        status=412, reason="etag_conflict", retryable=False, attempt=1, operation=failure_operation
+    )
+    client = _Client(
+        list_queue=[prewrite_page(items, summary=target.expected_summary)],
+        get_queue=[*items, *([failure] if readback_failed else [])],
+        patch_queue=[desired if readback_failed else failure] if update else [],
+        import_queue=[] if update else [desired],
+    )
+    result = run_test_calendar_write(spec, target, client, challenge, **bindings)
+    report = build_test_write_json_report(result)
+    journal = result.journal
+    calls = ["list", *(["get"] if update else []), mutation, *(["get"] if readback_failed else [])]
+    assert [name for name, _ in client.calls] == calls
+    assert result.api_call_count == journal.api_call_count == report["api_call_count"] == len(calls)
+    assert (
+        result.mutation_attempt_count
+        == journal.mutation_attempt_count
+        == report["mutation_attempt_count"]
+        == 1
+    )
+    assert (
+        result.mutation_retry_count
+        == journal.mutation_retry_count
+        == report["mutation_retry_count"]
+        == 0
+    )
+    assert result.read_retry_count == journal.read_retry_count == report["read_retry_count"] == 0
+    assert result.success is report["success"] is False
+    assert result.stopped is report["stopped"] is True
+    assert result.read_back_verified is report["read_back_verified"] is False
+
+    expected_entries = [("preflight", "succeeded", None)]
+    if readback_failed:
+        expected_entries += [
+            ("mutation", "succeeded", None),
+            ("read_back", "failed", "test_write_guard_failed"),
+        ]
+    else:
+        expected_entries.append(("mutation", "failed", "etag_conflict"))
+    assert [
+        (e.phase.value, e.status.value, e.safe_error_code) for e in journal.entries
+    ] == expected_entries
+    assert (
+        journal.state.value
+        == result.state.value
+        == report["state"]
+        == ("failed" if readback_failed else "etag_conflict")
+    )
+    assert (
+        list(result.safe_findings)
+        == report["safe_findings"]
+        == [journal.entries[-1].safe_error_code]
+    )
+
+
 @pytest.mark.parametrize("update", [False, True], ids=["add", "update"])
 @pytest.mark.parametrize(
     ("remaining", "readback_fails"),
