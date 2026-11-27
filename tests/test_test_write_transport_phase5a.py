@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import REPOSITORY_ROOT
+from jsonschema import Draft202012Validator
 from phase4b_helpers import build_add_apply_bundle, build_update_apply_bundle
 from phase5a1_helpers import prewrite_page
 from phase5a_helpers import SYNTHETIC_ETAG, SYNTHETIC_EVENT_ID, make_test_target_config
@@ -694,6 +697,11 @@ def _budget_inputs(tmp_path: Path, *, update: bool):
     return spec, bundle.target, bindings, challenge, snapshot_items, desired
 
 
+def _write_schema(kind: str, version: int) -> Draft202012Validator:
+    path = REPOSITORY_ROOT / "schemas" / f"test-write-{kind}-v{version}.schema.json"
+    return Draft202012Validator(json.loads(path.read_text(encoding="utf-8")))
+
+
 @pytest.mark.parametrize(
     ("mutation", "failure_operation"),
     [("patch", "events.patch"), ("patch", "events.get"), ("import", "events.get")],
@@ -717,6 +725,7 @@ def test_http_412_is_reported_at_the_phase_that_received_it(
     result = run_test_calendar_write(spec, target, client, challenge, **bindings)
     report = build_test_write_json_report(result)
     journal = result.journal
+    assert result.schema_version == journal.schema_version == report["schema_version"] == "1.0"
     calls = ["list", *(["get"] if update else []), mutation, *(["get"] if readback_failed else [])]
     assert [name for name, _ in client.calls] == calls
     assert result.api_call_count == journal.api_call_count == report["api_call_count"] == len(calls)
@@ -804,6 +813,7 @@ def test_budget_at_mutation_dispatch(
     )
     report = build_test_write_json_report(result)
     expected_calls = ["list"] * list_count + (["get"] if update else [])
+    assert result.schema_version == journal.schema_version == report["schema_version"] == "1.0"
     sent = remaining == 2
     verified = sent and not readback_fails
     if sent:
@@ -840,19 +850,97 @@ def test_budget_at_mutation_dispatch(
         assert report["safe_findings"] == ["test_write_api_call_budget_exceeded"]
 
 
-def test_acknowledged_import_without_id_stops_before_read_back(
-    tmp_path: Path, synthetic_profile_factory: Any, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("response", "pages", "retry"),
+    [({}, 1, False), ({"id": ""}, 2, True), ({"id": 7}, 7, True)],
+    ids=["missing", "empty-after-pagination-and-retry", "nonstring-at-budget-boundary"],
+)
+def test_acknowledged_import_without_id_returns_v2_stop(
+    tmp_path: Path, response: dict[str, object], pages: int, retry: bool
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
-        tmp_path, synthetic_profile_factory, monkeypatch, update=False
+    spec, target, bindings, challenge, _, _ = _budget_inputs(tmp_path, update=False)
+    client = _Client(
+        list_queue=[
+            *([_retryable("events.list")] if retry else []),
+            *[prewrite_page(next_page_token=f"page-{i}") for i in range(pages - 1)],
+            prewrite_page(),
+        ],
+        import_queue=[response],
     )
-    client = _Client(import_queue=[{}])
+    result = run_test_calendar_write(
+        spec, target, client, challenge, **bindings, sleep=lambda _: None, jitter=lambda _: 0.0
+    )
+    report = build_test_write_json_report(result)
+    journal = result.journal
+    reads = pages + int(retry)
+    code = "test_write_read_back_identity_missing"
+    assert [name for name, _ in client.calls] == ["list"] * reads + ["import"]
+    assert all(args["ical_uid"] is None for name, args in client.calls if name == "list")
+    assert [
+        (
+            e.phase.value,
+            e.status.value,
+            e.safe_error_code,
+            e.api_call_count,
+            e.mutation_attempt_count,
+        )
+        for e in journal.entries
+    ] == [
+        ("preflight", "succeeded", None, reads, 0),
+        ("mutation", "succeeded", None, reads + 1, 1),
+        ("read_back", "failed", code, reads + 1, 1),
+    ]
+    assert all(e.read_retry_count == int(retry) for e in journal.entries)
+    assert journal.schema_version == result.schema_version == report["schema_version"] == "2.0"
+    assert journal.journal_type == "test-write-operation-journal-v2"
+    assert result.result_type == "test-calendar-write-result-v2"
+    assert report["report_type"] == "test-calendar-write-report-v2"
+    assert journal.state.value == result.state.value == report["state"] == "failed"
+    assert result.success is report["success"] is False
+    assert result.stopped is report["stopped"] is True
+    assert result.read_back_verified is report["read_back_verified"] is False
+    assert result.recovered_after_uncertain is report["recovered_after_uncertain"] is False
+    assert list(result.safe_findings) == report["safe_findings"] == [code]
+    assert (
+        journal.api_call_count
+        == result.api_call_count
+        == report["api_call_count"]
+        == len(client.calls)
+    )
+    assert (
+        journal.read_retry_count
+        == result.read_retry_count
+        == report["read_retry_count"]
+        == int(retry)
+    )
+    assert (
+        journal.mutation_attempt_count
+        == result.mutation_attempt_count
+        == report["mutation_attempt_count"]
+        == 1
+    )
+    assert (
+        journal.mutation_retry_count
+        == result.mutation_retry_count
+        == report["mutation_retry_count"]
+        == 0
+    )
+    assert report["journal_hash"] == journal.journal_content_hash
+    assert report["result_hash"] == result.result_content_hash
 
-    with pytest.raises(TransportError) as caught:
-        _run(spec, target, client, challenge)
-
-    assert caught.value.code == "test_write_read_back_identity_missing"
-    assert [name for name, _ in client.calls] == ["import"]
+    journal_doc = json.loads(render_test_write_journal_json(journal))
+    for kind, document in (("journal", journal_doc), ("report", report)):
+        v2 = _write_schema(kind, 2)
+        v2.validate(document)
+        assert not _write_schema(kind, 1).is_valid(document)
+        assert not v2.is_valid({**document, "schema_version": "1.0"})
+        assert not v2.is_valid({**document, f"{kind}_type": "unexpected"})
+        assert not v2.is_valid({**document, "operation": "update"})
+    wrong_terminal = {**journal_doc["entries"][-1], "safe_error_code": "test_write_guard_failed"}
+    assert not _write_schema("journal", 2).is_valid(
+        {**journal_doc, "entries": [*journal_doc["entries"][:-1], wrong_terminal]}
+    )
+    assert not _write_schema("report", 2).is_valid({**report, "read_back_verified": True})
 
 
 def test_patch_header_refusal_records_only_completed_preflight_reads(

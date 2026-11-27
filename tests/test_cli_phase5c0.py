@@ -29,8 +29,10 @@ from tridentine_calendar_google_sync.test_write_journal import (
     TestWriteJournal as WriteJournal,
 )
 from tridentine_calendar_google_sync.test_write_journal import (
+    calculate_test_write_journal_hash,
     load_test_write_journal,
 )
+from tridentine_calendar_google_sync.test_write_report import verify_test_write_json_report
 
 COMMANDS = (
     "build-test-bootstrap-add-plan",
@@ -375,6 +377,32 @@ def test_write_cli_persists_failed_verification_get_after_acknowledged_import(
     assert report["safe_findings"] == ["test_write_guard_failed"]
     assert report["stopped"] is True
     assert report["success"] is False and report["read_back_verified"] is False
+
+
+@pytest.mark.google_test_write
+def test_write_cli_persists_v2_only_for_acknowledged_import_without_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _Client(list_queue=[prewrite_page()], import_queue=[{}])
+    journal, report = _run_stopped_write_cli(tmp_path, monkeypatch, client)
+    verify_test_write_json_report(report, journal)
+    assert [method for method, _ in client.calls] == ["list", "import"]
+    assert journal.schema_version == report["schema_version"] == "2.0"
+    assert journal.journal_type == "test-write-operation-journal-v2"
+    assert report["report_type"] == "test-calendar-write-report-v2"
+    assert [
+        (entry.phase.value, entry.status.value, entry.api_call_count) for entry in journal.entries
+    ] == [("preflight", "succeeded", 1), ("mutation", "succeeded", 2), ("read_back", "failed", 2)]
+    assert journal.entries[-1].safe_error_code == "test_write_read_back_identity_missing"
+    assert journal.state.value == report["state"] == "failed"
+    assert journal.api_call_count == report["api_call_count"] == 2
+    assert journal.read_retry_count == report["read_retry_count"] == 0
+    assert journal.mutation_attempt_count == report["mutation_attempt_count"] == 1
+    assert journal.mutation_retry_count == report["mutation_retry_count"] == 0
+    assert report["safe_findings"] == ["test_write_read_back_identity_missing"]
+    assert report["stopped"] is True and report["success"] is False
+    assert report["read_back_verified"] is False and report["recovered_after_uncertain"] is False
+    assert report["journal_hash"] == calculate_test_write_journal_hash(journal)
 
 
 def test_generic_apply_sync_execute_aliases_remain_absent() -> None:

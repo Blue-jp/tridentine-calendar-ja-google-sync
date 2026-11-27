@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -38,6 +39,7 @@ from tridentine_calendar_google_sync.test_write_report import (
     build_test_write_json_report,
     render_test_write_json_report,
     render_test_write_text_report,
+    verify_test_write_json_report,
 )
 from tridentine_calendar_google_sync.test_write_run_spec import (
     TestWriteRunSpecError as RunSpecError,
@@ -308,6 +310,62 @@ def test_public_text_and_json_reports_are_deterministic_schema_valid_and_redacte
             assert value not in rendered
         for forbidden in ("calendar_id", "authorization", "access_token", "refresh_token"):
             assert forbidden not in rendered.casefold()
+
+
+def test_report_verification_binds_versions_and_semantics_even_when_rehashed(
+    tmp_path: Any, synthetic_profile_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec, _bundle, target, challenge = _prepare(
+        tmp_path, synthetic_profile_factory, monkeypatch, update=False
+    )
+    desired = _raw_event(spec.operation.desired_state)
+    normal = _run(spec, target, _Client(import_queue=[desired], get_queue=[desired]), challenge)
+    stopped = _run(spec, target, _Client(import_queue=[{}]), challenge)
+    v1 = build_test_write_json_report(normal)
+    v2 = build_test_write_json_report(stopped)
+    verify_test_write_json_report(v1, normal.journal)
+    verify_test_write_json_report(v2, stopped.journal)
+    for document, wrong_journal in ((v1, stopped.journal), (v2, normal.journal)):
+        with pytest.raises(TransportError):
+            verify_test_write_json_report(document, wrong_journal)
+
+    for changes in (
+        {"schema_version": "1.0", "result_type": "test-calendar-write-result-v1"},
+        {"journal": normal.journal},
+        {"success": True},
+        {"stopped": False},
+        {"read_back_verified": True},
+        {"recovered_after_uncertain": True},
+        {"mutation_attempt_count": 0},
+        {"safe_findings": ("test_write_guard_failed",)},
+    ):
+        forged = stopped.model_copy(update=changes)
+        forged = forged.model_copy(
+            update={"result_content_hash": calculate_test_write_execution_result_hash(forged)}
+        )
+        with pytest.raises(TransportError):
+            build_test_write_json_report(forged)
+
+    # A valid hash of the report alone cannot establish which result and journal it describes.
+    for changes in (
+        {"schema_version": "1.0"},
+        {"schema_version": "3.0"},
+        {"report_type": "test-calendar-write-report-v1"},
+        {"read_back_verified": True},
+        {"safe_findings": ["test_write_guard_failed"]},
+        {"journal_hash": v1["journal_hash"]},
+        {"result_hash": v1["result_hash"]},
+    ):
+        fields = {**v2, **changes}
+        fields.pop("report_content_hash")
+        canonical = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+        digest = hashlib.sha256(
+            b"tridentine-calendar-google-sync:test-write-report:v2\x00" + canonical
+        )
+        with pytest.raises(TransportError):
+            verify_test_write_json_report(
+                {**fields, "report_content_hash": digest.hexdigest()}, stopped.journal
+            )
 
 
 def test_target_schema_is_closed_and_accepts_only_synthetic_private_document() -> None:

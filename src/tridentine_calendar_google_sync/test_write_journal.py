@@ -32,8 +32,21 @@ from tridentine_calendar_google_sync.test_write_spec_dispatch import (
 
 TEST_WRITE_JOURNAL_GENESIS_HASH = "0" * 64
 MAX_TEST_WRITE_JOURNAL_BYTES = 64 * 1024 * 1024
-_ENTRY_HASH_DOMAIN = b"tridentine-calendar-google-sync:test-write-journal-entry:v1\x00"
-_JOURNAL_HASH_DOMAIN = b"tridentine-calendar-google-sync:test-write-journal:v1\x00"
+_JournalVersion = Literal["1.0", "2.0"]
+_ENTRY_HASH_DOMAINS = {
+    "1.0": b"tridentine-calendar-google-sync:test-write-journal-entry:v1\x00",
+    "2.0": b"tridentine-calendar-google-sync:test-write-journal-entry:v2\x00",
+}
+_JOURNAL_HASH_DOMAINS = {
+    (
+        "1.0",
+        "test-write-operation-journal-v1",
+    ): b"tridentine-calendar-google-sync:test-write-journal:v1\x00",
+    (
+        "2.0",
+        "test-write-operation-journal-v2",
+    ): b"tridentine-calendar-google-sync:test-write-journal:v2\x00",
+}
 TEST_WRITE_SAFE_ERROR_CODES = ALLOWED_GOOGLE_REASONS | frozenset(
     {
         "duplicate_identity",
@@ -147,8 +160,10 @@ class TestWriteJournalEntry(StrictFrozenModel):
 class TestWriteJournal(StrictFrozenModel):
     """One immutable journal containing no raw write identity or content."""
 
-    schema_version: Literal["1.0"] = "1.0"
-    journal_type: Literal["test-write-operation-journal-v1"] = "test-write-operation-journal-v1"
+    schema_version: _JournalVersion = "1.0"
+    journal_type: Literal["test-write-operation-journal-v1", "test-write-operation-journal-v2"] = (
+        "test-write-operation-journal-v1"
+    )
     live_test_write: Literal[True] = True
     test_only: Literal[True] = True
     production_locked: Literal[True] = True
@@ -211,9 +226,71 @@ class TestWriteJournalError(ValueError):
         super().__init__(public_message)
 
 
+def _journal_hash_domain(journal: TestWriteJournal) -> bytes:
+    domain = _JOURNAL_HASH_DOMAINS.get((journal.schema_version, journal.journal_type))
+    if domain is None:
+        raise TestWriteJournalError(
+            "test_write_journal_version_mismatch", "Invalid journal version"
+        )
+    return domain
+
+
+def _verify_missing_identity_stop(journal: TestWriteJournal) -> None:
+    """v2 contains exactly one kind of terminal evidence; no v2 running prefixes."""
+
+    invalid = TestWriteJournalError(
+        "test_write_journal_identity_stop_invalid", "Invalid missing-identity stop journal"
+    )
+    if (
+        journal.operation is not TestWriteOperationKind.ADD
+        or journal.state is not TestWriteJournalState.FAILED
+        or len(journal.entries) != 3
+        or journal.live_test_write is not True
+        or journal.test_only is not True
+        or journal.production_locked is not True
+        or journal.rollback_available is not False
+        or journal.recovered_after_uncertain is not False
+        or journal.mutation_retry_count != 0
+    ):
+        raise invalid
+    preflight, mutation, stop = journal.entries
+    if (
+        preflight.phase is not TestWriteJournalPhase.PREFLIGHT
+        or preflight.status is not TestWriteJournalEntryStatus.SUCCEEDED
+        or preflight.safe_error_code is not None
+        or not 1 <= preflight.api_call_count <= 8
+        or not 0 <= preflight.read_retry_count < preflight.api_call_count
+        or preflight.mutation_attempt_count != 0
+        or mutation.phase is not TestWriteJournalPhase.MUTATION
+        or mutation.status is not TestWriteJournalEntryStatus.SUCCEEDED
+        or mutation.safe_error_code is not None
+        or mutation.api_call_count != preflight.api_call_count + 1
+        or mutation.read_retry_count != preflight.read_retry_count
+        or mutation.mutation_attempt_count != 1
+    ):
+        raise invalid
+    if (
+        stop.phase is not TestWriteJournalPhase.READ_BACK
+        or stop.status is not TestWriteJournalEntryStatus.FAILED
+        or stop.safe_error_code != "test_write_read_back_identity_missing"
+        or not journal.api_call_count == stop.api_call_count == mutation.api_call_count
+        or not journal.read_retry_count == stop.read_retry_count == mutation.read_retry_count
+        or not journal.mutation_attempt_count == stop.mutation_attempt_count == 1
+        or any(
+            entry.recovered_after_uncertain is not False or entry.mutation_retry_count != 0
+            for entry in journal.entries
+        )
+    ):
+        raise invalid
+
+
 def _verify_test_write_journal_semantics(journal: TestWriteJournal) -> None:
     """Require an exact lifecycle topology, not merely recomputable hashes."""
 
+    _journal_hash_domain(journal)
+    if journal.schema_version == "2.0":
+        _verify_missing_identity_stop(journal)
+        return
     shape = tuple((entry.phase, entry.status) for entry in journal.entries)
     preflight_succeeded = (
         TestWriteJournalPhase.PREFLIGHT,
@@ -373,10 +450,17 @@ def _entry_data(entry: TestWriteJournalEntry) -> dict[str, object]:
     }
 
 
-def calculate_test_write_journal_entry_hash(entry: TestWriteJournalEntry) -> str:
-    """Recalculate one entry hash without trusting the stored digest."""
+def calculate_test_write_journal_entry_hash(
+    entry: TestWriteJournalEntry, *, schema_version: _JournalVersion = "1.0"
+) -> str:
+    """Recalculate an entry in the hash domain of its enclosing journal."""
 
-    return _hash(_ENTRY_HASH_DOMAIN, _entry_data(entry))
+    domain = _ENTRY_HASH_DOMAINS.get(schema_version)
+    if domain is None:
+        raise TestWriteJournalError(
+            "test_write_journal_version_mismatch", "Invalid journal version"
+        )
+    return _hash(domain, _entry_data(entry))
 
 
 def _journal_data(journal: TestWriteJournal) -> dict[str, object]:
@@ -406,7 +490,7 @@ def _journal_data(journal: TestWriteJournal) -> dict[str, object]:
 def calculate_test_write_journal_hash(journal: TestWriteJournal) -> str:
     """Recalculate the aggregate journal hash."""
 
-    return _hash(_JOURNAL_HASH_DOMAIN, _journal_data(journal))
+    return _hash(_journal_hash_domain(journal), _journal_data(journal))
 
 
 def initialize_test_write_journal(
@@ -531,10 +615,68 @@ def append_test_write_journal_entry(
     return result
 
 
+def finalize_test_write_missing_identity_journal(journal: TestWriteJournal) -> TestWriteJournal:
+    """Seal an acknowledged v1 ADD prefix as v2 when its read-back cannot start."""
+
+    verify_test_write_journal(journal)
+    if (
+        journal.schema_version != "1.0"
+        or journal.state is not TestWriteJournalState.RUNNING
+        or journal.operation is not TestWriteOperationKind.ADD
+        or len(journal.entries) != 2
+        or journal.entries[-1].status is not TestWriteJournalEntryStatus.SUCCEEDED
+    ):
+        raise TestWriteJournalError(
+            "test_write_journal_identity_stop_invalid", "Expected an acknowledged ADD prefix"
+        )
+    # No GET ran. Only the terminal evidence changes, keeping the actual counters.
+    stop = journal.entries[-1].model_copy(
+        update={
+            "sequence": 2,
+            "phase": TestWriteJournalPhase.READ_BACK,
+            "status": TestWriteJournalEntryStatus.FAILED,
+            "safe_error_code": "test_write_read_back_identity_missing",
+        }
+    )
+    entries = []
+    previous_hash = TEST_WRITE_JOURNAL_GENESIS_HASH
+    for original in (*journal.entries, stop):
+        entry = original.model_copy(update={"previous_entry_hash": previous_hash})
+        previous_hash = calculate_test_write_journal_entry_hash(entry, schema_version="2.0")
+        entries.append(entry.model_copy(update={"entry_hash": previous_hash}))
+    candidate = journal.model_copy(
+        update={
+            "schema_version": "2.0",
+            "journal_type": "test-write-operation-journal-v2",
+            "state": TestWriteJournalState.FAILED,
+            "entry_count": 3,
+            "entries": tuple(entries),
+            "last_entry_hash": previous_hash,
+        }
+    )
+    result = candidate.model_copy(
+        update={"journal_content_hash": calculate_test_write_journal_hash(candidate)}
+    )
+    verify_test_write_journal(result)
+    return result
+
+
 def verify_test_write_journal(journal: TestWriteJournal) -> None:
     """Verify safe identity, sequence, chain, and aggregate content hash."""
 
-    _verify_test_write_journal_semantics(journal)
+    if journal.schema_version == "2.0":
+        # model_copy(update=...) bypasses Pydantic. Revalidate the entire small
+        # v2 envelope, including nested reference grammars, before export.
+        original = journal.model_dump(mode="python", warnings=False)
+        try:
+            checked = TestWriteJournal.model_validate(original, strict=True)
+        except ValidationError:
+            raise TestWriteJournalError(
+                "test_write_journal_identity_stop_invalid", "Invalid missing-identity stop journal"
+            ) from None
+        _require_exact_v2_fields(original, checked)
+    else:
+        _verify_test_write_journal_semantics(journal)
     if journal.target_safe_ref == PRODUCTION_TARGET_REFERENCE:
         raise TestWriteJournalError(
             "production_test_write_forbidden",
@@ -564,7 +706,7 @@ def verify_test_write_journal(journal: TestWriteJournal) -> None:
                 "Test write journal hash-chain verification failed",
             )
         if not hmac.compare_digest(
-            calculate_test_write_journal_entry_hash(entry),
+            calculate_test_write_journal_entry_hash(entry, schema_version=journal.schema_version),
             entry.entry_hash,
         ):
             raise TestWriteJournalError(
@@ -630,6 +772,17 @@ class _DuplicateJsonKey(ValueError):
     pass
 
 
+def _require_exact_v2_fields(value: dict[str, Any], checked: TestWriteJournal) -> None:
+    # Defaults may fill missing wire fields, and Literal[0] can coerce False
+    # even in strict mode. JSON values distinguish them, unlike Python ==.
+    if json.dumps(value, sort_keys=True) != json.dumps(
+        checked.model_dump(mode="json"), sort_keys=True
+    ):
+        raise TestWriteJournalError(
+            "test_write_journal_identity_stop_invalid", "Invalid missing-identity stop journal"
+        )
+
+
 def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -676,6 +829,8 @@ def parse_test_write_journal_bytes(raw_bytes: bytes) -> TestWriteJournal:
             entries.append(TestWriteJournalEntry.model_validate(item, strict=True))
         normalized["entries"] = tuple(entries)
         journal = TestWriteJournal.model_validate(normalized, strict=True)
+        if journal.schema_version == "2.0":
+            _require_exact_v2_fields(value, journal)
         verify_test_write_journal(journal)
         return journal
     except TestWriteJournalError:
@@ -748,6 +903,7 @@ __all__ = [
     "append_test_write_journal_entry",
     "calculate_test_write_journal_entry_hash",
     "calculate_test_write_journal_hash",
+    "finalize_test_write_missing_identity_journal",
     "initialize_test_write_journal",
     "load_test_write_journal",
     "parse_test_write_journal_bytes",

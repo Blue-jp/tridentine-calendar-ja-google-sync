@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Blue-jp/tridentine-calendar-ja-google-sync/blob/main/schemas/test-write-journal-v2.schema.json",
+  "title": "Test Calendar journal for an acknowledged import without an event ID",
+  "description": "This terminal record has no read-back request. The reader also checks the cross-entry counters, references and hash chain.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "journal_type",
+    "live_test_write",
+    "test_only",
+    "production_locked",
+    "run_spec_ref",
+    "target_safe_ref",
+    "source_ref",
+    "operation",
+    "state",
+    "entries",
+    "entry_count",
+    "api_call_count",
+    "read_retry_count",
+    "mutation_attempt_count",
+    "mutation_retry_count",
+    "recovered_after_uncertain",
+    "last_entry_hash",
+    "rollback_available",
+    "journal_content_hash"
+  ],
+  "properties": {
+    "schema_version": { "const": "2.0" },
+    "journal_type": { "const": "test-write-operation-journal-v2" },
+    "live_test_write": { "const": true },
+    "test_only": { "const": true },
+    "production_locked": { "const": true },
+    "run_spec_ref": { "$ref": "#/$defs/runReference" },
+    "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+    "source_ref": { "$ref": "#/$defs/sourceReference" },
+    "operation": { "const": "add" },
+    "state": { "const": "failed" },
+    "entries": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/entry",
+          "properties": {
+            "sequence": { "const": 0 },
+            "phase": { "const": "preflight" },
+            "status": { "const": "succeeded" },
+            "safe_error_code": { "const": null },
+            "api_call_count": { "type": "integer", "minimum": 1, "maximum": 8 },
+            "mutation_attempt_count": { "const": 0 },
+            "previous_entry_hash": { "const": "0000000000000000000000000000000000000000000000000000000000000000" }
+          }
+        },
+        {
+          "$ref": "#/$defs/entry",
+          "properties": {
+            "sequence": { "const": 1 },
+            "phase": { "const": "mutation" },
+            "status": { "const": "succeeded" },
+            "safe_error_code": { "const": null },
+            "api_call_count": { "type": "integer", "minimum": 2, "maximum": 9 },
+            "mutation_attempt_count": { "const": 1 }
+          }
+        },
+        {
+          "$ref": "#/$defs/entry",
+          "properties": {
+            "sequence": { "const": 2 },
+            "phase": { "const": "read_back" },
+            "status": { "const": "failed" },
+            "safe_error_code": { "const": "test_write_read_back_identity_missing" },
+            "api_call_count": { "type": "integer", "minimum": 2, "maximum": 9 },
+            "mutation_attempt_count": { "const": 1 }
+          }
+        }
+      ],
+      "items": false
+    },
+    "entry_count": { "const": 3 },
+    "api_call_count": { "type": "integer", "minimum": 2, "maximum": 9 },
+    "read_retry_count": { "type": "integer", "minimum": 0, "maximum": 7 },
+    "mutation_attempt_count": { "const": 1 },
+    "mutation_retry_count": { "const": 0 },
+    "recovered_after_uncertain": { "const": false },
+    "last_entry_hash": { "$ref": "#/$defs/sha256" },
+    "rollback_available": { "const": false },
+    "journal_content_hash": { "$ref": "#/$defs/sha256" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "runReference": { "type": "string", "pattern": "^R-[0-9a-f]{12}$" },
+    "targetReference": {
+      "type": "string",
+      "pattern": "^T-[0-9a-f]{12}$",
+      "not": { "const": "T-e10f0095ab8f" }
+    },
+    "sourceReference": { "type": "string", "pattern": "^U-[0-9a-f]{12}$" },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "run_spec_ref",
+        "target_safe_ref",
+        "source_ref",
+        "operation",
+        "phase",
+        "status",
+        "safe_error_code",
+        "api_call_count",
+        "read_retry_count",
+        "mutation_attempt_count",
+        "mutation_retry_count",
+        "recovered_after_uncertain",
+        "previous_entry_hash",
+        "entry_hash"
+      ],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "run_spec_ref": { "$ref": "#/$defs/runReference" },
+        "target_safe_ref": { "$ref": "#/$defs/targetReference" },
+        "source_ref": { "$ref": "#/$defs/sourceReference" },
+        "operation": { "const": "add" },
+        "phase": { "type": "string" },
+        "status": { "type": "string" },
+        "safe_error_code": { "type": ["null", "string"] },
+        "api_call_count": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "read_retry_count": { "type": "integer", "minimum": 0, "maximum": 7 },
+        "mutation_attempt_count": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "mutation_retry_count": { "const": 0 },
+        "recovered_after_uncertain": { "const": false },
+        "previous_entry_hash": { "$ref": "#/$defs/sha256" },
+        "entry_hash": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  }
+}

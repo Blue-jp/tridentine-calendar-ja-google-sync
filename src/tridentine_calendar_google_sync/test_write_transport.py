@@ -49,6 +49,7 @@ from tridentine_calendar_google_sync.test_write_journal import (
     TestWriteJournalPhase,
     TestWriteJournalState,
     append_test_write_journal_entry,
+    finalize_test_write_missing_identity_journal,
     initialize_test_write_journal,
     verify_test_write_journal,
 )
@@ -74,7 +75,16 @@ MAX_TEST_WRITE_MUTATION_ATTEMPTS = 1
 TEST_WRITE_MUTATION_RETRY_COUNT = 0
 MAX_TEST_WRITE_PAGES = 100
 _METADATA_HASH_DOMAIN = b"tridentine-calendar-google-sync:collection-metadata:v1\x00"
-_RESULT_HASH_DOMAIN = b"tridentine-calendar-google-sync:test-write-result:v1\x00"
+_RESULT_HASH_DOMAINS = {
+    (
+        "1.0",
+        "test-calendar-write-result-v1",
+    ): b"tridentine-calendar-google-sync:test-write-result:v1\x00",
+    (
+        "2.0",
+        "test-calendar-write-result-v2",
+    ): b"tridentine-calendar-google-sync:test-write-result:v2\x00",
+}
 
 
 class TestWriteExecutionState(StrEnum):
@@ -89,8 +99,10 @@ class TestWriteExecutionState(StrEnum):
 class TestWriteExecutionResult(StrictFrozenModel):
     """Public-safe execution result; private identities never leave the adapter."""
 
-    schema_version: Literal["1.0"] = "1.0"
-    result_type: Literal["test-calendar-write-result-v1"] = "test-calendar-write-result-v1"
+    schema_version: Literal["1.0", "2.0"] = "1.0"
+    result_type: Literal["test-calendar-write-result-v1", "test-calendar-write-result-v2"] = (
+        "test-calendar-write-result-v1"
+    )
     live_test_write: Literal[True] = True
     test_only: Literal[True] = True
     production_locked: Literal[True] = True
@@ -130,6 +142,34 @@ def _verify_test_write_execution_result_semantics(result: TestWriteExecutionResu
     """Bind every terminal result claim to a semantically valid journal."""
 
     verify_test_write_journal(result.journal)
+    tags = (result.schema_version, result.result_type)
+    if tags not in _RESULT_HASH_DOMAINS or result.schema_version != result.journal.schema_version:
+        raise TestWriteTransportError(
+            "test_write_result_version_mismatch", "Test write evidence versions do not match"
+        )
+    if result.schema_version == "2.0" and (
+        result.state is not TestWriteExecutionState.FAILED
+        or result.success is not False
+        or result.stopped is not True
+        or result.read_back_verified is not False
+        or result.recovered_after_uncertain is not False
+        or result.safe_findings != ("test_write_read_back_identity_missing",)
+        or result.live_test_write is not True
+        or result.test_only is not True
+        or result.production_locked is not True
+        or any(
+            type(count) is not int
+            for count in (
+                result.api_call_count,
+                result.read_retry_count,
+                result.mutation_attempt_count,
+                result.mutation_retry_count,
+            )
+        )
+    ):
+        raise TestWriteTransportError(
+            "test_write_result_stop_mismatch", "Invalid missing-identity Test write result"
+        )
     if result.target_safe_ref == PRODUCTION_TARGET_REFERENCE:
         raise TestWriteTransportError(
             "production_test_write_result_forbidden",
@@ -252,7 +292,12 @@ def _result_data(result: TestWriteExecutionResult) -> dict[str, object]:
 def calculate_test_write_execution_result_hash(result: TestWriteExecutionResult) -> str:
     """Calculate the deterministic safe result hash."""
 
-    return _hash(_RESULT_HASH_DOMAIN, _result_data(result))
+    domain = _RESULT_HASH_DOMAINS.get((result.schema_version, result.result_type))
+    if domain is None:
+        raise TestWriteTransportError(
+            "test_write_result_version_mismatch", "Unsupported Test write result version or type"
+        )
+    return _hash(domain, _result_data(result))
 
 
 def verify_test_write_execution_result(result: TestWriteExecutionResult) -> None:
@@ -657,6 +702,12 @@ def _final_result(
 ) -> TestWriteExecutionResult:
     success = state is TestWriteExecutionState.SUCCEEDED
     provisional = TestWriteExecutionResult(
+        schema_version=journal.schema_version,
+        result_type=(
+            "test-calendar-write-result-v2"
+            if journal.schema_version == "2.0"
+            else "test-calendar-write-result-v1"
+        ),
         state=state,
         target_safe_ref=run_spec.target_safe_ref,
         run_spec_ref=f"R-{run_spec.run_spec_content_hash[:12]}",
@@ -984,12 +1035,12 @@ def run_test_calendar_write(
     if mutation_error is None and run_spec.operation.operation is TestWriteOperationKind.ADD:
         returned_id = response.get("id") if response is not None else None
         if not isinstance(returned_id, str) or not returned_id:
-            # An acknowledged import without an ID cannot start its required
-            # GET. v1 has no terminal entry for that unchanged API count.
-            raise TestWriteTransportError(
-                "test_write_read_back_identity_missing",
-                "Test import was acknowledged without an event identity. "
-                "Read-back could not start; do not repeat the mutation.",
+            return _final_result(
+                run_spec,
+                finalize_test_write_missing_identity_journal(journal),
+                state=TestWriteExecutionState.FAILED,
+                read_back_verified=False,
+                findings=("test_write_read_back_identity_missing",),
             )
         read_back_id = returned_id
 
