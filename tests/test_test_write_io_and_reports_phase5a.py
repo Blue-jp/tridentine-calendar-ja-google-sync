@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import jsonschema
 import pytest
 from conftest import REPOSITORY_ROOT
+from phase5a1_helpers import prewrite_page
 from test_test_write_journal_phase5a import _run_spec as journal_run_spec
 from test_test_write_run_spec_phase5a import _add_run_spec
-from test_test_write_transport_phase5a import _Client, _prepare, _raw_event, _run
+from test_test_write_transport_phase5a import _budget_inputs, _Client, _prepare, _raw_event, _run
 
+from tridentine_calendar_google_sync.google_errors import SafeGoogleError
 from tridentine_calendar_google_sync.test_write_journal import (
     TestWriteJournalEntryStatus as EntryStatus,
 )
@@ -27,6 +30,7 @@ from tridentine_calendar_google_sync.test_write_journal import (
     append_test_write_journal_entry,
     calculate_test_write_journal_hash,
     initialize_test_write_journal,
+    load_test_write_journal,
     parse_test_write_journal_bytes,
     render_test_write_journal_json,
     verify_test_write_journal,
@@ -58,6 +62,7 @@ from tridentine_calendar_google_sync.test_write_transport import (
 )
 from tridentine_calendar_google_sync.test_write_transport import (
     calculate_test_write_execution_result_hash,
+    run_test_calendar_write,
     verify_test_write_execution_result,
 )
 
@@ -366,6 +371,66 @@ def test_report_verification_binds_versions_and_semantics_even_when_rehashed(
             verify_test_write_json_report(
                 {**fields, "report_content_hash": digest.hexdigest()}, stopped.journal
             )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param({"read_back_verified": True}, id="claims-verified"),
+        pytest.param({"safe_findings": ("etag_conflict",)}, id="wrong-stop-reason"),
+    ],
+)
+def test_rehashed_v1_claims_must_match_saved_read_back_412_journal(
+    tmp_path: Path, changes: dict[str, object]
+) -> None:
+    spec, target, bindings, challenge, items, desired = _budget_inputs(tmp_path, update=True)
+    failure = SafeGoogleError(
+        status=412, reason="etag_conflict", retryable=False, attempt=1, operation="events.get"
+    )
+    client = _Client(
+        list_queue=[prewrite_page(items, summary=target.expected_summary)],
+        get_queue=[*items, failure],
+        patch_queue=[desired],
+    )
+    result = run_test_calendar_write(spec, target, client, challenge, **bindings)
+    assert [name for name, _ in client.calls] == ["list", "get", "patch", "get"]
+    path = tmp_path / "journal.json"
+    write_test_write_journal(result.journal, path)
+    journal = load_test_write_journal(path)
+    assert journal.schema_version == "1.0"
+    assert [(entry.phase, entry.status) for entry in journal.entries] == [
+        (JournalPhase.PREFLIGHT, EntryStatus.SUCCEEDED),
+        (JournalPhase.MUTATION, EntryStatus.SUCCEEDED),
+        (JournalPhase.READ_BACK, EntryStatus.FAILED),
+    ]
+    assert journal.entries[-1].safe_error_code == "test_write_guard_failed"
+    assert result.read_back_verified is False
+    assert result.safe_findings == ("test_write_guard_failed",)
+    verify_test_write_execution_result(result)
+    report = build_test_write_json_report(result)
+    verify_test_write_json_report(report, journal)
+
+    forged = result.model_copy(update=changes)
+    digest = calculate_test_write_execution_result_hash(forged)
+    forged = forged.model_copy(update={"result_content_hash": digest})
+    fields = {
+        **report,
+        "result_hash": digest,
+        "read_back_verified": forged.read_back_verified,
+        "safe_findings": list(forged.safe_findings),
+    }
+    fields.pop("report_content_hash")
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+    fields["report_content_hash"] = hashlib.sha256(
+        b"tridentine-calendar-google-sync:test-write-report:v1\x00" + canonical
+    ).hexdigest()
+
+    with pytest.raises(TransportError) as result_error:
+        verify_test_write_execution_result(forged)
+    assert result_error.value.code == "test_write_result_journal_binding_mismatch"
+    with pytest.raises(TransportError) as report_error:
+        verify_test_write_json_report(fields, journal)
+    assert report_error.value.code == "test_write_report_invalid"
 
 
 def test_target_schema_is_closed_and_accepts_only_synthetic_private_document() -> None:

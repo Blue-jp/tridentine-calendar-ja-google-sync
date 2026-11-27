@@ -211,6 +211,12 @@ def _verify_test_write_execution_result_semantics(result: TestWriteExecutionResu
             "test_write_result_journal_state_mismatch",
             "Test write result terminal journal state verification failed",
         )
+    terminal = result.journal.entries[-1]
+    read_back_verified = terminal.status in (
+        TestWriteJournalEntryStatus.SUCCEEDED,
+        TestWriteJournalEntryStatus.RECOVERED,
+    )
+    safe_findings = (terminal.safe_error_code,) if terminal.safe_error_code is not None else ()
     if (
         result.journal.target_safe_ref != result.target_safe_ref
         or result.journal.run_spec_ref != result.run_spec_ref
@@ -220,6 +226,8 @@ def _verify_test_write_execution_result_semantics(result: TestWriteExecutionResu
         or result.journal.read_retry_count != result.read_retry_count
         or result.journal.mutation_attempt_count != result.mutation_attempt_count
         or result.journal.recovered_after_uncertain != result.recovered_after_uncertain
+        or result.read_back_verified is not read_back_verified
+        or result.safe_findings != safe_findings
     ):
         raise TestWriteTransportError(
             "test_write_result_journal_binding_mismatch",
