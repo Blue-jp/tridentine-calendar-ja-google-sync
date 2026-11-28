@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -30,7 +31,7 @@ from tridentine_calendar_google_sync.plan_engine import (
     build_sync_plan,
     calculate_sync_plan_content_hash,
 )
-from tridentine_calendar_google_sync.plan_models import PlanThresholds, SyncPlan
+from tridentine_calendar_google_sync.plan_models import PlanActionKind, PlanThresholds, SyncPlan
 from tridentine_calendar_google_sync.plan_report import render_plan_json_report
 from tridentine_calendar_google_sync.source_ics import inspect_source
 from tridentine_calendar_google_sync.test_calendar_prewrite import inspect_test_calendar_prewrite
@@ -57,7 +58,7 @@ pytestmark = pytest.mark.google_test_write
 
 
 @dataclass
-class ApprovedUpdate:
+class ApprovedInputs:
     profile: AcceptedSourceProfile
     source: SourceCalendarInspection
     source_path: Path
@@ -66,12 +67,10 @@ class ApprovedUpdate:
     baseline: TrustedBaseline
     target: Target
     page: dict[str, object]
-    before: dict[str, object]
     after: dict[str, object]
 
 
-@pytest.fixture
-def approved(tmp_path: Path) -> ApprovedUpdate:
+def _approved_inputs(tmp_path: Path, *, add: bool) -> ApprovedInputs:
     # One change among 101 events satisfies the normal Plan's mass-change guard.
     count = 101
     path = tmp_path / "source.ics"
@@ -91,34 +90,57 @@ def approved(tmp_path: Path) -> ApprovedUpdate:
     )
     baseline = trust_baseline(candidate, baseline_confirmation_phrase(candidate))
 
-    after = events[0]
-    before = {**after, "summary": "Earlier synthetic value", "end": {"date": "2026-01-17"}}
-    page = prewrite_page([before, *events[1:]], summary=target.expected_summary)
-    snapshot = inspect_test_calendar_prewrite(
-        SequencePrewriteClient([page]), target
-    ).snapshot.snapshot
-    plan = build_sync_plan(
-        profile, source, snapshot, baseline, thresholds=PlanThresholds(max_update=2)
-    )
-    return ApprovedUpdate(
-        profile, source, path, snapshot, plan, baseline, target, page, before, after
-    )
+    if add:
+        path.write_bytes(_calendar_bytes(count + 1))
+        profile = build_synthetic_profile(path, _profile_overrides(count + 1))
+        source = inspect_source(path, profile)
+        page = unchanged_page
+        snapshot = previous_snapshot
+        after = _snapshot_document(count + 1)["events"][-1]
+        after.pop("allDay")
+        after["etag"] = "fixture-etag-after-import"
+    else:
+        after = events[0]
+        before = {**after, "summary": "Earlier synthetic value", "end": {"date": "2026-01-17"}}
+        page = prewrite_page([before, *events[1:]], summary=target.expected_summary)
+        snapshot = inspect_test_calendar_prewrite(
+            SequencePrewriteClient([page]), target
+        ).snapshot.snapshot
+    thresholds = PlanThresholds(max_add=2) if add else PlanThresholds(max_update=2)
+    plan = build_sync_plan(profile, source, snapshot, baseline, thresholds=thresholds)
+    return ApprovedInputs(profile, source, path, snapshot, plan, baseline, target, page, after)
 
 
-def _candidate(inputs: ApprovedUpdate, case: str) -> tuple[SyncPlan, RunSpec, str]:
-    plan = inputs.plan
-    if case == "unreproducible-plan":
-        action = plan.proposed_actions[0].model_copy(update={"changed_fields": ("summary",)})
-        plan = plan.model_copy(update={"proposed_actions": (action,)})
-        plan = plan.model_copy(update={"plan_content_hash": calculate_sync_plan_content_hash(plan)})
-    spec = build_test_write_run_spec(
+@pytest.fixture
+def approved(tmp_path: Path) -> ApprovedInputs:
+    return _approved_inputs(tmp_path, add=False)
+
+
+@pytest.fixture
+def approved_add(tmp_path: Path) -> ApprovedInputs:
+    return _approved_inputs(tmp_path, add=True)
+
+
+def _build_spec(inputs: ApprovedInputs, plan: SyncPlan) -> RunSpec:
+    return build_test_write_run_spec(
         inputs.profile,
         inputs.source,
         inputs.snapshot,
         plan,
         inputs.target,
-        trusted_baseline=inputs.baseline,
+        trusted_baseline=inputs.baseline
+        if plan.proposed_actions[0].action is PlanActionKind.UPDATE
+        else None,
     )
+
+
+def _candidate(inputs: ApprovedInputs, case: str) -> tuple[SyncPlan, RunSpec, str]:
+    plan = inputs.plan
+    if case == "unreproducible-plan":
+        action = plan.proposed_actions[0].model_copy(update={"changed_fields": ("summary",)})
+        plan = plan.model_copy(update={"proposed_actions": (action,)})
+        plan = plan.model_copy(update={"plan_content_hash": calculate_sync_plan_content_hash(plan)})
+    spec = _build_spec(inputs, plan)
     op = spec.operation
     if case == "wrong-event":
         other = next(
@@ -128,7 +150,9 @@ def _candidate(inputs: ApprovedUpdate, case: str) -> tuple[SyncPlan, RunSpec, st
     elif case == "wrong-fields":
         op = op.model_copy(update={"changed_fields": ("summary",)})
     elif case == "wrong-value":
-        desired = op.desired_state.model_copy(update={"summary": inputs.before["summary"]})
+        desired = op.desired_state.model_copy(
+            update={"summary": inputs.page["items"][0]["summary"]}
+        )
         op = op.model_copy(update={"desired_state": desired})
     elif case == "candidate-add":
         op = op.model_copy(
@@ -144,6 +168,11 @@ def _candidate(inputs: ApprovedUpdate, case: str) -> tuple[SyncPlan, RunSpec, st
         spec = spec.model_copy(
             update={"add_count": 1, "update_count": 0, "trusted_baseline_hash": None}
         )
+    return _approved_candidate(plan, spec.model_copy(update={"operation": op}))
+
+
+def _approved_candidate(plan: SyncPlan, spec: RunSpec) -> tuple[SyncPlan, RunSpec, str]:
+    op = spec.operation
     op = op.model_copy(update={"operation_content_hash": calculate_test_write_operation_hash(op)})
     spec = spec.model_copy(update={"operation": op})
     spec = spec.model_copy(
@@ -151,7 +180,7 @@ def _candidate(inputs: ApprovedUpdate, case: str) -> tuple[SyncPlan, RunSpec, st
     )
     challenge = approval_challenge(
         spec,
-        current_snapshot_hash=inputs.snapshot.content_hash,
+        current_snapshot_hash=plan.snapshot_content_hash,
         current_plan_hash=plan.plan_content_hash,
         current_baseline_hash=spec.trusted_baseline_hash,
     )
@@ -159,22 +188,26 @@ def _candidate(inputs: ApprovedUpdate, case: str) -> tuple[SyncPlan, RunSpec, st
 
 
 def _cli_args(
-    inputs: ApprovedUpdate, plan: SyncPlan, spec: RunSpec, challenge: str, directory: Path
+    inputs: ApprovedInputs,
+    plan: SyncPlan,
+    spec: RunSpec,
+    challenge: str,
+    directory: Path,
+    *,
+    include_baseline: bool = True,
 ) -> dict[str, str]:
     write_test_write_run_spec(spec, directory / "spec.json")
     (directory / "plan.json").write_bytes(render_plan_json_report(plan).encode("utf-8"))
     (directory / "snapshot.json").write_bytes(render_sanitized_snapshot(inputs.snapshot))
-    write_baseline(inputs.baseline, directory / "baseline.json")
     write_test_target_config(inputs.target, directory / "target.toml")
     profiles = write_profile_directory(inputs.profile, directory / "profiles")
-    return {
+    args = {
         "--run-spec": str(directory / "spec.json"),
         "--plan": str(directory / "plan.json"),
         "--profile": inputs.profile.profile_id,
         "--profiles-dir": str(profiles),
         "--source": str(inputs.source_path),
         "--google-snapshot": str(directory / "snapshot.json"),
-        "--trusted-baseline": str(directory / "baseline.json"),
         "--target-config": str(directory / "target.toml"),
         "--token-file": str(directory / "unused-write.json"),
         "--production-read-token-file": str(directory / "unused-read.json"),
@@ -183,6 +216,11 @@ def _cli_args(
         "--report-output": str(directory / "report.json"),
         "--format": "json",
     }
+    if include_baseline:
+        baseline_path = directory / "baseline.json"
+        write_baseline(inputs.baseline, baseline_path)
+        args["--trusted-baseline"] = str(baseline_path)
+    return args
 
 
 def _run_cli(args: dict[str, str]) -> int:
@@ -192,12 +230,12 @@ def _run_cli(args: dict[str, str]) -> int:
 
 
 def test_update_uses_only_approved_patch_arguments(
-    approved: ApprovedUpdate, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    approved: ApprovedInputs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan, spec, challenge = _candidate(approved, "approved")
     client = _Client(
         list_queue=[approved.page],
-        get_queue=[approved.before, approved.after],
+        get_queue=[approved.page["items"][0], approved.after],
         patch_queue=[approved.after],
     )
     monkeypatch.setattr(cli, "load_google_optional_bindings", Mock())
@@ -244,7 +282,7 @@ def test_update_uses_only_approved_patch_arguments(
 def test_update_rejects_before_client_or_credentials(
     case: str,
     code: str,
-    approved: ApprovedUpdate,
+    approved: ApprovedInputs,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -268,14 +306,31 @@ def test_update_rejects_before_client_or_credentials(
     if case in cli_options:
         del evidence[case]
         del cli_args[cli_options[case]]
+    _assert_pre_client_stop(
+        approved, plan, spec, challenge, evidence, cli_args, code, tmp_path, monkeypatch, capsys
+    )
+
+
+def _assert_pre_client_stop(
+    inputs: ApprovedInputs,
+    plan: SyncPlan,
+    spec: RunSpec,
+    challenge: str,
+    evidence: dict[str, Any],
+    cli_args: dict[str, str],
+    code: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     client = Mock(spec=_Client)
     with pytest.raises(RunSpecError) as stopped:
         run_test_calendar_write(
             spec,
-            approved.target,
+            inputs.target,
             client,
             challenge,
-            current_snapshot_hash=approved.snapshot.content_hash,
+            current_snapshot_hash=inputs.snapshot.content_hash,
             current_plan_hash=plan.plan_content_hash,
             current_baseline_hash=spec.trusted_baseline_hash,
             **evidence,
@@ -289,7 +344,7 @@ def test_update_rejects_before_client_or_credentials(
     monkeypatch.setattr(cli, "build_test_calendar_write_client", build_client)
     exit_code = _run_cli(cli_args)
     err = capsys.readouterr().err
-    if case == "normal_plan":
+    if "--plan" not in cli_args:
         assert exit_code == cli.EXIT_CLI_ERROR and "--plan" in err
     else:
         assert exit_code == cli.EXIT_FATAL_GUARD
@@ -300,3 +355,164 @@ def test_update_rejects_before_client_or_credentials(
     assert not client.mock_calls
     assert not (tmp_path / "journal.json").exists()
     assert not (tmp_path / "report.json").exists()
+
+
+def test_add_import_matches_independent_source_without_baseline(
+    approved_add: ApprovedInputs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = approved_add
+    plan, spec, challenge = _candidate(inputs, "approved")
+    client = _Client(
+        list_queue=[inputs.page], import_queue=[inputs.after], get_queue=[inputs.after]
+    )
+    monkeypatch.setattr(cli, "load_google_optional_bindings", Mock())
+    monkeypatch.setattr(cli, "load_test_write_credentials", Mock())
+    monkeypatch.setattr(cli, "build_test_calendar_write_client", Mock(return_value=client))
+    args = _cli_args(inputs, plan, spec, challenge, tmp_path, include_baseline=False)
+    assert _run_cli(args) == cli.EXIT_VALID
+    assert [name for name, _ in client.calls] == ["list", "import", "get"]
+    (action,) = plan.proposed_actions
+    (event,) = (e for e in inputs.source.events if e.safe_uid_reference == action.source_ref)
+    assert all(old.ical_uid != event.uid for old in inputs.snapshot.events)
+    assert client.calls[1][1] == {
+        "body": {
+            "iCalUID": event.uid,
+            "summary": event.summary,
+            "description": event.description,
+            "start": {"date": event.start_date.isoformat()},
+            "end": {"date": event.effective_end_date.isoformat()},
+            "eventType": "default",
+        }
+    }
+    assert client.calls[2][1] == {"event_id": inputs.after["id"]}
+    report = json.loads((tmp_path / "report.json").read_bytes())
+    assert report["success"] and report["read_back_verified"]
+    assert report["api_call_count"] == 3 and report["mutation_attempt_count"] == 1
+    assert report["mutation_retry_count"] == 0
+
+
+def _page_after_import(inputs: ApprovedInputs) -> dict[str, object]:
+    return prewrite_page(
+        [*inputs.page["items"], inputs.after], summary=inputs.target.expected_summary
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "code"),
+    [
+        ("uid", "test_write_add_evidence_mismatch"),
+        ("summary", "test_write_add_evidence_mismatch"),
+        ("description", "test_write_add_evidence_mismatch"),
+        ("start", "test_write_add_evidence_mismatch"),
+        ("end", "test_write_add_evidence_mismatch"),
+        ("normal_profile", "test_write_add_inputs_required"),
+        ("normal_source", "test_write_add_inputs_required"),
+        ("normal_snapshot", "test_write_add_inputs_required"),
+        ("same-uid", "test_write_add_identity_exists"),
+        ("baseline", "test_write_add_plan_invalid"),
+    ],
+)
+def test_add_stops_before_any_client_or_credentials(
+    case: str,
+    code: str,
+    approved_add: ApprovedInputs,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    inputs = approved_add
+    plan = inputs.plan
+    spec = _build_spec(inputs, plan)
+    desired = spec.operation.desired_state
+    replacements = {
+        "uid": {"ical_uid": "different-synthetic-identity@example.invalid"},
+        "summary": {"summary": "Alternative synthetic summary"},
+        "description": {"description": "Alternative synthetic description"},
+        "start": {"start_date": desired.start_date - timedelta(days=1)},
+        "end": {"end_date": desired.end_date + timedelta(days=1)},
+    }
+    if case in replacements:
+        state = desired.model_copy(update=replacements[case])
+        op = spec.operation.model_copy(update={"desired_state": state})
+        spec = spec.model_copy(update={"operation": op})
+    elif case == "same-uid":
+        # Keep snapshot and Plan digests consistent to exercise the UID-absence guard.
+        snapshot = inspect_test_calendar_prewrite(
+            SequencePrewriteClient([_page_after_import(inputs)]), inputs.target
+        ).snapshot.snapshot
+        inputs = replace(inputs, snapshot=snapshot)
+        plan = plan.model_copy(update={"snapshot_content_hash": snapshot.content_hash})
+        plan = plan.model_copy(update={"plan_content_hash": calculate_sync_plan_content_hash(plan)})
+        spec = spec.model_copy(
+            update={
+                "current_snapshot_hash": snapshot.content_hash,
+                "plan_hash": plan.plan_content_hash,
+            }
+        )
+    plan, spec, phrase = _approved_candidate(plan, spec)
+    evidence: dict[str, Any] = {
+        "normal_plan": plan,
+        "normal_profile": inputs.profile,
+        "normal_source": inputs.source,
+        "normal_snapshot": inputs.snapshot,
+    }
+    if case == "baseline":
+        evidence["trusted_baseline"] = inputs.baseline
+    args = _cli_args(inputs, plan, spec, phrase, tmp_path, include_baseline=case == "baseline")
+    missing = {
+        "normal_profile": "--profile",
+        "normal_source": "--source",
+        "normal_snapshot": "--google-snapshot",
+    }
+    if case in missing:
+        del evidence[case]
+        del args[missing[case]]
+    _assert_pre_client_stop(
+        inputs, plan, spec, phrase, evidence, args, code, tmp_path, monkeypatch, capsys
+    )
+
+
+def test_add_still_checks_fresh_snapshot_before_import(approved_add: ApprovedInputs) -> None:
+    inputs = approved_add
+    plan, spec, phrase = _candidate(inputs, "approved")
+    client = _Client(list_queue=[_page_after_import(inputs)])
+    stopped = run_test_calendar_write(
+        spec,
+        inputs.target,
+        client,
+        phrase,
+        normal_plan=plan,
+        normal_profile=inputs.profile,
+        normal_source=inputs.source,
+        normal_snapshot=inputs.snapshot,
+        current_snapshot_hash=inputs.snapshot.content_hash,
+        current_plan_hash=plan.plan_content_hash,
+    )
+    assert list(stopped.safe_findings) == ["test_write_snapshot_hash_mismatch"]
+    assert [name for name, _ in client.calls] == ["list"]
+    assert stopped.stopped and not stopped.success and stopped.mutation_attempt_count == 0
+
+
+def test_update_rejects_ambiguous_source_input_keywords(approved: ApprovedInputs) -> None:
+    plan, spec, phrase = _candidate(approved, "approved")
+    client = Mock(spec=_Client)
+    with pytest.raises(RunSpecError) as stopped:
+        run_test_calendar_write(
+            spec,
+            approved.target,
+            client,
+            phrase,
+            normal_plan=plan,
+            normal_profile=approved.profile,
+            normal_source=approved.source,
+            normal_snapshot=approved.snapshot,
+            update_profile=approved.profile,
+            update_source=approved.source,
+            update_snapshot=approved.snapshot,
+            trusted_baseline=approved.baseline,
+            current_snapshot_hash=approved.snapshot.content_hash,
+            current_plan_hash=plan.plan_content_hash,
+            current_baseline_hash=approved.baseline.baseline_content_hash,
+        )
+    assert stopped.value.code == "test_write_source_inputs_ambiguous"
+    assert not client.mock_calls
