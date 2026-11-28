@@ -270,6 +270,9 @@ def _run(
         client,
         challenge,
         normal_plan=bundle.plan,
+        normal_profile=bundle.profile if not update else None,
+        normal_source=bundle.source if not update else None,
+        normal_snapshot=bundle.snapshot if not update else None,
         update_profile=bundle.profile if update else None,
         update_source=bundle.source if update else None,
         update_snapshot=bundle.snapshot if update else None,
@@ -335,8 +338,22 @@ def test_exact_add_imports_once_and_requires_exact_read_back(
     spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=False
     )
-    desired = spec.operation.desired_state
-    imported = _raw_event(desired)
+    action = bundle.plan.proposed_actions[0]
+    event = next(e for e in bundle.source.events if e.safe_uid_reference == action.source_ref)
+    expected_body = {
+        "iCalUID": event.uid,
+        "summary": event.summary,
+        "description": event.description,
+        "start": {"date": event.start_date.isoformat()},
+        "end": {"date": event.effective_end_date.isoformat()},
+        "eventType": "default",
+    }
+    imported = {
+        **expected_body,
+        "id": SYNTHETIC_EVENT_ID,
+        "etag": SYNTHETIC_ETAG,
+        "status": "confirmed",
+    }
     client = _Client(import_queue=[imported], get_queue=[imported])
 
     result = _run(spec, bundle, target, client, challenge)
@@ -348,17 +365,7 @@ def test_exact_add_imports_once_and_requires_exact_read_back(
     assert result.mutation_attempt_count == 1
     assert result.mutation_retry_count == 0
     assert [name for name, _values in client.calls] == ["import", "get"]
-    import_body = client.calls[0][1]["body"]
-    assert isinstance(import_body, dict)
-    assert import_body["iCalUID"] == desired.ical_uid
-    assert set(import_body) == {
-        "iCalUID",
-        "summary",
-        "description",
-        "start",
-        "end",
-        "eventType",
-    }
+    assert client.calls[0][1]["body"] == expected_body
     verify_test_write_execution_result(result)
 
 

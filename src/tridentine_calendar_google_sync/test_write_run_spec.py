@@ -577,10 +577,13 @@ def verify_normal_test_write_execution(
     plan: SyncPlan | None,
     target: TestWriteTargetConfig,
     *,
-    update_profile: AcceptedSourceProfile | None,
-    update_source: SourceCalendarInspection | None,
-    update_snapshot: GoogleSnapshot | None,
-    trusted_baseline: TrustedBaseline | None,
+    normal_profile: AcceptedSourceProfile | None = None,
+    normal_source: SourceCalendarInspection | None = None,
+    normal_snapshot: GoogleSnapshot | None = None,
+    update_profile: AcceptedSourceProfile | None = None,
+    update_source: SourceCalendarInspection | None = None,
+    update_snapshot: GoogleSnapshot | None = None,
+    trusted_baseline: TrustedBaseline | None = None,
 ) -> None:
     """Bind a stored normal Run Spec to the approved action before client use."""
 
@@ -599,44 +602,61 @@ def verify_normal_test_write_execution(
         raise TestWriteRunSpecError(
             "test_write_plan_stale_or_mismatched", "Run Spec does not bind the approved Sync Plan"
         )
-    if action.action is PlanActionKind.ADD:
-        if (
-            trusted_baseline is not None
-            or run_spec.operation.source_ref != action.source_ref
-            or run_spec.target_fingerprint != plan.target_fingerprint
-            or run_spec.current_snapshot_hash != plan.snapshot_content_hash
-            or run_spec.source_profile != plan.current_source.profile_id
-            or run_spec.source_sha256 != plan.current_source.source_sha256
-            or run_spec.source_event_count != plan.current_source.event_count
+    is_add = action.action is PlanActionKind.ADD
+    if is_add and trusted_baseline is not None:
+        raise TestWriteRunSpecError(
+            "test_write_add_plan_invalid", "Normal Test add cannot use a trusted baseline"
+        )
+
+    if any(value is not None for value in (update_profile, update_source, update_snapshot)):
+        if is_add or any(
+            value is not None for value in (normal_profile, normal_source, normal_snapshot)
         ):
             raise TestWriteRunSpecError(
-                "test_write_add_plan_invalid", "Normal Test add does not match the approved action"
+                "test_write_source_inputs_ambiguous",
+                "Use the update-specific source arguments only as a group for a normal UPDATE",
             )
-        return
+        normal_profile, normal_source, normal_snapshot = (
+            update_profile,
+            update_source,
+            update_snapshot,
+        )
 
     if (
-        update_profile is None
-        or update_source is None
-        or update_snapshot is None
-        or trusted_baseline is None
+        normal_profile is None
+        or normal_source is None
+        or normal_snapshot is None
+        or (not is_add and trusted_baseline is None)
     ):
+        if is_add:
+            raise TestWriteRunSpecError(
+                "test_write_add_inputs_required",
+                "Normal Test add requires its profile, Source and saved snapshot",
+            )
         raise TestWriteRunSpecError(
             "test_write_update_inputs_required",
             "Normal Test update requires its profile, Source, saved snapshot and trusted baseline",
         )
-    recomputed = build_sync_plan(
-        update_profile, update_source, update_snapshot, trusted_baseline, thresholds=plan.thresholds
-    )
-    if render_plan_json_report(recomputed) != render_plan_json_report(plan):
-        raise TestWriteRunSpecError(
-            "test_write_plan_recomputation_mismatch",
-            "Test update inputs do not reproduce the approved Sync Plan",
+    if not is_add:
+        assert trusted_baseline is not None
+        recomputed = build_sync_plan(
+            normal_profile,
+            normal_source,
+            normal_snapshot,
+            trusted_baseline,
+            thresholds=plan.thresholds,
         )
+        if render_plan_json_report(recomputed) != render_plan_json_report(plan):
+            raise TestWriteRunSpecError(
+                "test_write_plan_recomputation_mismatch",
+                "Test update inputs do not reproduce the approved Sync Plan",
+            )
+        plan = recomputed
     expected = build_test_write_run_spec(
-        update_profile,
-        update_source,
-        update_snapshot,
-        recomputed,
+        normal_profile,
+        normal_source,
+        normal_snapshot,
+        plan,
         target,
         trusted_baseline=trusted_baseline,
     )
@@ -652,8 +672,8 @@ def verify_normal_test_write_execution(
         or run_spec.operation != expected.operation
     ):
         raise TestWriteRunSpecError(
-            "test_write_update_evidence_mismatch",
-            "Normal Test update differs from the approved source artifacts",
+            f"test_write_{action.action.value}_evidence_mismatch",
+            f"Normal Test {action.action.value} differs from the approved source artifacts",
         )
 
 

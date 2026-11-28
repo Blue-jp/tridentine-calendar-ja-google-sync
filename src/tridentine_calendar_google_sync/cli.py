@@ -136,7 +136,7 @@ from tridentine_calendar_google_sync.operation_journal import (
 )
 from tridentine_calendar_google_sync.plan_engine import PlanError, build_sync_plan
 from tridentine_calendar_google_sync.plan_io import PlanReportError, load_sync_plan_report
-from tridentine_calendar_google_sync.plan_models import PlanActionKind, PlanState, PlanThresholds
+from tridentine_calendar_google_sync.plan_models import PlanState, PlanThresholds
 from tridentine_calendar_google_sync.plan_report import (
     render_plan_json_report,
     render_plan_text_report,
@@ -272,7 +272,6 @@ from tridentine_calendar_google_sync.test_write_report import (
 )
 from tridentine_calendar_google_sync.test_write_run_spec import (
     TestWriteRunSpecError,
-    approved_test_write_action,
     build_test_write_run_spec,
     verify_normal_test_write_execution,
     verify_test_write_run_spec,
@@ -1271,8 +1270,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="run one explicitly approved Test Calendar Add or Update",
         description=(
             "Perform the sole live-write entry point for a dedicated Test Calendar. "
-            "For a normal UPDATE, supply the original --profile, --source, --google-snapshot "
-            "and --trusted-baseline alongside the approved --plan and --target-config. "
+            "For a normal ADD or UPDATE, supply the original --profile, --source and "
+            "--google-snapshot alongside the approved --plan and --target-config. "
+            "A normal UPDATE also requires --trusted-baseline. "
             "Missing or inconsistent evidence stops the run before credentials are loaded. "
             f"{_TEST_WRITE_SAFETY_HELP}"
         ),
@@ -1293,15 +1293,18 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="approved normal Sync Plan, Bootstrap Add Plan or Single Update Plan",
     )
-    run_test_write.add_argument("--profile", help="original accepted profile ID for normal UPDATE")
+    run_test_write.add_argument(
+        "--profile", help="original accepted profile ID for normal ADD or UPDATE"
+    )
     run_test_write.add_argument(
         "--profiles-dir", help="optional local directory of source profiles"
     )
     run_test_write.add_argument(
-        "--source", help="original local ICS used to build the normal UPDATE"
+        "--source", help="original local ICS used to build the normal ADD or UPDATE"
     )
     run_test_write.add_argument(
-        "--google-snapshot", help="saved sanitized Test snapshot used to build the normal UPDATE"
+        "--google-snapshot",
+        help="saved sanitized Test snapshot used to build the normal ADD or UPDATE",
     )
     run_test_write.add_argument(
         "--target-config",
@@ -1872,9 +1875,9 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
     single_update_plan: TestSingleUpdatePlan | None = None
     single_update_baseline: TrustedBaseline | None = None
     normal_plan = None
-    update_profile = None
-    update_source = None
-    update_snapshot = None
+    normal_profile = None
+    normal_source = None
+    normal_snapshot = None
     if isinstance(run_spec, TestBootstrapAddRunSpec):
         if args.trusted_baseline:
             raise TestWriteSpecDispatchError(
@@ -1898,23 +1901,17 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
         normal_plan = load_sync_plan_report(args.plan)
         plan_hash = normal_plan.plan_content_hash
         baseline = load_baseline(args.trusted_baseline) if args.trusted_baseline else None
-        action = approved_test_write_action(normal_plan)
-        if (
-            action.action is PlanActionKind.UPDATE
-            and args.profile
-            and args.source
-            and args.google_snapshot
-        ):
-            update_profile = load_profile(args.profile, args.profiles_dir)
-            update_source = inspect_source(args.source, update_profile)
-            update_snapshot = load_google_snapshot(args.google_snapshot)
+        if args.profile and args.source and args.google_snapshot:
+            normal_profile = load_profile(args.profile, args.profiles_dir)
+            normal_source = inspect_source(args.source, normal_profile)
+            normal_snapshot = load_google_snapshot(args.google_snapshot)
         verify_normal_test_write_execution(
             run_spec,
             normal_plan,
             target,
-            update_profile=update_profile,
-            update_source=update_source,
-            update_snapshot=update_snapshot,
+            normal_profile=normal_profile,
+            normal_source=normal_source,
+            normal_snapshot=normal_snapshot,
             trusted_baseline=baseline,
         )
     snapshot_hash = (
@@ -1964,9 +1961,9 @@ def _run_test_calendar_write_command(args: argparse.Namespace) -> int:
         client,
         args.confirmation,
         normal_plan=normal_plan,
-        update_profile=update_profile,
-        update_source=update_source,
-        update_snapshot=update_snapshot,
+        normal_profile=normal_profile,
+        normal_source=normal_source,
+        normal_snapshot=normal_snapshot,
         current_snapshot_hash=snapshot_hash,
         current_plan_hash=plan_hash,
         current_baseline_hash=baseline_hash,

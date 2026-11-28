@@ -29,21 +29,29 @@ Zero operations, multiple operations, mixed add/update, delete candidates, unman
 
 Keep the approved normal Sync Plan separately from the candidate Run Spec. Pass it to
 `run-test-calendar-write` with `--plan`. Its single action determines whether the
-run is an ADD or UPDATE. A normal UPDATE also requires the original `--profile`
-(and `--profiles-dir` if used), `--source`, saved `--google-snapshot`,
-`--trusted-baseline`, and `--target-config`. Use the same approved inputs as at
-build time. The CLI rebuilds the Plan with its approved thresholds and checks the
-stored operation against the UPDATE derived from these inputs before loading
-credentials. A normal ADD needs the approved Plan and retains its existing input
-requirements.
+run is an ADD or UPDATE. Both require the original `--profile` (and
+`--profiles-dir` if used), `--source`, saved `--google-snapshot`, and
+`--target-config`. Retain and supply the approved inputs used at build time.
+
+For ADD, the verifier resolves the Plan's Source reference to one event and
+checks that its UID is absent from the saved snapshot. It rebuilds the ADD and
+compares the complete private operation, including UID, summary, description,
+start and end dates, and the fixed field list, with the stored Run Spec. The
+approved Plan itself is an input to this check. Normal ADD rejects a trusted
+baseline. Normal UPDATE requires `--trusted-baseline` and first recomputes the
+entire Plan using its approved thresholds. Both operations still check a fresh
+Test Calendar snapshot before sending the mutation.
 
 Python callers of `run_test_calendar_write` must pass the approved `SyncPlan` as
-`normal_plan` for both normal operations, alongside the existing hash arguments.
-For a normal UPDATE, also pass the loaded build inputs as `update_profile`,
-`update_source`, `update_snapshot` and `trusted_baseline`. A missing required
-input or a mismatch stops the runner before its first client call. Bootstrap ADD
-and Single UPDATE continue to use their dedicated plans. Control of the approved
-input files in a particular deployment must be established by its operator.
+`normal_plan` alongside the existing hash arguments. For normal ADD and UPDATE,
+pass the loaded build inputs as `normal_profile`, `normal_source`, and
+`normal_snapshot`. UPDATE also takes `trusted_baseline` and continues to accept
+the existing `update_profile`, `update_source`, and `update_snapshot` keywords.
+Use one keyword group per call. Missing or inconsistent evidence stops the CLI
+before credential loading and the runner before its first client call.
+Bootstrap ADD and Single UPDATE keep their dedicated plans and approval rules.
+Control of the approved input files in a particular deployment must be established
+by its operator.
 
 ## Read-only prewrite inspection
 
