@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from conftest import REPOSITORY_ROOT
@@ -31,6 +32,9 @@ from tridentine_calendar_google_sync.test_single_update_run_spec import (
     build_test_single_update_run_spec,
 )
 from tridentine_calendar_google_sync.test_write_approval import (
+    approve_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_approval import (
     test_write_approval_challenge as approval_challenge,
 )
 from tridentine_calendar_google_sync.test_write_approval_dispatch import (
@@ -45,8 +49,18 @@ from tridentine_calendar_google_sync.test_write_models import (
 )
 from tridentine_calendar_google_sync.test_write_report import build_test_write_json_report
 from tridentine_calendar_google_sync.test_write_run_spec import (
-    build_test_write_run_spec,
+    TestWriteRunSpecError as RunSpecError,
 )
+from tridentine_calendar_google_sync.test_write_run_spec import (
+    build_test_write_run_spec,
+    calculate_test_write_run_spec_hash,
+    private_test_write_run_spec_data,
+    verify_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_spec_dispatch import (
+    TestWriteSpecDispatchError as SpecDispatchError,
+)
+from tridentine_calendar_google_sync.test_write_spec_dispatch import load_any_test_write_run_spec
 from tridentine_calendar_google_sync.test_write_transport import (
     TestWriteExecutionState as ExecutionState,
 )
@@ -266,6 +280,51 @@ def _run(
         sleep=lambda _delay: None,
         jitter=lambda _maximum: 0.0,
     )
+
+
+@pytest.mark.parametrize("update", [False, True], ids=["actual-add", "actual-update"])
+def test_swapped_counts_are_rejected_before_approval_or_client_use(
+    tmp_path: Path,
+    synthetic_profile_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    update: bool,
+) -> None:
+    spec, bundle, target, _ = _prepare(
+        tmp_path, synthetic_profile_factory, monkeypatch, update=update
+    )
+    wrong = spec.model_copy(update={"add_count": spec.update_count, "update_count": spec.add_count})
+    wrong = wrong.model_copy(
+        update={"run_spec_content_hash": calculate_test_write_run_spec_hash(wrong)}
+    )
+    hashes = {
+        "current_snapshot_hash": bundle.snapshot.content_hash,
+        "current_plan_hash": bundle.plan.plan_content_hash,
+        "current_baseline_hash": bundle.baseline.baseline_content_hash if update else None,
+    }
+    confirmation = (
+        f"AUTHORIZE TEST CALENDAR WRITE {wrong.target_safe_ref} "
+        f"R-{wrong.run_spec_content_hash[:12]} A-{wrong.add_count} U-{wrong.update_count}"
+    )
+    client = Mock(spec=_Client)
+
+    with pytest.raises(RunSpecError) as verification:
+        verify_test_write_run_spec(wrong)
+    with pytest.raises(RunSpecError) as challenge:
+        approval_challenge(wrong, **hashes)
+    with pytest.raises(RunSpecError) as approval:
+        approve_test_write_run_spec(wrong, confirmation, **hashes)
+    with pytest.raises(RunSpecError) as execution:
+        _run(wrong, bundle, target, client, confirmation)
+    for rejection in (verification, challenge, approval, execution):
+        assert rejection.value.code == "test_write_operation_count_mismatch"
+    assert not client.mock_calls
+
+    path = tmp_path / "swapped-counts.json"
+    document = json.dumps(private_test_write_run_spec_data(wrong), ensure_ascii=False, indent=2)
+    path.write_bytes((document + "\n").encode("utf-8"))
+    with pytest.raises(SpecDispatchError) as file_read:
+        load_any_test_write_run_spec(path)
+    assert file_read.value.code == "invalid_dispatched_test_write_run_spec"
 
 
 def test_exact_add_imports_once_and_requires_exact_read_back(

@@ -162,11 +162,23 @@ def verify_test_write_run_spec(run_spec: TestWriteRunSpec) -> None:
         or run_spec.test_only is not True
         or run_spec.production_locked is not True
         or run_spec.operation_count != 1
-        or run_spec.add_count + run_spec.update_count != 1
     ):
         raise TestWriteRunSpecError(
             "test_write_run_spec_policy_mismatch",
             "Test write Run Spec policy was not satisfied",
+        )
+    if (
+        type(run_spec.add_count) is not int
+        or type(run_spec.update_count) is not int
+        or (run_spec.operation.operation, run_spec.add_count, run_spec.update_count)
+        not in (
+            (TestWriteOperationKind.ADD, 1, 0),
+            (TestWriteOperationKind.UPDATE, 0, 1),
+        )
+    ):
+        raise TestWriteRunSpecError(
+            "test_write_operation_count_mismatch",
+            "Test write counts do not match the operation",
         )
     if not hmac.compare_digest(
         calculate_test_write_operation_hash(run_spec.operation),
