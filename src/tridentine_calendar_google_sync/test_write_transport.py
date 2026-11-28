@@ -30,7 +30,12 @@ from tridentine_calendar_google_sync.google_test_write_client import (
     TestCalendarWriteClient,
     TestWriteClientError,
 )
-from tridentine_calendar_google_sync.models import StrictFrozenModel
+from tridentine_calendar_google_sync.models import (
+    AcceptedSourceProfile,
+    SourceCalendarInspection,
+    StrictFrozenModel,
+)
+from tridentine_calendar_google_sync.plan_models import SyncPlan
 from tridentine_calendar_google_sync.test_bootstrap_plan_models import TestBootstrapAddPlan
 from tridentine_calendar_google_sync.test_single_update_plan_models import (
     SINGLE_UPDATE_CHANGED_FIELDS,
@@ -58,6 +63,7 @@ from tridentine_calendar_google_sync.test_write_models import (
     TestWriteOperationKind,
     TestWriteRunSpec,
 )
+from tridentine_calendar_google_sync.test_write_run_spec import verify_normal_test_write_execution
 from tridentine_calendar_google_sync.test_write_spec_dispatch import (
     AnyTestWriteRunSpec,
     verify_any_test_write_run_spec,
@@ -852,6 +858,10 @@ def run_test_calendar_write(
     current_snapshot_hash: str,
     current_plan_hash: str,
     current_baseline_hash: str | None = None,
+    normal_plan: SyncPlan | None = None,
+    update_profile: AcceptedSourceProfile | None = None,
+    update_source: SourceCalendarInspection | None = None,
+    update_snapshot: GoogleSnapshot | None = None,
     bootstrap_plan: TestBootstrapAddPlan | None = None,
     single_update_plan: TestSingleUpdatePlan | None = None,
     trusted_baseline: TrustedBaseline | None = None,
@@ -861,12 +871,13 @@ def run_test_calendar_write(
 ) -> TestWriteExecutionResult:
     """Run exactly one Test add or update with no blind mutation retry."""
 
-    # Every Production and artifact-integrity guard runs before the client is touched.
+    # The generic approval and journal dispatchers take a baseline object only for dedicated runs.
+    dedicated_baseline = None if isinstance(run_spec, TestWriteRunSpec) else trusted_baseline
     verify_any_test_write_run_spec(
         run_spec,
         bootstrap_plan=bootstrap_plan,
         single_update_plan=single_update_plan,
-        trusted_baseline=trusted_baseline,
+        trusted_baseline=dedicated_baseline,
     )
     validate_test_write_target_config(target)
     target_ref = test_write_target_reference(target)
@@ -883,6 +894,20 @@ def run_test_calendar_write(
             "production_or_mismatched_test_write_target",
             "Production or mismatched Calendar write access is forbidden",
         )
+    if isinstance(run_spec, TestWriteRunSpec):
+        verify_normal_test_write_execution(
+            run_spec,
+            normal_plan,
+            target,
+            update_profile=update_profile,
+            update_source=update_source,
+            update_snapshot=update_snapshot,
+            trusted_baseline=trusted_baseline,
+        )
+    elif normal_plan is not None:
+        raise TestWriteTransportError(
+            "test_write_plan_operation_mismatch", "A normal Sync Plan requires a normal Run Spec"
+        )
     approve_any_test_write_run_spec(
         run_spec,
         confirmation,
@@ -891,7 +916,7 @@ def run_test_calendar_write(
         current_baseline_hash=current_baseline_hash,
         bootstrap_plan=bootstrap_plan,
         single_update_plan=single_update_plan,
-        trusted_baseline=trusted_baseline,
+        trusted_baseline=dedicated_baseline,
     )
     client.verify_bound_target(target)
 
@@ -901,7 +926,7 @@ def run_test_calendar_write(
         run_spec,
         bootstrap_plan=bootstrap_plan,
         single_update_plan=single_update_plan,
-        trusted_baseline=trusted_baseline,
+        trusted_baseline=dedicated_baseline,
     )
     try:
         _snapshot, matched_event = _preflight(

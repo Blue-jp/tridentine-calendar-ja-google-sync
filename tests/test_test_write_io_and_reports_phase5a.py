@@ -202,7 +202,7 @@ def test_rehashed_succeeded_result_rejects_zero_mutation_or_mismatched_terminal_
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -217,6 +217,7 @@ def test_rehashed_succeeded_result_rejects_zero_mutation_or_mismatched_terminal_
     )
     legitimate = _run(
         spec,
+        bundle,
         target,
         _Client(get_queue=[current, desired], patch_queue=[desired]),
         challenge,
@@ -277,7 +278,7 @@ def test_public_text_and_json_reports_are_deterministic_schema_valid_and_redacte
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -292,6 +293,7 @@ def test_public_text_and_json_reports_are_deterministic_schema_valid_and_redacte
     )
     result = _run(
         spec,
+        bundle,
         target,
         _Client(get_queue=[current, desired], patch_queue=[desired]),
         challenge,
@@ -320,12 +322,14 @@ def test_public_text_and_json_reports_are_deterministic_schema_valid_and_redacte
 def test_report_verification_binds_versions_and_semantics_even_when_rehashed(
     tmp_path: Any, synthetic_profile_factory: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=False
     )
     desired = _raw_event(spec.operation.desired_state)
-    normal = _run(spec, target, _Client(import_queue=[desired], get_queue=[desired]), challenge)
-    stopped = _run(spec, target, _Client(import_queue=[{}]), challenge)
+    normal = _run(
+        spec, bundle, target, _Client(import_queue=[desired], get_queue=[desired]), challenge
+    )
+    stopped = _run(spec, bundle, target, _Client(import_queue=[{}]), challenge)
     v1 = build_test_write_json_report(normal)
     v2 = build_test_write_json_report(stopped)
     verify_test_write_json_report(v1, normal.journal)
