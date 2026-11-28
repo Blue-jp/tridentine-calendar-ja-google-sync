@@ -25,6 +25,26 @@ A private `TestWriteRunSpec` binds one verified source, current sanitized Test s
 
 Zero operations, multiple operations, mixed add/update, delete candidates, unmanaged or ambiguous events, duplicates, and fatal findings are rejected. The exact approval phrase binds the Test target safe reference, run-spec hash, and add/update counts. It grants authority for only that single run spec.
 
+### Inputs to a normal Test write
+
+Keep the approved normal Sync Plan separately from the candidate Run Spec. Pass it to
+`run-test-calendar-write` with `--plan`. Its single action determines whether the
+run is an ADD or UPDATE. A normal UPDATE also requires the original `--profile`
+(and `--profiles-dir` if used), `--source`, saved `--google-snapshot`,
+`--trusted-baseline`, and `--target-config`. Use the same approved inputs as at
+build time. The CLI rebuilds the Plan with its approved thresholds and checks the
+stored operation against the UPDATE derived from these inputs before loading
+credentials. A normal ADD needs the approved Plan and retains its existing input
+requirements.
+
+Python callers of `run_test_calendar_write` must pass the approved `SyncPlan` as
+`normal_plan` for both normal operations, alongside the existing hash arguments.
+For a normal UPDATE, also pass the loaded build inputs as `update_profile`,
+`update_source`, `update_snapshot` and `trusted_baseline`. A missing required
+input or a mismatch stops the runner before its first client call. Bootstrap ADD
+and Single UPDATE continue to use their dedicated plans. Control of the approved
+input files in a particular deployment must be established by its operator.
+
 ## Read-only prewrite inspection
 
 Phase 5B operations must begin with `inspect-test-calendar-prewrite`, not by weakening or deliberately failing `run-test-calendar-write`. The prewrite command uses the separated Test write token but passes a dedicated list-only Protocol to the application layer. That Protocol can call `events.list` and cannot reach get, import, patch, delete, clear, batch, or a generic Google service.

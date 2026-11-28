@@ -23,7 +23,10 @@ from tridentine_calendar_google_sync.models import (
     CanonicalSourceEvent,
     SourceCalendarInspection,
 )
-from tridentine_calendar_google_sync.plan_engine import verify_sync_plan_content_hash
+from tridentine_calendar_google_sync.plan_engine import (
+    build_sync_plan,
+    verify_sync_plan_content_hash,
+)
 from tridentine_calendar_google_sync.plan_models import (
     ChangedFieldName,
     PlanAction,
@@ -31,6 +34,7 @@ from tridentine_calendar_google_sync.plan_models import (
     PlanState,
     SyncPlan,
 )
+from tridentine_calendar_google_sync.plan_report import render_plan_json_report
 from tridentine_calendar_google_sync.provenance import canonical_content_hash, tool_version
 from tridentine_calendar_google_sync.test_write_models import (
     TestWriteManagedState,
@@ -158,11 +162,23 @@ def verify_test_write_run_spec(run_spec: TestWriteRunSpec) -> None:
         or run_spec.test_only is not True
         or run_spec.production_locked is not True
         or run_spec.operation_count != 1
-        or run_spec.add_count + run_spec.update_count != 1
     ):
         raise TestWriteRunSpecError(
             "test_write_run_spec_policy_mismatch",
             "Test write Run Spec policy was not satisfied",
+        )
+    if (
+        type(run_spec.add_count) is not int
+        or type(run_spec.update_count) is not int
+        or (run_spec.operation.operation, run_spec.add_count, run_spec.update_count)
+        not in (
+            (TestWriteOperationKind.ADD, 1, 0),
+            (TestWriteOperationKind.UPDATE, 0, 1),
+        )
+    ):
+        raise TestWriteRunSpecError(
+            "test_write_operation_count_mismatch",
+            "Test write counts do not match the operation",
         )
     if not hmac.compare_digest(
         calculate_test_write_operation_hash(run_spec.operation),
@@ -251,12 +267,8 @@ def _verify_snapshot(snapshot: GoogleSnapshot) -> None:
         )
 
 
-def _validate_plan(
-    profile: AcceptedSourceProfile,
-    source: SourceCalendarInspection,
-    snapshot: GoogleSnapshot,
-    plan: SyncPlan,
-) -> PlanAction:
+def approved_test_write_action(plan: SyncPlan) -> PlanAction:
+    """Return the sole permitted action from the independently supplied normal Plan."""
     try:
         verify_sync_plan_content_hash(plan)
     except Exception as exc:
@@ -276,6 +288,7 @@ def _validate_plan(
     )
     if (
         plan.executable
+        or not plan.approval_required
         or plan.state is not PlanState.REVIEW_REQUIRED
         or len(plan.proposed_actions) != 1
         or counts.add + counts.update != 1
@@ -284,14 +297,6 @@ def _validate_plan(
         or plan.diff_summary.has_ambiguous
         or plan.diff_summary.warning_count != 0
         or any(guard.severity == "fatal" for guard in plan.safety_guards)
-        or plan.target_fingerprint != snapshot.target_fingerprint
-        or plan.snapshot_content_hash != snapshot.content_hash
-        or plan.current_source.profile_id != profile.profile_id
-        or plan.current_source.accepted_tag != profile.accepted_tag
-        or plan.current_source.accepted_commit != profile.accepted_commit
-        or plan.current_source.source_sha256 != source.raw_sha256
-        or plan.current_source.source_content_hash != source.content_hash
-        or plan.current_source.event_count != source.vevent_count
     ):
         raise TestWriteRunSpecError(
             "unsafe_test_write_plan",
@@ -504,7 +509,20 @@ def build_test_write_run_spec(
         )
     source_by_ref = _validated_source(profile, source)
     _verify_snapshot(snapshot)
-    action = _validate_plan(profile, source, snapshot, plan)
+    action = approved_test_write_action(plan)
+    if (
+        plan.target_fingerprint != snapshot.target_fingerprint
+        or plan.snapshot_content_hash != snapshot.content_hash
+        or plan.current_source.profile_id != profile.profile_id
+        or plan.current_source.accepted_tag != profile.accepted_tag
+        or plan.current_source.accepted_commit != profile.accepted_commit
+        or plan.current_source.source_sha256 != source.raw_sha256
+        or plan.current_source.source_content_hash != source.content_hash
+        or plan.current_source.event_count != source.vevent_count
+    ):
+        raise TestWriteRunSpecError(
+            "unsafe_test_write_plan", "Sync Plan does not match the Test write inputs"
+        )
     if action.source_ref is None or action.source_ref not in source_by_ref:
         raise TestWriteRunSpecError(
             "test_write_source_reference_unresolved",
@@ -554,13 +572,100 @@ def build_test_write_run_spec(
     return run_spec
 
 
+def verify_normal_test_write_execution(
+    run_spec: TestWriteRunSpec,
+    plan: SyncPlan | None,
+    target: TestWriteTargetConfig,
+    *,
+    update_profile: AcceptedSourceProfile | None,
+    update_source: SourceCalendarInspection | None,
+    update_snapshot: GoogleSnapshot | None,
+    trusted_baseline: TrustedBaseline | None,
+) -> None:
+    """Bind a stored normal Run Spec to the approved action before client use."""
+
+    if plan is None:
+        raise TestWriteRunSpecError(
+            "test_write_normal_plan_required", "Normal Test writes require the approved Sync Plan"
+        )
+    action = approved_test_write_action(plan)
+    verify_test_write_run_spec(run_spec)
+    if run_spec.operation.operation.value != action.action.value:
+        raise TestWriteRunSpecError(
+            "test_write_plan_operation_mismatch",
+            "Test write operation differs from the approved Plan",
+        )
+    if not hmac.compare_digest(plan.plan_content_hash, run_spec.plan_hash):
+        raise TestWriteRunSpecError(
+            "test_write_plan_stale_or_mismatched", "Run Spec does not bind the approved Sync Plan"
+        )
+    if action.action is PlanActionKind.ADD:
+        if (
+            trusted_baseline is not None
+            or run_spec.operation.source_ref != action.source_ref
+            or run_spec.target_fingerprint != plan.target_fingerprint
+            or run_spec.current_snapshot_hash != plan.snapshot_content_hash
+            or run_spec.source_profile != plan.current_source.profile_id
+            or run_spec.source_sha256 != plan.current_source.source_sha256
+            or run_spec.source_event_count != plan.current_source.event_count
+        ):
+            raise TestWriteRunSpecError(
+                "test_write_add_plan_invalid", "Normal Test add does not match the approved action"
+            )
+        return
+
+    if (
+        update_profile is None
+        or update_source is None
+        or update_snapshot is None
+        or trusted_baseline is None
+    ):
+        raise TestWriteRunSpecError(
+            "test_write_update_inputs_required",
+            "Normal Test update requires its profile, Source, saved snapshot and trusted baseline",
+        )
+    recomputed = build_sync_plan(
+        update_profile, update_source, update_snapshot, trusted_baseline, thresholds=plan.thresholds
+    )
+    if render_plan_json_report(recomputed) != render_plan_json_report(plan):
+        raise TestWriteRunSpecError(
+            "test_write_plan_recomputation_mismatch",
+            "Test update inputs do not reproduce the approved Sync Plan",
+        )
+    expected = build_test_write_run_spec(
+        update_profile,
+        update_source,
+        update_snapshot,
+        recomputed,
+        target,
+        trusted_baseline=trusted_baseline,
+    )
+    # Compare the operation models directly: public serialization omits IDs, ETags and values.
+    if (
+        run_spec.target_fingerprint != expected.target_fingerprint
+        or run_spec.target_safe_ref != expected.target_safe_ref
+        or run_spec.source_profile != expected.source_profile
+        or run_spec.source_sha256 != expected.source_sha256
+        or run_spec.source_event_count != expected.source_event_count
+        or run_spec.current_snapshot_hash != expected.current_snapshot_hash
+        or run_spec.trusted_baseline_hash != expected.trusted_baseline_hash
+        or run_spec.operation != expected.operation
+    ):
+        raise TestWriteRunSpecError(
+            "test_write_update_evidence_mismatch",
+            "Normal Test update differs from the approved source artifacts",
+        )
+
+
 __all__ = [
     "TestWriteRunSpecError",
+    "approved_test_write_action",
     "build_test_write_run_spec",
     "calculate_test_write_operation_hash",
     "calculate_test_write_run_spec_hash",
     "private_managed_state_data",
     "private_test_write_operation_data",
     "private_test_write_run_spec_data",
+    "verify_normal_test_write_execution",
     "verify_test_write_run_spec",
 ]

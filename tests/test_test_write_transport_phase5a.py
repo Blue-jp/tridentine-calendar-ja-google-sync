@@ -5,11 +5,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from conftest import REPOSITORY_ROOT
 from jsonschema import Draft202012Validator
-from phase4b_helpers import build_add_apply_bundle, build_update_apply_bundle
+from phase4b_helpers import SyntheticApplyBundle, build_add_apply_bundle, build_update_apply_bundle
 from phase5a1_helpers import prewrite_page
 from phase5a_helpers import SYNTHETIC_ETAG, SYNTHETIC_EVENT_ID, make_test_target_config
 from phase5c0_helpers import build_bootstrap_bundle
@@ -31,6 +32,9 @@ from tridentine_calendar_google_sync.test_single_update_run_spec import (
     build_test_single_update_run_spec,
 )
 from tridentine_calendar_google_sync.test_write_approval import (
+    approve_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_approval import (
     test_write_approval_challenge as approval_challenge,
 )
 from tridentine_calendar_google_sync.test_write_approval_dispatch import (
@@ -45,10 +49,18 @@ from tridentine_calendar_google_sync.test_write_models import (
 )
 from tridentine_calendar_google_sync.test_write_report import build_test_write_json_report
 from tridentine_calendar_google_sync.test_write_run_spec import (
-    build_test_write_run_spec,
-    calculate_test_write_operation_hash,
-    calculate_test_write_run_spec_hash,
+    TestWriteRunSpecError as RunSpecError,
 )
+from tridentine_calendar_google_sync.test_write_run_spec import (
+    build_test_write_run_spec,
+    calculate_test_write_run_spec_hash,
+    private_test_write_run_spec_data,
+    verify_test_write_run_spec,
+)
+from tridentine_calendar_google_sync.test_write_spec_dispatch import (
+    TestWriteSpecDispatchError as SpecDispatchError,
+)
+from tridentine_calendar_google_sync.test_write_spec_dispatch import load_any_test_write_run_spec
 from tridentine_calendar_google_sync.test_write_transport import (
     TestWriteExecutionState as ExecutionState,
 )
@@ -195,12 +207,13 @@ def _prepare(
     monkeypatch: pytest.MonkeyPatch,
     *,
     update: bool,
-) -> tuple[Any, Any, Any, str]:
+    changed_dates: tuple[str, ...] = (),
+) -> tuple[Any, SyntheticApplyBundle, Any, str]:
     import tridentine_calendar_google_sync.test_write_run_spec as run_spec_module
     import tridentine_calendar_google_sync.test_write_transport as transport_module
 
     bundle = (
-        build_update_apply_bundle(tmp_path, synthetic_profile_factory)
+        build_update_apply_bundle(tmp_path, synthetic_profile_factory, changed_dates=changed_dates)
         if update
         else build_add_apply_bundle(tmp_path, synthetic_profile_factory)
     )
@@ -245,14 +258,22 @@ def _prepare(
     return spec, bundle, target, challenge
 
 
-def _run(spec: Any, target: Any, client: _Client, challenge: str) -> Any:
+def _run(
+    spec: Any, bundle: SyntheticApplyBundle, target: Any, client: _Client, challenge: str
+) -> Any:
     if client.bound_calendar_id is None:
         client.bound_calendar_id = target.calendar_id
+    update = bundle.plan.proposed_actions[0].action.value == "update"
     return run_test_calendar_write(
         spec,
         target,
         client,
         challenge,
+        normal_plan=bundle.plan,
+        update_profile=bundle.profile if update else None,
+        update_source=bundle.source if update else None,
+        update_snapshot=bundle.snapshot if update else None,
+        trusted_baseline=bundle.baseline if update else None,
         current_snapshot_hash=spec.current_snapshot_hash,
         current_plan_hash=spec.plan_hash,
         current_baseline_hash=spec.trusted_baseline_hash,
@@ -261,19 +282,64 @@ def _run(spec: Any, target: Any, client: _Client, challenge: str) -> Any:
     )
 
 
+@pytest.mark.parametrize("update", [False, True], ids=["actual-add", "actual-update"])
+def test_swapped_counts_are_rejected_before_approval_or_client_use(
+    tmp_path: Path,
+    synthetic_profile_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    update: bool,
+) -> None:
+    spec, bundle, target, _ = _prepare(
+        tmp_path, synthetic_profile_factory, monkeypatch, update=update
+    )
+    wrong = spec.model_copy(update={"add_count": spec.update_count, "update_count": spec.add_count})
+    wrong = wrong.model_copy(
+        update={"run_spec_content_hash": calculate_test_write_run_spec_hash(wrong)}
+    )
+    hashes = {
+        "current_snapshot_hash": bundle.snapshot.content_hash,
+        "current_plan_hash": bundle.plan.plan_content_hash,
+        "current_baseline_hash": bundle.baseline.baseline_content_hash if update else None,
+    }
+    confirmation = (
+        f"AUTHORIZE TEST CALENDAR WRITE {wrong.target_safe_ref} "
+        f"R-{wrong.run_spec_content_hash[:12]} A-{wrong.add_count} U-{wrong.update_count}"
+    )
+    client = Mock(spec=_Client)
+
+    with pytest.raises(RunSpecError) as verification:
+        verify_test_write_run_spec(wrong)
+    with pytest.raises(RunSpecError) as challenge:
+        approval_challenge(wrong, **hashes)
+    with pytest.raises(RunSpecError) as approval:
+        approve_test_write_run_spec(wrong, confirmation, **hashes)
+    with pytest.raises(RunSpecError) as execution:
+        _run(wrong, bundle, target, client, confirmation)
+    for rejection in (verification, challenge, approval, execution):
+        assert rejection.value.code == "test_write_operation_count_mismatch"
+    assert not client.mock_calls
+
+    path = tmp_path / "swapped-counts.json"
+    document = json.dumps(private_test_write_run_spec_data(wrong), ensure_ascii=False, indent=2)
+    path.write_bytes((document + "\n").encode("utf-8"))
+    with pytest.raises(SpecDispatchError) as file_read:
+        load_any_test_write_run_spec(path)
+    assert file_read.value.code == "invalid_dispatched_test_write_run_spec"
+
+
 def test_exact_add_imports_once_and_requires_exact_read_back(
     tmp_path: Any,
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=False
     )
     desired = spec.operation.desired_state
     imported = _raw_event(desired)
     client = _Client(import_queue=[imported], get_queue=[imported])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.state is ExecutionState.SUCCEEDED
     assert result.success is True
@@ -318,7 +384,7 @@ def test_add_read_back_mismatch_stops_without_second_import_or_rollback(
     monkeypatch: pytest.MonkeyPatch,
     changed: dict[str, object],
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=False
     )
     desired = spec.operation.desired_state
@@ -326,7 +392,7 @@ def test_add_read_back_mismatch_stops_without_second_import_or_rollback(
     mismatched = _raw_event(desired, **changed)
     client = _Client(import_queue=[imported], get_queue=[mismatched])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.success is False
     assert result.stopped is True
@@ -342,7 +408,7 @@ def test_import_response_loss_recovers_only_by_exact_uid_lookup(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=False
     )
     desired = spec.operation.desired_state
@@ -350,7 +416,7 @@ def test_import_response_loss_recovers_only_by_exact_uid_lookup(
         import_queue=[_retryable("events.import")],
         list_queue=[_page([_raw_event(desired)])],
     )
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.success is True
     assert result.recovered_after_uncertain is True
@@ -367,7 +433,7 @@ def test_import_uncertain_nonexact_lookup_stops_without_second_import(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=False
     )
     desired = spec.operation.desired_state
@@ -382,7 +448,7 @@ def test_import_uncertain_nonexact_lookup_stops_without_second_import(
         events = [_raw_event(desired, summary="Mismatch")]
     client = _Client(import_queue=[_retryable("events.import")], list_queue=[_page(events)])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     expected_state = ExecutionState.FAILED if mode == "duplicate" else ExecutionState.UNCERTAIN
     assert result.state is expected_state
@@ -397,7 +463,7 @@ def test_exact_update_gets_fresh_etag_patches_changed_fields_once_and_reads_back
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -412,7 +478,7 @@ def test_exact_update_gets_fresh_etag_patches_changed_fields_once_and_reads_back
     )
     client = _Client(get_queue=[current, desired], patch_queue=[desired])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.success is True
     assert [name for name, _values in client.calls] == ["get", "patch", "get"]
@@ -430,7 +496,7 @@ def test_update_read_back_mismatch_stops_without_second_patch(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -451,7 +517,7 @@ def test_update_read_back_mismatch_stops_without_second_patch(
     )
     client = _Client(get_queue=[current, mismatched], patch_queue=[desired])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.state is ExecutionState.FAILED
     assert result.read_back_verified is False
@@ -460,43 +526,22 @@ def test_update_read_back_mismatch_stops_without_second_patch(
     assert result.mutation_retry_count == 0
 
 
+@pytest.mark.parametrize(
+    "changed_dates", [("start_date",), ("end_date",), ("start_date", "end_date")]
+)
 def test_date_update_patch_contains_atomic_valid_start_end_pair(
     tmp_path: Any,
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
+    changed_dates: tuple[str, ...],
 ) -> None:
-    spec, _bundle, target, _challenge = _prepare(
-        tmp_path, synthetic_profile_factory, monkeypatch, update=True
+    spec, bundle, target, challenge = _prepare(
+        tmp_path, synthetic_profile_factory, monkeypatch, update=True, changed_dates=changed_dates
     )
-    desired_state = spec.operation.desired_state.model_copy(
-        update={
-            "start_date": spec.operation.desired_state.start_date.replace(day=2),
-            "end_date": spec.operation.desired_state.end_date.replace(day=3),
-        }
-    )
-    provisional_operation = spec.operation.model_copy(
-        update={
-            "changed_fields": ("start_date", "end_date"),
-            "desired_state": desired_state,
-            "operation_content_hash": "0" * 64,
-        }
-    )
-    operation = provisional_operation.model_copy(
-        update={
-            "operation_content_hash": calculate_test_write_operation_hash(provisional_operation)
-        }
-    )
-    provisional_spec = spec.model_copy(
-        update={"operation": operation, "run_spec_content_hash": "0" * 64}
-    )
-    spec = provisional_spec.model_copy(
-        update={"run_spec_content_hash": calculate_test_write_run_spec_hash(provisional_spec)}
-    )
-    challenge = approval_challenge(
-        spec,
-        current_snapshot_hash=spec.current_snapshot_hash,
-        current_plan_hash=spec.plan_hash,
-        current_baseline_hash=spec.trusted_baseline_hash,
+    action = bundle.plan.proposed_actions[0]
+    assert action.changed_fields == changed_dates
+    source_event = next(
+        e for e in bundle.source.events if e.safe_uid_reference == action.source_ref
     )
     current = _raw_event(
         spec.operation.current_state,
@@ -504,19 +549,17 @@ def test_date_update_patch_contains_atomic_valid_start_end_pair(
         etag=spec.operation.expected_etag,
     )
     desired = _raw_event(
-        desired_state,
+        spec.operation.desired_state,
         event_id=spec.operation.google_event_id,
         etag="fixture-etag-after-date-patch",
     )
     client = _Client(get_queue=[current, desired], patch_queue=[desired])
-
-    result = _run(spec, target, client, challenge)
-
-    assert result.success is True
-    patch_body = client.calls[1][1]["body"]
-    assert patch_body == {
-        "start": {"date": desired_state.start_date.isoformat()},
-        "end": {"date": desired_state.end_date.isoformat()},
+    result = _run(spec, bundle, target, client, challenge)
+    assert result.success
+    assert [name for name, _ in client.calls] == ["get", "patch", "get"]
+    assert client.calls[1][1]["body"] == {
+        "start": {"date": source_event.start_date.isoformat()},
+        "end": {"date": source_event.effective_end_date.isoformat()},
     }
 
 
@@ -525,7 +568,7 @@ def test_fresh_etag_mismatch_stops_before_patch(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     changed_etag = _raw_event(
@@ -535,7 +578,7 @@ def test_fresh_etag_mismatch_stops_before_patch(
     )
     client = _Client(get_queue=[changed_etag])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.state is ExecutionState.ETAG_CONFLICT
     assert result.success is False
@@ -549,7 +592,7 @@ def test_http_412_stops_with_no_patch_retry_or_success(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -559,7 +602,7 @@ def test_http_412_stops_with_no_patch_retry_or_success(
     )
     client = _Client(get_queue=[current], patch_queue=[_etag_conflict()])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.state is ExecutionState.ETAG_CONFLICT
     assert result.success is False
@@ -574,7 +617,7 @@ def test_patch_response_loss_recovers_by_read_without_second_patch(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -589,7 +632,7 @@ def test_patch_response_loss_recovers_by_read_without_second_patch(
     )
     client = _Client(get_queue=[current, desired], patch_queue=[_retryable("events.patch")])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.success is True
     assert result.recovered_after_uncertain is True
@@ -603,7 +646,7 @@ def test_patch_response_loss_mismatch_stops_without_second_patch_or_rollback(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -613,7 +656,7 @@ def test_patch_response_loss_mismatch_stops_without_second_patch_or_rollback(
     )
     client = _Client(get_queue=[current, current], patch_queue=[_retryable("events.patch")])
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.state is ExecutionState.UNCERTAIN
     assert result.stopped is True
@@ -627,7 +670,7 @@ def test_fresh_read_retries_are_bounded_and_never_repeat_mutation(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -645,7 +688,7 @@ def test_fresh_read_retries_are_bounded_and_never_repeat_mutation(
         patch_queue=[desired],
     )
 
-    result = _run(spec, target, client, challenge)
+    result = _run(spec, bundle, target, client, challenge)
 
     assert result.success is True
     assert result.read_retry_count == 1
@@ -996,7 +1039,7 @@ def test_production_or_mismatched_target_is_rejected_before_client_touch(
 ) -> None:
     import tridentine_calendar_google_sync.test_write_transport as transport_module
 
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=False
     )
     monkeypatch.setattr(
@@ -1007,7 +1050,7 @@ def test_production_or_mismatched_target_is_rejected_before_client_touch(
     client = _Client()
 
     with pytest.raises(TransportError) as captured:
-        _run(spec, target, client, challenge)
+        _run(spec, bundle, target, client, challenge)
     assert captured.value.code == "production_or_mismatched_test_write_target"
     assert client.calls == []
 
@@ -1017,13 +1060,13 @@ def test_client_target_binding_mismatch_is_rejected_before_first_api(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=False
     )
     client = _Client(bound_calendar_id="other-owned-target@example.invalid")
 
     with pytest.raises(ClientError) as captured:
-        _run(spec, target, client, challenge)
+        _run(spec, bundle, target, client, challenge)
 
     assert captured.value.code == "test_write_target_binding_mismatch"
     assert client.calls == []
@@ -1034,7 +1077,7 @@ def test_result_public_form_redacts_raw_uid_event_id_etag_and_content(
     synthetic_profile_factory: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spec, _bundle, target, challenge = _prepare(
+    spec, bundle, target, challenge = _prepare(
         tmp_path, synthetic_profile_factory, monkeypatch, update=True
     )
     current = _raw_event(
@@ -1049,6 +1092,7 @@ def test_result_public_form_redacts_raw_uid_event_id_etag_and_content(
     )
     result = _run(
         spec,
+        bundle,
         target,
         _Client(get_queue=[current, desired], patch_queue=[desired]),
         challenge,

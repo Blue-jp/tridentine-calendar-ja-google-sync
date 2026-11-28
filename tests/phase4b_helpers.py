@@ -31,6 +31,8 @@ class SyntheticApplyBundle:
 def build_update_apply_bundle(
     tmp_path: Path,
     profile_factory: Any,
+    *,
+    changed_dates: tuple[str, ...] = (),
 ) -> SyntheticApplyBundle:
     profile, source, _snapshot, document, baseline = _large_bundle(
         tmp_path,
@@ -39,7 +41,14 @@ def build_update_apply_bundle(
     )
     for index, event in enumerate(document["events"]):
         event["etag"] = f"fixture-etag-apply-{index:04d}"
-    document["events"][0]["summary"] = "Changed synthetic apply summary"
+    if changed_dates:
+        event = document["events"][0]
+        if "start_date" in changed_dates:
+            event["start"]["date"] = "2026-01-14"
+        if "end_date" in changed_dates:
+            event["end"]["date"] = "2026-01-17"
+    else:
+        document["events"][0]["summary"] = "Changed synthetic apply summary"
     snapshot = parse_google_snapshot_bytes(json.dumps(document, ensure_ascii=False).encode("utf-8"))
     plan = build_sync_plan(
         profile,
