@@ -71,6 +71,34 @@ When an import response is lost, the runner performs an `iCalUID` lookup instead
 
 Every successful mutation requires post-write read-back. A mismatch stops the run. The tool performs no automatic delete, rollback, reapply, or batch operation.
 
+### Acknowledged import without an event ID
+
+An ADD import can return normally without a usable event ID (the field is absent,
+empty, or not a string). The runner records the acknowledged mutation and stops
+before attempting the verification GET. It does not look up the UID or
+automatically resend the import. The event may already exist; keep the evidence
+for explicit reconciliation.
+
+Only this stop emits journal, result and JSON report version `2.0`, with type
+identifiers `test-write-operation-journal-v2`, `test-calendar-write-result-v2`
+and `test-calendar-write-report-v2`. The journal ends in `FAILED` with
+`PREFLIGHT/SUCCEEDED → MUTATION/SUCCEEDED → READ_BACK/FAILED` and reason
+`test_write_read_back_identity_missing`. The final entry repeats the previous
+entry's actual counters because verification could not start. If preflight used
+`n` calls, including retries, the three cumulative API counts are `n, n+1, n+1`.
+The two-slot admission check limits `n` to 1–8. The report records one mutation
+attempt, zero mutation retries, and no verified read-back or recovery.
+
+Writers keep all other outcomes in v1, including a failed verification GET that
+actually ran. The new reader verifies both formats. Previous v1 readers reject
+v2; consumers must support v2 to inspect the missing-ID stop. Each version has
+its own entry, journal, result and report hash domains. Verify a decoded JSON
+report against the separately loaded journal with `verify_test_write_json_report`.
+The [v2 journal schema](../schemas/test-write-journal-v2.schema.json) and
+[v2 report schema](../schemas/test-write-report-v2.schema.json) describe the
+wire fields. The Python verifiers additionally check the transitions, hash
+chain and links between the artifacts.
+
 ## Storage and public output
 
 Test target config, credentials, Test write token, snapshot, trusted Test baseline, plan, run spec, journal, report, and receipt belong outside the repository. New output files, including run specs and operation journals, must be written atomically without overwriting an existing destination.

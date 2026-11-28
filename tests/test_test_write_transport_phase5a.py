@@ -1,24 +1,49 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import REPOSITORY_ROOT
+from jsonschema import Draft202012Validator
 from phase4b_helpers import build_add_apply_bundle, build_update_apply_bundle
+from phase5a1_helpers import prewrite_page
 from phase5a_helpers import SYNTHETIC_ETAG, SYNTHETIC_EVENT_ID, make_test_target_config
+from phase5c0_helpers import build_bootstrap_bundle
+from phase5d0_helpers import build_single_update_bundle
+from test_google_test_write_client_phase5a import _Service
 
 from tridentine_calendar_google_sync.apply_policy import PRODUCTION_TARGET_REFERENCE
 from tridentine_calendar_google_sync.google_errors import SafeGoogleError
 from tridentine_calendar_google_sync.google_test_write_client import (
+    GoogleTestCalendarWriteClient,
+)
+from tridentine_calendar_google_sync.google_test_write_client import (
     TestWriteClientError as ClientError,
+)
+from tridentine_calendar_google_sync.test_bootstrap_run_spec import (
+    build_test_bootstrap_add_run_spec,
+)
+from tridentine_calendar_google_sync.test_single_update_run_spec import (
+    build_test_single_update_run_spec,
 )
 from tridentine_calendar_google_sync.test_write_approval import (
     test_write_approval_challenge as approval_challenge,
 )
+from tridentine_calendar_google_sync.test_write_approval_dispatch import (
+    any_test_write_approval_challenge,
+)
+from tridentine_calendar_google_sync.test_write_journal import (
+    parse_test_write_journal_bytes,
+    render_test_write_journal_json,
+)
 from tridentine_calendar_google_sync.test_write_models import (
     TestWriteManagedState as ManagedState,
 )
+from tridentine_calendar_google_sync.test_write_report import build_test_write_json_report
 from tridentine_calendar_google_sync.test_write_run_spec import (
     build_test_write_run_spec,
     calculate_test_write_operation_hash,
@@ -627,6 +652,341 @@ def test_fresh_read_retries_are_bounded_and_never_repeat_mutation(
     assert result.mutation_attempt_count == 1
     assert result.mutation_retry_count == 0
     assert [name for name, _values in client.calls].count("patch") == 1
+
+
+def _budget_inputs(tmp_path: Path, *, update: bool):
+    if update:
+        bundle = build_single_update_bundle(tmp_path)
+        spec = build_test_single_update_run_spec(
+            bundle.updated_profile,
+            bundle.updated_source,
+            bundle.prewrite_snapshot,
+            bundle.plan,
+            bundle.baseline,
+            bundle.target,
+        )
+        bindings = {
+            "single_update_plan": bundle.plan,
+            "trusted_baseline": bundle.baseline,
+            "current_baseline_hash": spec.trusted_baseline_hash,
+        }
+        current = _raw_event(
+            spec.operation.current_state,
+            event_id=spec.operation.google_event_id,
+            etag=spec.operation.expected_etag,
+        )
+        snapshot_items = [current]
+        desired = _raw_event(spec.operation.desired_state, event_id=spec.operation.google_event_id)
+    else:
+        bundle = build_bootstrap_bundle(tmp_path)
+        spec = build_test_bootstrap_add_run_spec(
+            bundle.profile,
+            bundle.source,
+            bundle.prewrite_snapshot,
+            bundle.plan,
+            bundle.target,
+        )
+        bindings = {"bootstrap_plan": bundle.plan}
+        snapshot_items = []
+        desired = _raw_event(spec.operation.desired_state)
+    bindings.update(
+        current_snapshot_hash=spec.current_snapshot_hash,
+        current_plan_hash=bundle.plan.plan_content_hash,
+    )
+    challenge = any_test_write_approval_challenge(spec, **bindings)
+    return spec, bundle.target, bindings, challenge, snapshot_items, desired
+
+
+def _write_schema(kind: str, version: int) -> Draft202012Validator:
+    path = REPOSITORY_ROOT / "schemas" / f"test-write-{kind}-v{version}.schema.json"
+    return Draft202012Validator(json.loads(path.read_text(encoding="utf-8")))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "failure_operation"),
+    [("patch", "events.patch"), ("patch", "events.get"), ("import", "events.get")],
+    ids=["patch-412", "get-412-after-patch", "get-412-after-import"],
+)
+def test_http_412_is_reported_at_the_phase_that_received_it(
+    tmp_path: Path, mutation: str, failure_operation: str
+) -> None:
+    update = mutation == "patch"
+    spec, target, bindings, challenge, items, desired = _budget_inputs(tmp_path, update=update)
+    readback_failed = failure_operation == "events.get"
+    failure = SafeGoogleError(
+        status=412, reason="etag_conflict", retryable=False, attempt=1, operation=failure_operation
+    )
+    client = _Client(
+        list_queue=[prewrite_page(items, summary=target.expected_summary)],
+        get_queue=[*items, *([failure] if readback_failed else [])],
+        patch_queue=[desired if readback_failed else failure] if update else [],
+        import_queue=[] if update else [desired],
+    )
+    result = run_test_calendar_write(spec, target, client, challenge, **bindings)
+    report = build_test_write_json_report(result)
+    journal = result.journal
+    assert result.schema_version == journal.schema_version == report["schema_version"] == "1.0"
+    calls = ["list", *(["get"] if update else []), mutation, *(["get"] if readback_failed else [])]
+    assert [name for name, _ in client.calls] == calls
+    assert result.api_call_count == journal.api_call_count == report["api_call_count"] == len(calls)
+    assert (
+        result.mutation_attempt_count
+        == journal.mutation_attempt_count
+        == report["mutation_attempt_count"]
+        == 1
+    )
+    assert (
+        result.mutation_retry_count
+        == journal.mutation_retry_count
+        == report["mutation_retry_count"]
+        == 0
+    )
+    assert result.read_retry_count == journal.read_retry_count == report["read_retry_count"] == 0
+    assert result.success is report["success"] is False
+    assert result.stopped is report["stopped"] is True
+    assert result.read_back_verified is report["read_back_verified"] is False
+
+    expected_entries = [("preflight", "succeeded", None)]
+    if readback_failed:
+        expected_entries += [
+            ("mutation", "succeeded", None),
+            ("read_back", "failed", "test_write_guard_failed"),
+        ]
+    else:
+        expected_entries.append(("mutation", "failed", "etag_conflict"))
+    assert [
+        (e.phase.value, e.status.value, e.safe_error_code) for e in journal.entries
+    ] == expected_entries
+    assert (
+        journal.state.value
+        == result.state.value
+        == report["state"]
+        == ("failed" if readback_failed else "etag_conflict")
+    )
+    assert (
+        list(result.safe_findings)
+        == report["safe_findings"]
+        == [journal.entries[-1].safe_error_code]
+    )
+
+
+@pytest.mark.parametrize("update", [False, True], ids=["add", "update"])
+@pytest.mark.parametrize(
+    ("remaining", "readback_fails"),
+    [(0, False), (1, False), (2, False), (2, True)],
+    ids=["no-slot", "one-slot", "two-slots", "last-read-fails"],
+)
+def test_budget_at_mutation_dispatch(
+    tmp_path: Path, update: bool, remaining: int, readback_fails: bool
+) -> None:
+    spec, target, bindings, challenge, snapshot_items, desired = _budget_inputs(
+        tmp_path, update=update
+    )
+
+    # Preflight consumes one list retry and, only for UPDATE, one fresh ETag GET.
+    list_count = 10 - remaining - int(update)
+    pages = [
+        prewrite_page(next_page_token=f"page-{i}", summary=target.expected_summary)
+        for i in range(list_count - 2)
+    ]
+    client = _Client(
+        list_queue=[
+            _retryable("events.list"),
+            *pages,
+            prewrite_page(snapshot_items, summary=target.expected_summary),
+        ],
+        get_queue=[*snapshot_items, _retryable("events.get") if readback_fails else desired],
+        import_queue=[desired],
+        patch_queue=[desired],
+    )
+    result = run_test_calendar_write(
+        spec,
+        target,
+        client,
+        challenge,
+        **bindings,
+        sleep=lambda _delay: None,
+        jitter=lambda _maximum: 0.0,
+    )
+    journal = parse_test_write_journal_bytes(
+        render_test_write_journal_json(result.journal).encode()
+    )
+    report = build_test_write_json_report(result)
+    expected_calls = ["list"] * list_count + (["get"] if update else [])
+    assert result.schema_version == journal.schema_version == report["schema_version"] == "1.0"
+    sent = remaining == 2
+    verified = sent and not readback_fails
+    if sent:
+        expected_calls.extend(["patch" if update else "import", "get"])
+    assert [name for name, _ in client.calls] == expected_calls
+    assert (
+        result.api_call_count
+        == journal.api_call_count
+        == report["api_call_count"]
+        == len(expected_calls)
+    )
+    assert result.read_retry_count == journal.read_retry_count == report["read_retry_count"] == 1
+    assert (
+        result.mutation_attempt_count
+        == journal.mutation_attempt_count
+        == report["mutation_attempt_count"]
+        == int(sent)
+    )
+    assert result.mutation_retry_count == report["mutation_retry_count"] == 0
+    assert result.read_back_verified is report["read_back_verified"] is verified
+    assert result.state is (ExecutionState.SUCCEEDED if verified else ExecutionState.FAILED)
+    assert report["state"] == result.state.value
+    entries = [(e.phase.value, e.status.value, e.api_call_count) for e in journal.entries]
+    if sent:
+        assert entries == [
+            ("preflight", "succeeded", 8),
+            ("mutation", "succeeded", 9),
+            ("read_back", "succeeded" if verified else "failed", 10),
+        ]
+    else:
+        assert entries == [("preflight", "failed", 10 - remaining)]
+    if not verified:
+        assert journal.entries[-1].safe_error_code == "test_write_api_call_budget_exceeded"
+        assert report["safe_findings"] == ["test_write_api_call_budget_exceeded"]
+
+
+@pytest.mark.parametrize(
+    ("response", "pages", "retry"),
+    [({}, 1, False), ({"id": ""}, 2, True), ({"id": 7}, 7, True)],
+    ids=["missing", "empty-after-pagination-and-retry", "nonstring-at-budget-boundary"],
+)
+def test_acknowledged_import_without_id_returns_v2_stop(
+    tmp_path: Path, response: dict[str, object], pages: int, retry: bool
+) -> None:
+    spec, target, bindings, challenge, _, _ = _budget_inputs(tmp_path, update=False)
+    client = _Client(
+        list_queue=[
+            *([_retryable("events.list")] if retry else []),
+            *[prewrite_page(next_page_token=f"page-{i}") for i in range(pages - 1)],
+            prewrite_page(),
+        ],
+        import_queue=[response],
+    )
+    result = run_test_calendar_write(
+        spec, target, client, challenge, **bindings, sleep=lambda _: None, jitter=lambda _: 0.0
+    )
+    report = build_test_write_json_report(result)
+    journal = result.journal
+    reads = pages + int(retry)
+    code = "test_write_read_back_identity_missing"
+    assert [name for name, _ in client.calls] == ["list"] * reads + ["import"]
+    assert all(args["ical_uid"] is None for name, args in client.calls if name == "list")
+    assert [
+        (
+            e.phase.value,
+            e.status.value,
+            e.safe_error_code,
+            e.api_call_count,
+            e.mutation_attempt_count,
+        )
+        for e in journal.entries
+    ] == [
+        ("preflight", "succeeded", None, reads, 0),
+        ("mutation", "succeeded", None, reads + 1, 1),
+        ("read_back", "failed", code, reads + 1, 1),
+    ]
+    assert all(e.read_retry_count == int(retry) for e in journal.entries)
+    assert journal.schema_version == result.schema_version == report["schema_version"] == "2.0"
+    assert journal.journal_type == "test-write-operation-journal-v2"
+    assert result.result_type == "test-calendar-write-result-v2"
+    assert report["report_type"] == "test-calendar-write-report-v2"
+    assert journal.state.value == result.state.value == report["state"] == "failed"
+    assert result.success is report["success"] is False
+    assert result.stopped is report["stopped"] is True
+    assert result.read_back_verified is report["read_back_verified"] is False
+    assert result.recovered_after_uncertain is report["recovered_after_uncertain"] is False
+    assert list(result.safe_findings) == report["safe_findings"] == [code]
+    assert (
+        journal.api_call_count
+        == result.api_call_count
+        == report["api_call_count"]
+        == len(client.calls)
+    )
+    assert (
+        journal.read_retry_count
+        == result.read_retry_count
+        == report["read_retry_count"]
+        == int(retry)
+    )
+    assert (
+        journal.mutation_attempt_count
+        == result.mutation_attempt_count
+        == report["mutation_attempt_count"]
+        == 1
+    )
+    assert (
+        journal.mutation_retry_count
+        == result.mutation_retry_count
+        == report["mutation_retry_count"]
+        == 0
+    )
+    assert report["journal_hash"] == journal.journal_content_hash
+    assert report["result_hash"] == result.result_content_hash
+
+    journal_doc = json.loads(render_test_write_journal_json(journal))
+    for kind, document in (("journal", journal_doc), ("report", report)):
+        v2 = _write_schema(kind, 2)
+        v2.validate(document)
+        assert not _write_schema(kind, 1).is_valid(document)
+        assert not v2.is_valid({**document, "schema_version": "1.0"})
+        assert not v2.is_valid({**document, f"{kind}_type": "unexpected"})
+        assert not v2.is_valid({**document, "operation": "update"})
+    wrong_terminal = {**journal_doc["entries"][-1], "safe_error_code": "test_write_guard_failed"}
+    assert not _write_schema("journal", 2).is_valid(
+        {**journal_doc, "entries": [*journal_doc["entries"][:-1], wrong_terminal]}
+    )
+    assert not _write_schema("report", 2).is_valid({**report, "read_back_verified": True})
+
+
+def test_patch_header_refusal_records_only_completed_preflight_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec, target, bindings, challenge, snapshot_items, _ = _budget_inputs(tmp_path, update=True)
+    service = _Service()
+    events = service.events()
+    events.responses["list"] = prewrite_page(snapshot_items, summary=target.expected_summary)
+    events.responses["get"] = snapshot_items[0]
+    build_patch = events.patch
+
+    def without_headers(**parameters: object):
+        request = build_patch(**parameters)
+        del request.headers
+        return request
+
+    monkeypatch.setattr(events, "patch", without_headers)
+    result = run_test_calendar_write(
+        spec,
+        target,
+        GoogleTestCalendarWriteClient(service, target_config=target),
+        challenge,
+        **bindings,
+    )
+
+    assert [name for name, _ in events.calls] == ["list", "get", "patch"]
+    assert events.requests["list"].execute_calls == events.requests["get"].execute_calls == [0]
+    assert events.requests["patch"].execute_calls == []
+    journal = parse_test_write_journal_bytes(
+        render_test_write_journal_json(result.journal).encode()
+    )
+    report = build_test_write_json_report(result)
+    assert result.state is ExecutionState.FAILED
+    assert result.api_call_count == journal.api_call_count == report["api_call_count"] == 2
+    assert (
+        result.mutation_attempt_count
+        == journal.mutation_attempt_count
+        == report["mutation_attempt_count"]
+        == 0
+    )
+    assert result.read_retry_count == result.mutation_retry_count == 0
+    assert result.read_back_verified is report["read_back_verified"] is False
+    assert [(e.phase.value, e.status.value) for e in journal.entries] == [("preflight", "failed")]
+    assert journal.entries[-1].safe_error_code == "test_write_guard_failed"
+    assert report["safe_findings"] == ["test_write_guard_failed"]
 
 
 def test_production_or_mismatched_target_is_rejected_before_client_touch(

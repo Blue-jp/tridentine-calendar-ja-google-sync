@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from typing import Literal, Self
 
 from pydantic import Field, model_validator
@@ -25,7 +26,10 @@ from tridentine_calendar_google_sync.google_errors import (
 from tridentine_calendar_google_sync.google_fetch import FetchedGooglePages, RetryPolicy
 from tridentine_calendar_google_sync.google_models import CanonicalGoogleEvent, GoogleSnapshot
 from tridentine_calendar_google_sync.google_sanitize import sanitize_fetched_pages
-from tridentine_calendar_google_sync.google_test_write_client import TestCalendarWriteClient
+from tridentine_calendar_google_sync.google_test_write_client import (
+    TestCalendarWriteClient,
+    TestWriteClientError,
+)
 from tridentine_calendar_google_sync.models import StrictFrozenModel
 from tridentine_calendar_google_sync.test_bootstrap_plan_models import TestBootstrapAddPlan
 from tridentine_calendar_google_sync.test_single_update_plan_models import (
@@ -45,6 +49,7 @@ from tridentine_calendar_google_sync.test_write_journal import (
     TestWriteJournalPhase,
     TestWriteJournalState,
     append_test_write_journal_entry,
+    finalize_test_write_missing_identity_journal,
     initialize_test_write_journal,
     verify_test_write_journal,
 )
@@ -70,7 +75,16 @@ MAX_TEST_WRITE_MUTATION_ATTEMPTS = 1
 TEST_WRITE_MUTATION_RETRY_COUNT = 0
 MAX_TEST_WRITE_PAGES = 100
 _METADATA_HASH_DOMAIN = b"tridentine-calendar-google-sync:collection-metadata:v1\x00"
-_RESULT_HASH_DOMAIN = b"tridentine-calendar-google-sync:test-write-result:v1\x00"
+_RESULT_HASH_DOMAINS = {
+    (
+        "1.0",
+        "test-calendar-write-result-v1",
+    ): b"tridentine-calendar-google-sync:test-write-result:v1\x00",
+    (
+        "2.0",
+        "test-calendar-write-result-v2",
+    ): b"tridentine-calendar-google-sync:test-write-result:v2\x00",
+}
 
 
 class TestWriteExecutionState(StrEnum):
@@ -85,8 +99,10 @@ class TestWriteExecutionState(StrEnum):
 class TestWriteExecutionResult(StrictFrozenModel):
     """Public-safe execution result; private identities never leave the adapter."""
 
-    schema_version: Literal["1.0"] = "1.0"
-    result_type: Literal["test-calendar-write-result-v1"] = "test-calendar-write-result-v1"
+    schema_version: Literal["1.0", "2.0"] = "1.0"
+    result_type: Literal["test-calendar-write-result-v1", "test-calendar-write-result-v2"] = (
+        "test-calendar-write-result-v1"
+    )
     live_test_write: Literal[True] = True
     test_only: Literal[True] = True
     production_locked: Literal[True] = True
@@ -126,6 +142,34 @@ def _verify_test_write_execution_result_semantics(result: TestWriteExecutionResu
     """Bind every terminal result claim to a semantically valid journal."""
 
     verify_test_write_journal(result.journal)
+    tags = (result.schema_version, result.result_type)
+    if tags not in _RESULT_HASH_DOMAINS or result.schema_version != result.journal.schema_version:
+        raise TestWriteTransportError(
+            "test_write_result_version_mismatch", "Test write evidence versions do not match"
+        )
+    if result.schema_version == "2.0" and (
+        result.state is not TestWriteExecutionState.FAILED
+        or result.success is not False
+        or result.stopped is not True
+        or result.read_back_verified is not False
+        or result.recovered_after_uncertain is not False
+        or result.safe_findings != ("test_write_read_back_identity_missing",)
+        or result.live_test_write is not True
+        or result.test_only is not True
+        or result.production_locked is not True
+        or any(
+            type(count) is not int
+            for count in (
+                result.api_call_count,
+                result.read_retry_count,
+                result.mutation_attempt_count,
+                result.mutation_retry_count,
+            )
+        )
+    ):
+        raise TestWriteTransportError(
+            "test_write_result_stop_mismatch", "Invalid missing-identity Test write result"
+        )
     if result.target_safe_ref == PRODUCTION_TARGET_REFERENCE:
         raise TestWriteTransportError(
             "production_test_write_result_forbidden",
@@ -167,6 +211,12 @@ def _verify_test_write_execution_result_semantics(result: TestWriteExecutionResu
             "test_write_result_journal_state_mismatch",
             "Test write result terminal journal state verification failed",
         )
+    terminal = result.journal.entries[-1]
+    read_back_verified = terminal.status in (
+        TestWriteJournalEntryStatus.SUCCEEDED,
+        TestWriteJournalEntryStatus.RECOVERED,
+    )
+    safe_findings = (terminal.safe_error_code,) if terminal.safe_error_code is not None else ()
     if (
         result.journal.target_safe_ref != result.target_safe_ref
         or result.journal.run_spec_ref != result.run_spec_ref
@@ -176,6 +226,8 @@ def _verify_test_write_execution_result_semantics(result: TestWriteExecutionResu
         or result.journal.read_retry_count != result.read_retry_count
         or result.journal.mutation_attempt_count != result.mutation_attempt_count
         or result.journal.recovered_after_uncertain != result.recovered_after_uncertain
+        or result.read_back_verified is not read_back_verified
+        or result.safe_findings != safe_findings
     ):
         raise TestWriteTransportError(
             "test_write_result_journal_binding_mismatch",
@@ -189,22 +241,25 @@ class _Counters:
     read_retries: int = 0
     mutation_attempts: int = 0
 
-    def consume_api_call(self) -> None:
-        if self.api_calls >= MAX_TEST_WRITE_API_CALLS:
+    def require_api_capacity(self, calls: int) -> None:
+        if self.api_calls + calls > MAX_TEST_WRITE_API_CALLS:
             raise TestWriteTransportError(
                 "test_write_api_call_budget_exceeded",
-                "Test write API call budget was exhausted",
+                "Insufficient Test write API call budget",
             )
+
+    def consume_api_call(self) -> None:
+        self.require_api_capacity(1)
         self.api_calls += 1
 
-    def consume_mutation(self) -> None:
+    def require_mutation_capacity(self) -> None:
         if self.mutation_attempts >= MAX_TEST_WRITE_MUTATION_ATTEMPTS:
             raise TestWriteTransportError(
                 "test_write_mutation_attempt_exceeded",
                 "A second Test write mutation is forbidden",
             )
-        self.consume_api_call()
-        self.mutation_attempts += 1
+        # Check space for the mutation and the first verification read.
+        self.require_api_capacity(2)
 
 
 def _hash(domain: bytes, value: object) -> str:
@@ -245,7 +300,12 @@ def _result_data(result: TestWriteExecutionResult) -> dict[str, object]:
 def calculate_test_write_execution_result_hash(result: TestWriteExecutionResult) -> str:
     """Calculate the deterministic safe result hash."""
 
-    return _hash(_RESULT_HASH_DOMAIN, _result_data(result))
+    domain = _RESULT_HASH_DOMAINS.get((result.schema_version, result.result_type))
+    if domain is None:
+        raise TestWriteTransportError(
+            "test_write_result_version_mismatch", "Unsupported Test write result version or type"
+        )
+    return _hash(domain, _result_data(result))
 
 
 def verify_test_write_execution_result(result: TestWriteExecutionResult) -> None:
@@ -278,6 +338,8 @@ def _read_with_retry(
     total_wait = 0.0
     for attempt in range(1, policy.max_attempts + 1):
         counters.consume_api_call()
+        if attempt > 1:
+            counters.read_retries += 1
         try:
             return call()
         except Exception as exc:
@@ -302,9 +364,9 @@ def _read_with_retry(
         delay = min(delay + jitter_value, policy.maximum_delay_seconds)
         if total_wait + delay > policy.maximum_total_wait_seconds:
             raise safe_error from None
+        counters.require_api_capacity(1)
         sleep(delay)
         total_wait += delay
-        counters.read_retries += 1
     raise TestWriteTransportError(
         "test_write_read_retry_exhausted",
         "Test write read retry policy was exhausted",
@@ -648,6 +710,12 @@ def _final_result(
 ) -> TestWriteExecutionResult:
     success = state is TestWriteExecutionState.SUCCEEDED
     provisional = TestWriteExecutionResult(
+        schema_version=journal.schema_version,
+        result_type=(
+            "test-calendar-write-result-v2"
+            if journal.schema_version == "2.0"
+            else "test-calendar-write-result-v1"
+        ),
         state=state,
         target_safe_ref=run_spec.target_safe_ref,
         run_spec_ref=f"R-{run_spec.run_spec_content_hash[:12]}",
@@ -681,6 +749,15 @@ def _failed_result(
     phase: TestWriteJournalPhase,
 ) -> TestWriteExecutionResult:
     code = _safe_code(error)
+    if (
+        phase is TestWriteJournalPhase.READ_BACK
+        and isinstance(error, SafeGoogleError)
+        and error.operation == "events.get"
+        and code == "etag_conflict"
+    ):
+        # The mutation was acknowledged. In v1 this GET failure stops
+        # verification; etag_conflict would classify the mutation as rejected.
+        code = "test_write_guard_failed"
     state = (
         TestWriteExecutionState.ETAG_CONFLICT
         if code == "etag_conflict"
@@ -820,7 +897,7 @@ def run_test_calendar_write(
 
     policy = read_policy or RetryPolicy()
     counters = _Counters()
-    journal = initialize_test_write_journal(
+    initial_journal = initialize_test_write_journal(
         run_spec,
         bootstrap_plan=bootstrap_plan,
         single_update_plan=single_update_plan,
@@ -837,6 +914,7 @@ def run_test_calendar_write(
             jitter=jitter,
         )
         operation = run_spec.operation
+        dispatch: Callable[[], Mapping[str, object]]
         if operation.operation is TestWriteOperationKind.UPDATE:
             if not isinstance(run_spec, (TestWriteRunSpec, TestSingleUpdateRunSpec)):
                 raise TestWriteTransportError(
@@ -878,8 +956,18 @@ def run_test_calendar_write(
                     "etag_conflict",
                     "Fresh Test event does not match the approved ETag and state",
                 )
+            dispatch = partial(
+                client.patch_event,
+                event_id=operation.google_event_id,
+                etag=operation.expected_etag,
+                body=_patch_body(run_spec),
+            )
+        else:
+            dispatch = partial(client.import_event, body=_import_body(operation.desired_state))
+        client.verify_bound_target(target)
+        counters.require_mutation_capacity()
         journal = _append(
-            journal,
+            initial_journal,
             counters,
             phase=TestWriteJournalPhase.PREFLIGHT,
             status=TestWriteJournalEntryStatus.SUCCEEDED,
@@ -887,7 +975,7 @@ def run_test_calendar_write(
     except Exception as exc:
         return _failed_result(
             run_spec,
-            journal,
+            initial_journal,
             counters,
             exc,
             phase=TestWriteJournalPhase.PREFLIGHT,
@@ -897,32 +985,12 @@ def run_test_calendar_write(
     mutation_error: SafeGoogleError | None = None
     response: Mapping[str, object] | None = None
     try:
-        client.verify_bound_target(target)
-        counters.consume_mutation()
-        if run_spec.operation.operation is TestWriteOperationKind.ADD:
-            response = client.import_event(
-                body=_import_body(desired),
-            )
-        else:
-            # The Bootstrap operation type is Literal[ADD], so this branch is
-            # statically narrowed to the existing normal Run Spec.
-            event_id = run_spec.operation.google_event_id
-            etag = run_spec.operation.expected_etag
-            if event_id is None or etag is None:
-                raise TestWriteTransportError(
-                    "test_write_update_identity_missing",
-                    "Test write update identity is incomplete",
-                )
-            response = client.patch_event(
-                event_id=event_id,
-                body=_patch_body(run_spec),
-                etag=etag,
-            )
-        journal = _append(
-            journal,
-            counters,
-            phase=TestWriteJournalPhase.MUTATION,
-            status=TestWriteJournalEntryStatus.SUCCEEDED,
+        response = dispatch()
+    except TestWriteClientError as exc:
+        # The adapter rejected the local request before sending it (e.g. it
+        # could not set If-Match). Finish preflight with only the reads made.
+        return _failed_result(
+            run_spec, initial_journal, counters, exc, phase=TestWriteJournalPhase.PREFLIGHT
         )
     except Exception as exc:
         mutation_error = safe_google_error_from_exception(
@@ -934,6 +1002,12 @@ def run_test_calendar_write(
                 else "events.patch"
             ),
         )
+
+    # A response or transport failure consumes the admitted attempt, even
+    # when the provider outcome is unknown. There is no second dispatch.
+    counters.api_calls += 1
+    counters.mutation_attempts += 1
+    if mutation_error is not None:
         if mutation_error.reason == "etag_conflict":
             return _failed_result(
                 run_spec,
@@ -957,6 +1031,26 @@ def run_test_calendar_write(
             status=TestWriteJournalEntryStatus.UNCERTAIN,
             code="write_outcome_uncertain",
         )
+    else:
+        journal = _append(
+            journal,
+            counters,
+            phase=TestWriteJournalPhase.MUTATION,
+            status=TestWriteJournalEntryStatus.SUCCEEDED,
+        )
+
+    read_back_id = run_spec.operation.google_event_id
+    if mutation_error is None and run_spec.operation.operation is TestWriteOperationKind.ADD:
+        returned_id = response.get("id") if response is not None else None
+        if not isinstance(returned_id, str) or not returned_id:
+            return _final_result(
+                run_spec,
+                finalize_test_write_missing_identity_journal(journal),
+                state=TestWriteExecutionState.FAILED,
+                read_back_verified=False,
+                findings=("test_write_read_back_identity_missing",),
+            )
+        read_back_id = returned_id
 
     try:
         if mutation_error is not None:
@@ -1028,20 +1122,11 @@ def run_test_calendar_write(
                 read_back_verified=True,
             )
 
-        if run_spec.operation.operation is TestWriteOperationKind.ADD:
-            event_id_value = response.get("id") if response is not None else None
-            event_id = event_id_value if isinstance(event_id_value, str) else None
-        else:
-            event_id = run_spec.operation.google_event_id
-        if not isinstance(event_id, str) or not event_id:
-            raise TestWriteTransportError(
-                "test_write_read_back_identity_missing",
-                "Test write read-back identity is missing",
-            )
+        assert read_back_id is not None
         read_back = _get_event(
             client,
             target,
-            event_id,
+            read_back_id,
             counters,
             policy=policy,
             sleep=sleep,
@@ -1050,7 +1135,7 @@ def run_test_calendar_write(
         read_back_finding = _read_back_finding(
             desired,
             read_back,
-            expected_event_id=event_id,
+            expected_event_id=read_back_id,
         )
         if read_back_finding is not None:
             raise TestWriteTransportError(

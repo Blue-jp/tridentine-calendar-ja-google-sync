@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import pytest
@@ -22,7 +24,10 @@ from tridentine_calendar_google_sync.test_write_journal import (
 from tridentine_calendar_google_sync.test_write_journal import (
     append_test_write_journal_entry,
     calculate_test_write_journal_hash,
+    finalize_test_write_missing_identity_journal,
     initialize_test_write_journal,
+    parse_test_write_journal_bytes,
+    render_test_write_journal_json,
     verify_test_write_journal,
 )
 from tridentine_calendar_google_sync.test_write_run_spec import build_test_write_run_spec
@@ -344,3 +349,197 @@ def test_legitimate_preflight_failure_and_etag_conflict_journals_remain_valid(
     verify_test_write_journal(conflict)
     assert failed.state is JournalState.FAILED
     assert conflict.state is JournalState.ETAG_CONFLICT
+
+
+@pytest.fixture
+def missing_id_journal(tmp_path, synthetic_profile_factory, monkeypatch):
+    prefix = initialize_test_write_journal(
+        _run_spec(tmp_path, synthetic_profile_factory, monkeypatch)
+    )
+    for phase, api, mutations in (
+        (JournalPhase.PREFLIGHT, 4, 0),
+        (JournalPhase.MUTATION, 5, 1),
+    ):
+        prefix = append_test_write_journal_entry(
+            prefix,
+            phase=phase,
+            status=EntryStatus.SUCCEEDED,
+            api_call_count=api,
+            read_retry_count=2,
+            mutation_attempt_count=mutations,
+        )
+    result = finalize_test_write_missing_identity_journal(prefix)
+    assert prefix.schema_version == "1.0" and prefix.state is JournalState.RUNNING
+    assert result.entries[0].entry_hash != prefix.entries[0].entry_hash
+    return result
+
+
+def _rehash_wire_journal(data, *, v1_entry=None, aggregate_version="v2"):
+    """Model a self-consistent wire document independently of the reader."""
+
+    def digest(domain, payload):
+        raw = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        return hashlib.sha256(
+            f"tridentine-calendar-google-sync:{domain}\x00".encode() + raw
+        ).hexdigest()
+
+    previous = "0" * 64
+    for i, entry in enumerate(data["entries"]):
+        entry["previous_entry_hash"] = previous
+        payload = {k: v for k, v in entry.items() if k != "entry_hash"}
+        previous = digest(f"test-write-journal-entry:{'v1' if i == v1_entry else 'v2'}", payload)
+        entry["entry_hash"] = previous
+    data["last_entry_hash"] = previous
+    payload = {k: v for k, v in data.items() if k != "journal_content_hash"}
+    data["journal_content_hash"] = digest(f"test-write-journal:{aggregate_version}", payload)
+    return json.dumps(data).encode()
+
+
+def test_v2_stop_reuses_actual_counts_and_authenticates_all_entries(missing_id_journal):
+    raw = render_test_write_journal_json(missing_id_journal)
+    data = json.loads(raw)
+    assert (
+        data["schema_version"] == "2.0"
+        and data["journal_type"] == "test-write-operation-journal-v2"
+    )
+    assert [
+        (e["api_call_count"], e["read_retry_count"], e["mutation_attempt_count"])
+        for e in data["entries"]
+    ] == [(4, 2, 0), (5, 2, 1), (5, 2, 1)]
+    assert json.loads(_rehash_wire_journal(data)) == json.loads(raw)
+    assert parse_test_write_journal_bytes(raw.encode()) == missing_id_journal
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "update",
+        "get_performed",
+        "success",
+        "different_reason",
+        "decreasing_api",
+        "changed_retries",
+        "changed_mutations",
+        "aggregate_only",
+        "mutation_retry",
+        "recovered",
+        "no_verification_capacity",
+        "extra_mutation_phase_api",
+        "unknown_version",
+        "v1_type",
+        "v1_entry",
+        "v1_aggregate",
+    ),
+)
+def test_rehashed_invalid_v2_documents_are_refused(missing_id_journal, case):
+    data = json.loads(render_test_write_journal_json(missing_id_journal))
+    before, mutation, stop = data["entries"]
+    if case == "update":
+        for record in (data, before, mutation, stop):
+            record["operation"] = "update"
+    elif case == "get_performed":
+        stop["api_call_count"] += 1
+    elif case == "success":
+        data["state"] = "completed"
+        stop.update(status="succeeded", safe_error_code=None)
+    elif case == "different_reason":
+        stop["safe_error_code"] = "test_write_guard_failed"
+    elif case == "decreasing_api":
+        stop["api_call_count"] -= 1
+    elif case == "changed_retries":
+        stop["read_retry_count"] += 1
+    elif case == "changed_mutations":
+        stop["mutation_attempt_count"] = 0
+    elif case == "mutation_retry":
+        stop["mutation_retry_count"] = 1
+    elif case == "recovered":
+        stop["recovered_after_uncertain"] = True
+    elif case == "no_verification_capacity":
+        before["api_call_count"] = 9
+        mutation["api_call_count"] = stop["api_call_count"] = 10
+    elif case == "extra_mutation_phase_api":
+        mutation["api_call_count"] = stop["api_call_count"] = before["api_call_count"] + 2
+    elif case == "unknown_version":
+        data["schema_version"] = "3.0"
+    elif case == "v1_type":
+        data["journal_type"] = "test-write-operation-journal-v1"
+
+    for key in (
+        "api_call_count",
+        "read_retry_count",
+        "mutation_attempt_count",
+        "mutation_retry_count",
+        "recovered_after_uncertain",
+    ):
+        data[key] = stop[key]
+    if case == "aggregate_only":
+        data["api_call_count"] += 1
+    raw = _rehash_wire_journal(
+        data,
+        v1_entry=1 if case == "v1_entry" else None,
+        aggregate_version="v1" if case == "v1_aggregate" else "v2",
+    )
+    with pytest.raises(JournalError):
+        parse_test_write_journal_bytes(raw)
+
+
+def test_verifier_rechecks_v2_semantics_on_model_copies(missing_id_journal):
+    forged = _rehash_journal(missing_id_journal.model_copy(update={"api_call_count": 4}))
+    with pytest.raises(JournalError):
+        verify_test_write_journal(forged)
+    with pytest.raises(JournalError):
+        verify_test_write_journal(
+            missing_id_journal.model_copy(
+                update={"journal_type": "test-write-operation-journal-v1"}
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("where", "field", "value"),
+    (
+        ("journal", "api_call_count", 5.0),
+        ("journal", "test_only", 1),
+        ("journal", "mutation_retry_count", False),
+        ("entry", "api_call_count", 4.0),
+        ("entry", "mutation_retry_count", False),
+        ("entry", "source_ref", "invalid-reference"),
+    ),
+)
+def test_public_verifier_rejects_unvalidated_v2_fields(missing_id_journal, where, field, value):
+    if where == "entry":
+        first, *rest = missing_id_journal.entries
+        forged = missing_id_journal.model_copy(
+            update={"entries": (first.model_copy(update={field: value}), *rest)}
+        )
+    else:
+        forged = missing_id_journal.model_copy(update={field: value})
+    with pytest.raises(JournalError):
+        verify_test_write_journal(forged)
+
+
+@pytest.mark.parametrize(
+    ("where", "field", "change"),
+    (
+        ("journal", "schema_version", "omit"),
+        ("journal", "journal_type", "omit"),
+        ("journal", "recovered_after_uncertain", "omit"),
+        ("entry", "mutation_retry_count", "omit"),
+        ("entry", "safe_error_code", "omit"),
+        ("entry", "mutation_retry_count", False),
+        ("journal", "production_locked", 1),
+    ),
+)
+def test_v2_wire_requires_explicit_typed_fields(missing_id_journal, where, field, change):
+    # Keep the hash of the original canonical values. A reader silently
+    # defaulting or coercing one field would otherwise verify this document.
+    data = json.loads(render_test_write_journal_json(missing_id_journal))
+    record = data if where == "journal" else data["entries"][0]
+    if change == "omit":
+        del record[field]
+    else:
+        record[field] = change
+    with pytest.raises(JournalError):
+        parse_test_write_journal_bytes(json.dumps(data).encode())
